@@ -128,30 +128,30 @@ function supersedes(next: Write, old: Write): boolean {
         old.eventId === next.eventId &&
         old.athleteId === next.athleteId
       );
-    case "seed":
-    case "unseed":
-      // Two answers about the same lane are one answer. A seed write names
-      // the lane; an unseed names the row, so both are compared on the id the
+    case "swim":
+    case "unswim":
+      // Two answers about the same lane are one answer. A swim write names
+      // the lane; an unswim names the row, so both are compared on the id the
       // caller minted for it.
       return (
-        (old.kind === "seed" || old.kind === "unseed") &&
-        old.seedId === next.seedId
+        (old.kind === "swim" || old.kind === "unswim") &&
+        old.swimId === next.swimId
       );
     case "watch":
     case "drop-watch":
       return (
         (old.kind === "watch" || old.kind === "drop-watch") &&
-        old.seedId === next.seedId &&
+        old.swimId === next.swimId &&
         old.timerId === next.timerId
       );
     case "exhibition":
       // Toggled twice before either reaches the server is one answer, not two.
-      return old.kind === "exhibition" && old.seedId === next.seedId;
+      return old.kind === "exhibition" && old.swimId === next.swimId;
     case "result":
     case "unresult":
       return (
         (old.kind === "result" || old.kind === "unresult") &&
-        old.seedId === next.seedId
+        old.swimId === next.swimId
       );
     default:
       return false;

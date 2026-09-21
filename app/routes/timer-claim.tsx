@@ -8,8 +8,7 @@ import {
   grantCookie,
   grantFor,
 } from "~/lib/grants.server";
-import { timerPath } from "~/lib/timer-path";
-
+import { timerPath } from "~/lib/timer";
 /**
  * What a scanned QR code lands on, and never renders.
  *
@@ -80,11 +79,11 @@ export default function TimerClaim() {
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col items-center justify-center gap-3 px-6 text-center">
       <h1 className="text-lg font-bold text-slate-900 dark:text-white">
-        Not timing yet
+        Invalid or expired timing link
       </h1>
       <p className="text-sm text-slate-600 dark:text-slate-300">
         This timing link has expired, or it has been replaced by a newer one.
-        Scan the code on the timing table again.
+        See a meet administrator for a new code.
       </p>
     </main>
   );

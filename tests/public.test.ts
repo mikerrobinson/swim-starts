@@ -8,17 +8,11 @@ import {
   teamRef,
 } from "../app/lib/public.ts";
 import { defaultEvents } from "../app/lib/events.ts";
-import { buildSeeds } from "../app/lib/heats.ts";
+import { buildSwims } from "../app/lib/heats.ts";
 import { makeEnrollment } from "../app/lib/roster.ts";
 import { DUAL_MEET_SCORING } from "../app/types/meet.ts";
 import type { Athlete } from "../app/types/athlete.ts";
-import type {
-  Result,
-  Meet,
-  MeetDetail,
-  Seed,
-  Watch,
-} from "../app/types/meet.ts";
+import type { Meet, MeetDetail, Swim, Watch } from "../app/types/meet.ts";
 import type { Team } from "~/types/team.ts";
 
 /* ------------------------------------------------------------- redaction */
@@ -72,8 +66,15 @@ const athletes: Athlete[] = [
 
 const events = defaultEvents("m1", { course: "SCY" });
 const free50 = events.find((e) => e.distance === 50 && e.stroke === "Free")!;
-const seeds = buildSeeds("m1", free50.id, ["a1", "a9", "a2"], 6);
-const seedOf = (id: string) => seeds.find((s) => s.athleteId === id)!;
+const baseSwims = buildSwims("m1", free50.id, ["a1", "a9", "a2"], 6);
+// Marcus is disqualified — folded straight onto his swim row now, no
+// separate results table.
+const swims = baseSwims.map((s) =>
+  s.athleteId === "a2"
+    ? { ...s, status: "DQ" as const, officialTimeMs: 24_900, decidedAt: 4 }
+    : s,
+);
+const swimOf = (id: string) => swims.find((s) => s.athleteId === id)!;
 
 const meetRow: Meet = {
   id: "m1",
@@ -94,12 +95,15 @@ const meetRow: Meet = {
   scoring: DUAL_MEET_SCORING,
 };
 
+let watchSeq = 0;
 const watch = (athleteId: string, timeMs: number, at: number): Watch => ({
-  seedId: seedOf(athleteId).id,
-  timerId: "t1",
+  id: `w${++watchSeq}`,
+  swimId: swimOf(athleteId).id,
+  submittedBy: "t1",
   role: "timer" as const,
+  slot: 1,
   timeMs,
-  recordedAt: at,
+  submittedAt: at,
 });
 
 const detail: MeetDetail = {
@@ -107,23 +111,13 @@ const detail: MeetDetail = {
   teams: [home, away],
   events,
   entries: { [free50.id]: ["a1", "a9", "a2"] },
-  seeds,
-  // Dana is fastest, Avery second, Marcus is disqualified.
+  swims,
+  // Dana is fastest, Avery second, Marcus is disqualified (see `swims` above).
   watches: [
     watch("a9", 25_400, 1),
     watch("a1", 26_100, 2),
     watch("a2", 24_900, 3),
   ],
-  results: [
-    {
-      seedId: seedOf("a2").id,
-      eventId: free50.id,
-      athleteId: "a2",
-      status: "DQ",
-      timeMs: 24_900,
-      decidedAt: 4,
-    },
-  ] as Result[],
   athletes,
   enrollments: [
     makeEnrollment(home.id, "s1", "a1", { year: "10" }),
@@ -201,11 +195,11 @@ const detail: MeetDetail = {
 /* ---- exhibition ---- */
 {
   // Avery's swim doesn't count towards scoring or placing, but the time
-  // still stands — same detail as above, with her seed flagged.
-  const exhibitionSeeds = seeds.map((s) =>
+  // still stands — same detail as above, with her swim flagged.
+  const exhibitionSwims = swims.map((s) =>
     s.athleteId === "a1" ? { ...s, exhibition: true } : s,
   );
-  const exhibitionDetail: MeetDetail = { ...detail, seeds: exhibitionSeeds };
+  const exhibitionDetail: MeetDetail = { ...detail, swims: exhibitionSwims };
 
   const teamOf = (id: string) => {
     const enrolled = exhibitionDetail.enrollments.find(
@@ -250,13 +244,16 @@ const detail: MeetDetail = {
     { id: "z2", firstName: "Amber", lastName: "Diaz", gender: "F" },
     { id: "w1", firstName: "Aaron", lastName: "Young", gender: "F" },
   ];
-  const orderSeeds: Seed[] = [
+  const orderSwims: Swim[] = [
     {
       id: "sx",
+      meetId: "m9",
       eventId: free50.id,
       heat: 1,
       lane: 1,
       athleteId: "x1",
+      athleteName: "",
+      athleteTeam: "",
     },
     {
       id: "sy",
@@ -264,79 +261,76 @@ const detail: MeetDetail = {
       heat: 1,
       lane: 2,
       athleteId: "y1",
+      athleteName: "",
+      athleteTeam: "",
       exhibition: true,
     },
     {
       id: "sz1",
+      meetId: "m9",
       eventId: free50.id,
       heat: 1,
       lane: 3,
       athleteId: "z1",
+      athleteName: "",
+      athleteTeam: "",
+      status: "DQ",
+      officialTimeMs: 0,
+      decidedAt: 1,
     },
     {
       id: "sz2",
+      meetId: "m9",
       eventId: free50.id,
       heat: 1,
       lane: 4,
       athleteId: "z2",
+      athleteName: "",
+      athleteTeam: "",
+      status: "DQ",
+      officialTimeMs: 0,
+      decidedAt: 1,
     },
     {
       id: "sw",
+      meetId: "m9",
       eventId: free50.id,
       heat: 1,
       lane: 5,
       athleteId: "w1",
-    },
-  ];
-  const orderResults: Result[] = [
-    {
-      seedId: "sz1",
-      eventId: free50.id,
-      athleteId: "z1",
-      status: "DQ",
-      timeMs: 0,
-      decidedAt: 1,
-    },
-    {
-      seedId: "sz2",
-      eventId: free50.id,
-      athleteId: "z2",
-      status: "DQ",
-      timeMs: 0,
-      decidedAt: 1,
-    },
-    {
-      seedId: "sw",
-      eventId: free50.id,
-      athleteId: "w1",
+      athleteName: "",
+      athleteTeam: "",
       status: "NS",
-      timeMs: 0,
+      officialTimeMs: 0,
       decidedAt: 1,
     },
   ];
   const orderDetail: MeetDetail = {
     ...detail,
     meet: { ...meetRow, id: "m9" },
-    seeds: orderSeeds,
+    swims: orderSwims,
     entries: { [free50.id]: ["x1", "y1", "z1", "z2", "w1"] },
     watches: [
       // Yolanda's exhibition swim is the fastest time in the pool.
       {
-        seedId: "sx",
-        timerId: "t1",
+        id: "ow1",
+        swimId: "sx",
+        submittedBy: "t1",
         role: "timer",
+        slot: 1,
         timeMs: 30_000,
-        recordedAt: 1,
+        submittedAt: 1,
       },
       {
-        seedId: "sy",
-        timerId: "t1",
+        id: "ow2",
+        swimId: "sy",
+        submittedBy: "t1",
         role: "timer",
+        slot: 1,
         timeMs: 20_000,
-        recordedAt: 1,
+        submittedAt: 1,
       },
     ],
-    results: orderResults,
     athletes: orderAthletes,
     enrollments: [],
   };
@@ -358,34 +352,35 @@ const detail: MeetDetail = {
 
 /* ---- one athlete's history ---- */
 {
-  const secondSeeds = buildSeeds("m2", free50.id, ["a1"], 6);
+  const secondSwims = buildSwims("m2", free50.id, ["a1"], 6);
   const faster: MeetDetail = {
     ...detail,
     meet: { ...meetRow, id: "m2", name: "vs Central", date: "2027-01-10" },
-    seeds: secondSeeds,
+    swims: secondSwims,
     entries: { [free50.id]: ["a1"] },
-    results: [],
     watches: [
       {
-        seedId: secondSeeds[0].id,
-        timerId: "t1",
+        id: "fw1",
+        swimId: secondSwims[0].id,
+        submittedBy: "t1",
         role: "timer" as const,
+        slot: 1,
         timeMs: 25_800,
-        recordedAt: 5,
+        submittedAt: 5,
       },
     ],
   };
 
-  const swims = athleteSwims("a1", [detail, faster]);
-  eq(swims.length, 2, "both of Avery's swims");
-  eq(swims[0].date, "2027-01-10", "newest first");
+  const history = athleteSwims("a1", [detail, faster]);
+  eq(history.length, 2, "both of Avery's swims");
+  eq(history[0].date, "2027-01-10", "newest first");
   eq(
-    swims.map((s) => s.best),
+    history.map((s) => s.best),
     [true, false],
     "the faster one is the best",
   );
-  eq(swims[0].timeMs, 25_800, "and it's the one that actually was faster");
-  eq(swims[0].place, 1, "with the place it earned in that event");
+  eq(history[0].timeMs, 25_800, "and it's the one that actually was faster");
+  eq(history[0].place, 1, "with the place it earned in that event");
 
   // A time in another pool length is a different record entirely.
   const metric: MeetDetail = {

@@ -33,8 +33,18 @@ export default [
    * whatever the URL claimed.
    */
   route("t/:token", "routes/timer-claim.tsx"),
-  route("meets/:meetId/timer", "routes/timer-lanes.tsx"),
-  route("meets/:meetId/timer/:event/:heat/:lane", "routes/timer.tsx"),
+  // One loader for the whole workspace: the meet's live state, and — the
+  // unusual part — applying whatever `seed-*` cookies rode in with this
+  // request before either child ever renders. See timer-shell.tsx.
+  route("meets/:meetId/timer", "routes/timer-shell.tsx", [
+    index("routes/timer-lanes.tsx"),
+    route(":event/:heat/:lane", "routes/timer.tsx"),
+  ]),
+
+  route("meets2/:meetId/timer", "routes/meets2.tsx", [
+    index("routes/timer-lanes2.tsx"),
+    route(":event/:heat/:lane", "routes/timer2.tsx"),
+  ]),
 
   layout("routes/shell.tsx", [
     index("routes/home.tsx"),
@@ -107,14 +117,4 @@ export default [
   // The meet's live connection: a WebSocket upgrade onto the meet's Durable
   // Object, which broadcasts every accepted write. See api.meet.live.ts.
   route("api/meets/:meetId/live", "routes/api.meet.live.ts"),
-
-  // Timers. A meet-scoped grant, not an account.
-  // One lane, one timer. The phone posts here and the browser brings whatever
-  // that lane still owes along with it, as cookies scoped to this very path.
-  route(
-    "api/meets/:meetId/timer/:event/:heat/:lane",
-    "routes/api.timer.lane.ts",
-  ),
-
-  route("api/timer/meet", "routes/api.timer.meet.ts"),
 ] satisfies RouteConfig;

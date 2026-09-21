@@ -1,9 +1,6 @@
 import { done, eq } from "./harness.ts";
 import {
   eventClosed,
-  fromDevice,
-  slotTimerId,
-  watchSlot,
   eventTouched,
   fromStopwatch,
   heatClosed,
@@ -12,49 +9,62 @@ import {
   laneTime,
   proposedTime,
   recordedCount,
-  resultFor,
-  seedsForHeat,
+  swimsForHeat,
   swimTime,
   truncateToHundredths,
-  watchesOn,
+  currentWatches,
+  type TimingRows,
 } from "../app/lib/timing.ts";
-import type { Result, Seed, Watch } from "../app/types/meet.ts";
+import type { ResultStatus, Swim, Watch } from "../app/types/meet.ts";
 
 const MEET = "m1";
 const EVENT = "e1";
 
-function seed(id: string, heat: number, lane: number, athleteId: string): Seed {
-  return { id, eventId: EVENT, heat, lane, athleteId };
-}
-
-function watch(
-  seedId: string,
-  timerId: string,
-  timeMs: number | undefined,
-  extra: Partial<Watch> = {},
-): Watch {
+function swim(
+  id: string,
+  heat: number,
+  lane: number,
+  athleteId: string,
+  extra: Partial<Swim> = {},
+): Swim {
   return {
-    seedId,
-    timerId,
-    role: "timer",
-    timeMs,
-    recordedAt: 1_000,
+    id,
+    meetId: MEET,
+    eventId: EVENT,
+    heat,
+    lane,
+    athleteId,
+    athleteName: "",
+    athleteTeam: "",
     ...extra,
   };
 }
 
-function result(
-  seedId: string,
+/** A swim with a decision already on it — what `decideResult` writes. */
+function decided(
+  base: Swim,
   timeMs: number,
-  status: Result["status"] = "OK",
-): Result {
+  status: ResultStatus = "OK",
+): Swim {
+  return { ...base, status, officialTimeMs: timeMs, decidedAt: 2_000 };
+}
+
+let watchSeq = 0;
+function watch(
+  swimId: string,
+  submittedBy: string,
+  timeMs: number | undefined,
+  extra: Partial<Watch> = {},
+): Watch {
   return {
-    seedId,
-    eventId: EVENT,
-    athleteId: "a1",
-    status,
+    id: `w${++watchSeq}`,
+    swimId,
+    submittedBy,
+    role: "timer",
+    slot: 1,
     timeMs,
-    decidedAt: 2_000,
+    submittedAt: 1_000,
+    ...extra,
   };
 }
 
@@ -92,7 +102,7 @@ eq(
 /* ------------------------------------------------ which time is the time */
 
 {
-  const s = seed("s1", 1, 4, "a1");
+  const s = swim("s1", 1, 4, "a1");
   const timers = [
     watch("s1", "d-1", 27_140),
     watch("s1", "d-2", 27_160),
@@ -157,16 +167,16 @@ eq(
     "a watch came off a stopwatch exactly when it carries both timestamps",
   );
 
-  /* --- a result outranks everything, and doesn't move --- */
-  const rows = { seeds: [s], watches: timers, results: [] as Result[] };
+  /* --- a decision outranks everything, and doesn't move --- */
+  const rows: TimingRows = { swims: [s], watches: timers };
   eq(
     swimTime(rows, "s1")?.timeMs,
     27_160,
-    "with no result, the watches propose",
+    "with no decision, the watches propose",
   );
   eq(swimTime(rows, "s1")?.official, false, "and a proposal is not official");
 
-  const signed = { ...rows, results: [result("s1", 27_160)] };
+  const signed: TimingRows = { ...rows, swims: [decided(s, 27_160)] };
   eq(swimTime(signed, "s1")?.official, true, "a signed-off swim is official");
   eq(
     swimTime(
@@ -186,8 +196,8 @@ eq(
 /* ------------------------------------ how far along a swim's timing is */
 
 {
-  const s = seed("s1", 1, 1, "a1");
-  const base = { seeds: [s], results: [] as Result[] };
+  const s = swim("s1", 1, 1, "a1");
+  const base: TimingRows = { swims: [s], watches: [] };
 
   eq(
     laneProgress({ ...base, watches: [] }, "s1"),
@@ -244,43 +254,52 @@ eq(
 /* ---------------------------------------------------------------- closing */
 
 {
-  const seeds = [
-    seed("s1", 1, 3, "a1"),
-    seed("s2", 1, 4, "a2"),
-    seed("s3", 2, 3, "a3"),
+  const swims = [
+    swim("s1", 1, 3, "a1"),
+    swim("s2", 1, 4, "a2"),
+    swim("s3", 2, 3, "a3"),
   ];
-  const rows = { seeds, watches: [] as Watch[], results: [] as Result[] };
+  const rows: TimingRows = { swims, watches: [] };
 
   eq(
     heatsOf(rows, EVENT),
     [1, 2],
-    "an event's heats are the distinct heats of its seeds",
+    "an event's heats are the distinct heats of its swims",
   );
   eq(
-    seedsForHeat(rows, EVENT, 1).map((s) => s.lane),
+    swimsForHeat(rows, EVENT, 1).map((s) => s.lane),
     [3, 4],
     "in lane order",
   );
   eq(heatClosed(rows, EVENT, 1), false, "nothing signed off, nothing closed");
   eq(eventClosed(rows, EVENT), false, "nor the event");
 
-  const one = { ...rows, results: [result("s1", 27_140)] };
+  const one: TimingRows = {
+    ...rows,
+    swims: swims.map((s) => (s.id === "s1" ? decided(s, 27_140) : s)),
+  };
   eq(
     heatClosed(one, EVENT, 1),
     false,
     "one of two swims signed off is not a closed heat",
   );
 
-  const heat1 = {
+  const heat1: TimingRows = {
     ...rows,
-    results: [result("s1", 27_140), result("s2", 27_500)],
+    swims: swims.map((s) =>
+      s.id === "s1"
+        ? decided(s, 27_140)
+        : s.id === "s2"
+          ? decided(s, 27_500)
+          : s,
+    ),
   };
   eq(heatClosed(heat1, EVENT, 1), true, "both signed off closes the heat");
   eq(eventClosed(heat1, EVENT), false, "but heat 2 is still out");
 
-  const all = {
+  const all: TimingRows = {
     ...rows,
-    results: [result("s1", 1), result("s2", 2), result("s3", 3)],
+    swims: swims.map((s, i) => decided(s, i + 1)),
   };
   eq(
     eventClosed(all, EVENT),
@@ -290,7 +309,7 @@ eq(
 
   // An event with nothing seeded hasn't started, so it isn't finished either.
   eq(
-    eventClosed({ seeds: [], watches: [], results: [] }, EVENT),
+    eventClosed({ swims: [], watches: [] }, EVENT),
     false,
     "an unseeded event is not closed",
   );
@@ -299,36 +318,29 @@ eq(
 /* ------------------------------------------------- reseeding's guard rail */
 
 {
-  const seeds = [seed("s1", 1, 3, "a1")];
+  const s1 = swim("s1", 1, 3, "a1");
   eq(
-    eventTouched({ seeds, watches: [], results: [] }, EVENT),
+    eventTouched({ swims: [s1], watches: [] }, EVENT),
     false,
     "an event nobody has timed can be reseeded",
   );
   eq(
-    eventTouched(
-      { seeds, watches: [watch("s1", "d-1", 27_140)], results: [] },
-      EVENT,
-    ),
+    eventTouched({ swims: [s1], watches: [watch("s1", "d-1", 27_140)] }, EVENT),
     true,
     "one watch is enough to make it history",
   );
   eq(
-    eventTouched(
-      { seeds, watches: [], results: [result("s1", 27_140)] },
-      EVENT,
-    ),
+    eventTouched({ swims: [decided(s1, 27_140)], watches: [] }, EVENT),
     true,
-    "so is a result with no watch behind it — a DQ is still a record",
+    "so is a decision with no watch behind it — a DQ is still a record",
   );
   // A watch still running counts too: a reseed mid-heat would move the lane
   // out from under a thumb that is already down.
   eq(
     eventTouched(
       {
-        seeds,
+        swims: [s1],
         watches: [watch("s1", "d-1", undefined, { startedAt: 1 })],
-        results: [],
       },
       EVENT,
     ),
@@ -340,33 +352,31 @@ eq(
 /* ------------------------------------------------------------- counting */
 
 {
-  const seeds = [seed("s1", 1, 3, "a1"), seed("s2", 1, 4, "a2")];
+  const s1 = swim("s1", 1, 3, "a1");
+  const s2 = swim("s2", 1, 4, "a2");
   eq(
     recordedCount({
+      swims: [s1, s2],
       watches: [
         watch("s1", "d-1", 27_140),
         watch("s2", "d-2", undefined, { startedAt: 1 }),
       ],
-      results: [],
     }),
     1,
     "a running stopwatch is not a time recorded",
   );
   eq(
-    recordedCount({ watches: [], results: [result("s1", 27_140)] }),
+    recordedCount({ swims: [decided(s1, 27_140)], watches: [] }),
     1,
     "a signed-off swim is, even with no watch left under it",
   );
   eq(
-    watchesOn({ watches: [watch("s1", "d-1", 1), watch("s2", "d-1", 2)] }, "s1")
-      .length,
+    currentWatches(
+      { watches: [watch("s1", "d-1", 1), watch("s2", "d-1", 2)] },
+      "s1",
+    ).length,
     1,
     "watches are read per swim",
-  );
-  eq(
-    resultFor({ results: [result("s1", 1)] }, "s2"),
-    undefined,
-    "and results likewise",
   );
 }
 
@@ -381,12 +391,9 @@ eq(
  * onto the same row.
  */
 {
-  const unnamed = seed("s9", 1, 5, "");
+  const unnamed = swim("s9", 1, 5, "");
   eq(
-    swimTime(
-      { seeds: [unnamed], watches: [watch("s9", "d-1", 27_140)], results: [] },
-      "s9",
-    ),
+    swimTime({ swims: [unnamed], watches: [watch("s9", "d-1", 27_140)] }, "s9"),
     {
       timeMs: 27_140,
       method: "single",
@@ -399,7 +406,7 @@ eq(
     "an unnamed lane's watch still proposes a time",
   );
   eq(
-    recordedCount({ watches: [watch("s9", "d-1", 27_140)], results: [] }),
+    recordedCount({ swims: [unnamed], watches: [watch("s9", "d-1", 27_140)] }),
     1,
     "and it counts as a time the meet has recorded",
   );
@@ -409,7 +416,7 @@ eq(
     "and the desk sees the lane as covered",
   );
   eq(
-    seedsForHeat({ seeds: [unnamed] }, EVENT, 1).length,
+    swimsForHeat({ swims: [unnamed] }, EVENT, 1).length,
     1,
     "the swim is in its heat like any other",
   );
@@ -420,44 +427,20 @@ eq(
 /**
  * A lane timed by three people used to mean three phones. It usually means one
  * phone holding the sheet and three handheld watches read onto it — and those
- * still have to be three rows, because `watches` is keyed one per submitter.
- *
- * The first watch keeps the bare device id, so a phone that is itself the
- * stopwatch and a clipboard's first column are the same row rather than two.
- * That is what makes swapping between the two mid-meet harmless.
+ * still have to be three rows, since `watches` carries one per submitter *and*
+ * slot. `slot` is a plain field now (no id-string encoding to parse), so a
+ * clipboard's three columns are just three watches sharing a `submittedBy`
+ * and differing only in `slot`.
  */
-eq(slotTimerId("d-abc", 1), "d-abc", "the first watch is just the device");
-eq(slotTimerId("d-abc", 3), "d-abc#3", "the rest say which watch they are");
-eq(watchSlot("d-abc"), 1, "a plain timer is watch one");
-eq(watchSlot("d-abc#3"), 3, "and a slotted one says so");
-eq(
-  watchSlot("d-abc#nonsense"),
-  1,
-  "garbage after the marker is still watch one",
-);
-eq(
-  fromDevice("d-abc#2", "d-abc"),
-  true,
-  "a column belongs to the device holding it",
-);
-eq(fromDevice("d-abc", "d-abc"), true, "so does the bare one");
-eq(
-  fromDevice("d-abcdef", "d-abc"),
-  false,
-  "and a device whose id merely starts the same does not",
-);
-
-// The point of the third watch, filed by one phone: it outvotes the slow
-// thumb rather than dragging an average toward it.
 {
-  const s10 = seed("s10", 1, 4, "a1");
+  const s10 = swim("s10", 1, 4, "a1");
   const sheet = [
-    watch("s10", slotTimerId("d-1", 1), 27_140),
-    watch("s10", slotTimerId("d-1", 2), 27_200),
-    watch("s10", slotTimerId("d-1", 3), 28_900),
+    watch("s10", "d-1", 27_140, { slot: 1 }),
+    watch("s10", "d-1", 27_200, { slot: 2 }),
+    watch("s10", "d-1", 28_900, { slot: 3 }),
   ];
   eq(
-    swimTime({ seeds: [s10], watches: sheet, results: [] }, "s10"),
+    swimTime({ swims: [s10], watches: sheet }, "s10"),
     {
       timeMs: 27_200,
       method: "median",
@@ -474,16 +457,32 @@ eq(
     "complete",
     "and the desk reads the lane as covered by all three",
   );
-  // A clipboard that armed three and submitted two: the third row is deleted
-  // on the way in (`api.timer.lane.ts`), so the lane is not left waiting on a
-  // watch nobody is holding.
   eq(
     laneProgress(
-      { watches: [sheet[0], watch("s10", slotTimerId("d-1", 2), undefined)] },
+      { watches: [sheet[0], watch("s10", "d-1", undefined, { slot: 2 })] },
       "s10",
     ),
     "waiting",
     "a column still running is a lane still waiting",
+  );
+
+  // Append-only: a correction is a new row for the same slot, and the older
+  // one stays behind it as history — `currentWatches` picks the latest.
+  const corrected = watch("s10", "d-1", 27_150, {
+    slot: 1,
+    submittedAt: 2_000,
+  });
+  eq(
+    currentWatches({ watches: [...sheet, corrected] }, "s10").find(
+      (w) => w.slot === 1,
+    )?.timeMs,
+    27_150,
+    "the latest row for a slot is its current state",
+  );
+  eq(
+    swimTime({ swims: [s10], watches: [...sheet, corrected] }, "s10")?.timeMs,
+    27_200,
+    "and the median is worked out from current state, not every historical row",
   );
 }
 

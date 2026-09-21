@@ -29,7 +29,8 @@ import type {
   MeetCourse,
   MeetDetail,
   MeetType,
-  Result,
+  ResultStatus,
+  Swim,
 } from "~/types/meet";
 import type { Team } from "~/types/team";
 
@@ -142,7 +143,7 @@ export interface PublicPlacing {
   lane: number;
   heat: number;
   timeMs: number;
-  status: Result["status"];
+  status: ResultStatus;
   /** How the time was arrived at — "median of three", and so on. */
   watchCount: number;
   /**
@@ -183,8 +184,8 @@ export interface PublicMeetDetail extends PublicMeetSummary {
  * every reload.
  */
 function resultGroup(row: {
-  status: Result["status"];
-  seed: Pick<Seed, "exhibition">;
+  status: ResultStatus;
+  seed: Pick<Swim, "exhibition">;
 }): 0 | 1 | 2 | 3 {
   if (row.status === "DQ") return 2;
   if (row.status !== "OK") return 3;
@@ -212,9 +213,9 @@ export function meetResults(
    * time never arrived — a hole rather than a result, and not something to
    * publish a blank line for.
    */
-  const swims = detail.seeds
+  const swims = detail.swims
     .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
-    .filter((row): row is { seed: Seed; time: SwimTime } => row.time !== null);
+    .filter((row): row is { seed: Swim; time: SwimTime } => row.time !== null);
 
   return detail.events.map((event) => {
     const forEvent = swims
@@ -278,7 +279,7 @@ export interface AthleteSwim {
   /** Groups a swimmer's times for the same race across a season. */
   raceKey: string;
   timeMs: number;
-  status: Result["status"];
+  status: ResultStatus;
   /** Place within that event, across all of its heats. */
   place: number | null;
   /** True for the fastest clean swim of this race in this course. */
@@ -308,10 +309,10 @@ export function athleteSwims(
   for (const detail of meets) {
     const meet = detail.meet;
     const events = new Map(detail.events.map((e) => [e.id, e] as const));
-    const all = detail.seeds
+    const all = detail.swims
       .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
       .filter(
-        (row): row is { seed: Seed; time: SwimTime } => row.time !== null,
+        (row): row is { seed: Swim; time: SwimTime } => row.time !== null,
       );
 
     for (const { seed, time } of all) {

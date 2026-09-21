@@ -1,6 +1,15 @@
 import { generateId } from "./id";
-import { eventTouched, seedsForEvent, type TimingRows } from "./timing";
-import type { LaneAssignments, LaneCount, Seed } from "~/types/meet";
+import { eventTouched, swimsForEvent, type TimingRows } from "./timing";
+import type { LaneAssignments, LaneCount, Swim } from "~/types/meet";
+
+/** Name/team to stamp on a newly created swim — see `Swim.athleteName`. */
+export type DisplayOf = (athleteId: string) => { name: string; team: string };
+const blankDisplay: DisplayOf = () => ({ name: "", team: "" });
+
+/** An entrant's exhibition flag, copied onto a swim only when it's created —
+ *  see `Entry.exhibition` and `Swim.exhibition`. */
+export type ExhibitionOf = (athleteId: string) => boolean | undefined;
+const noExhibition: ExhibitionOf = () => undefined;
 
 /**
  * Lane assignment order, fastest lane first. Standard practice puts the top
@@ -31,16 +40,16 @@ export function laneOrder(laneCount: LaneCount): number[] {
  * that's how meets actually run it, so the last heat is full. Within a heat,
  * swimmers fill lanes from the middle outward.
  *
- * One seed per swimmer, and none for the lanes nobody is in: a lane with
+ * One swim per swimmer, and none for the lanes nobody is in: a lane with
  * nobody in it isn't a planned swim, and a heat is the distinct heats across
- * the seeds rather than a row of its own.
+ * the swims rather than a row of its own.
  */
-export function buildSeeds(
+export function buildSwims(
   meetId: string,
   eventId: string,
   athleteIds: string[],
   laneCount: LaneCount,
-): Seed[] {
+): Swim[] {
   if (athleteIds.length === 0) return [];
 
   const order = laneOrder(laneCount);
@@ -48,7 +57,7 @@ export function buildSeeds(
   const remainder = athleteIds.length % laneCount;
   const firstHeatSize = remainder === 0 ? laneCount : remainder;
 
-  const seeds: Seed[] = [];
+  const swims: Swim[] = [];
   let cursor = 0;
 
   for (let index = 0; index < heatCount; index++) {
@@ -57,17 +66,19 @@ export function buildSeeds(
     cursor += size;
 
     group.forEach((athleteId, i) => {
-      seeds.push({
+      swims.push({
         id: generateId(),
         eventId,
         heat: index + 1,
         lane: order[i],
         athleteId,
+        athleteName: "",
+        athleteTeam: "",
       });
     });
   }
 
-  return seeds;
+  return swims;
 }
 
 /**
@@ -86,20 +97,26 @@ export function buildSeeds(
  * lanes, bumping out whatever overflow was borrowing them, rather than being
  * pushed into an extra heat by swimmers who got there first.
  *
- * Where a swimmer lands back in the seat they already had, the seed keeps its
- * id — the same rule this always followed, so a watch already taken on an
- * untouched swim (there can't be one, but a caller composing this with other
- * changes might still care) would still point at the right row.
+ * Where a swimmer lands back in the seat they already had, the swim keeps its
+ * id and every other field untouched — the same rule this always followed,
+ * so a watch already taken on an untouched swim (there can't be one, but a
+ * caller composing this with other changes might still care) would still
+ * point at the right row, and a lane-level exhibition override a reseed of
+ * the rest of the event shouldn't clobber survives. `displayOf`/
+ * `exhibitionOf` are only consulted for a swim that's freshly created here —
+ * moved or brand new — never for one that's kept as-is.
  */
 export function seedEvent(
-  rows: Pick<TimingRows, "seeds">,
+  rows: Pick<TimingRows, "swims">,
   meetId: string,
   eventId: string,
   entrants: string[],
   teamOf: (athleteId: string) => string | undefined,
   laneAssignments: LaneAssignments,
   laneCount: LaneCount,
-): Seed[] {
+  displayOf: DisplayOf = blankDisplay,
+  exhibitionOf: ExhibitionOf = noExhibition,
+): Swim[] {
   if (entrants.length === 0) return [];
 
   const heatCount = Math.ceil(entrants.length / laneCount);
@@ -152,7 +169,7 @@ export function seedEvent(
   overflow.forEach((athleteId, i) => seatOf.set(athleteId, open[i]));
 
   const existing = new Map(
-    seedsForEvent(rows, eventId).map(
+    swimsForEvent(rows, eventId).map(
       (s) => [`${s.heat}/${s.lane}`, s] as const,
     ),
   );
@@ -160,15 +177,18 @@ export function seedEvent(
   return entrants.map((athleteId) => {
     const seat = seatOf.get(athleteId)!;
     const before = existing.get(`${seat.heat}/${seat.lane}`);
-    return before && before.athleteId === athleteId
-      ? { ...before }
-      : {
-          id: generateId(),
-          eventId,
-          heat: seat.heat,
-          lane: seat.lane,
-          athleteId,
-        };
+    if (before && before.athleteId === athleteId) return { ...before };
+    const display = displayOf(athleteId);
+    return {
+      id: generateId(),
+      eventId,
+      heat: seat.heat,
+      lane: seat.lane,
+      athleteId,
+      athleteName: display.name,
+      athleteTeam: display.team,
+      exhibition: exhibitionOf(athleteId),
+    };
   });
 }
 
@@ -190,7 +210,9 @@ export function reseedEvent(
   teamOf: (athleteId: string) => string | undefined,
   laneAssignments: LaneAssignments,
   laneCount: LaneCount,
-): Seed[] | null {
+  displayOf: DisplayOf = blankDisplay,
+  exhibitionOf: ExhibitionOf = noExhibition,
+): Swim[] | null {
   if (eventTouched(rows, eventId)) return null;
   return seedEvent(
     rows,
@@ -200,5 +222,7 @@ export function reseedEvent(
     teamOf,
     laneAssignments,
     laneCount,
+    displayOf,
+    exhibitionOf,
   );
 }

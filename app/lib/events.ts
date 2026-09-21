@@ -8,6 +8,7 @@ import type {
   Event,
   Stroke,
 } from "~/types/meet";
+import type { Gender } from "~/types/athlete";
 
 /**
  * What the entry-limit checks need: the programme, who's in what, and the

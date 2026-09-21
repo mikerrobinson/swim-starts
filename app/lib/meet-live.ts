@@ -32,9 +32,8 @@ export interface MeetLiveState {
 
 const EMPTY_SNAPSHOT: MeetSnapshot = {
   entries: {},
-  seeds: [],
+  swims: [],
   watches: [],
-  results: [],
   athletes: [],
 };
 

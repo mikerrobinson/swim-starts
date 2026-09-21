@@ -2,17 +2,17 @@ import { done, eq } from "./harness.ts";
 import { earliestAllowed, newVisitingAthlete, runningOrder } from "../app/lib/timer.ts";
 import { grantExpiry } from "../app/lib/grants.server.ts";
 import { defaultEvents } from "../app/lib/events.ts";
-import { buildSeeds } from "../app/lib/heats.ts";
-import type { Seed } from "../app/types/meet.ts";
+import { buildSwims } from "../app/lib/heats.ts";
+import type { Swim } from "../app/types/meet.ts";
 
 /* ------------------------------------------------------- the running order */
 
 const events = defaultEvents("m1", { course: "SCY" }).slice(0, 3);
 // Twelve entrants over six lanes is two heats; four is one. The middle event
 // is left unseeded, which is the case that matters.
-const seeds: Seed[] = [
-  ...buildSeeds("m1", events[0].id, ["a1", "a2", "a3", "a4", "a5", "a6", "a7"], 6),
-  ...buildSeeds("m1", events[2].id, ["a1", "a2"], 6),
+const seeds: Swim[] = [
+  ...buildSwims("m1", events[0].id, ["a1", "a2", "a3", "a4", "a5", "a6", "a7"], 6),
+  ...buildSwims("m1", events[2].id, ["a1", "a2"], 6),
 ];
 
 {

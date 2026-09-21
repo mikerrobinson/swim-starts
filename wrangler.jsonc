@@ -23,12 +23,6 @@
   "durable_objects": {
     "bindings": [{ "name": "MEET_DO", "class_name": "MeetDurableObject" }],
   },
-  "exports": {
-    "MeetDurableObject": {
-      "type": "durable-object",
-      "storage": "sqlite",
-    },
-  },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MeetDurableObject"] }],
   // Optional shared secret. Set it with
   // `npx wrangler secret put SYNC_TOKEN` to stop anyone else from reading or

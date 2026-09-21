@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Sheet, TextInput } from "./ui";
-import { seedsForEvent, swimTime } from "~/lib/timing";
+import { swimsForEvent, swimTime } from "~/lib/timing";
 import {
   byAthlete,
   displayName,
@@ -12,6 +12,7 @@ import {
 import { type NameOrder } from "~/types/preferences";
 import { type Enrollment } from "~/types/team";
 import type { Athlete } from "~/types/athlete";
+
 interface Candidate {
   athlete: Athlete;
   /** Where they already sit in this event, if anywhere. */
@@ -73,14 +74,14 @@ export function LaneAssignSheet({
     // Where everybody in this event already sits, so the picker can say
     // "already in heat 2, lane 4" rather than silently moving them.
     const seats = new Map<string, { heatNumber: number; lane: number }>();
-    for (const seed of seedsForEvent(detail, eventId)) {
+    for (const seed of swimsForEvent(detail, eventId)) {
       seats.set(seed.athleteId, { heatNumber: seed.heat, lane: seed.lane });
     }
 
     // Anyone whose swim in this event already has a time. Moving them would
     // move the time with them.
     const swum = new Set(
-      seedsForEvent(detail, eventId)
+      swimsForEvent(detail, eventId)
         .filter((seed) => swimTime(detail, seed.id) !== null)
         .map((seed) => seed.athleteId),
     );

@@ -19,18 +19,17 @@ import { formatClock, formatTime, parseTime } from "~/lib/time";
 import { enrollmentIndex } from "~/lib/roster";
 import { generateId } from "~/lib/id";
 import {
+  currentWatches,
   fromStopwatch,
   heatClosed,
   heatsOf,
   laneProgress,
   laneTime,
   OK_DISCREPANCY_MS,
-  resultFor,
   runningWatches,
-  seedsForHeat,
+  swimsForHeat,
   stoppedWatches,
   swimTime,
-  watchesOn,
 } from "~/lib/timing";
 import { useSend } from "~/state/outbox";
 import type { Write } from "~/lib/outbox";
@@ -194,7 +193,7 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
           nameOrder={nameOrder}
           onAssign={(athleteId) => {
             send({
-              kind: "seed",
+              kind: "swim",
               meetId: detail.meet.id,
               eventId: event.id,
               heat: assigning.heat,
@@ -203,7 +202,7 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
               // The id the server will use if this lane is new. When it isn't,
               // the server keeps the row that's there and this is ignored —
               // the overlay agrees either way.
-              seedId: generateId(),
+              swimId: generateId(),
             });
             setAssigning(null);
           }}
@@ -232,7 +231,7 @@ function HeatCard({
   me: string | null;
   onAssign: (lane: number) => void;
 }) {
-  const seeds = seedsForHeat(detail, event.id, heat);
+  const seeds = swimsForHeat(detail, event.id, heat);
   const closed = heatClosed(detail, event.id, heat);
 
   // Only while a thumb is actually down somewhere in this heat — a watch
@@ -290,10 +289,9 @@ function HeatCard({
   useEffect(() => {
     if (closed) return;
     for (const seed of seeds) {
-      const result = resultFor(detail, seed.id);
-      const derived = laneTime(watchesOn(detail, seed.id));
+      const derived = laneTime(currentWatches(detail, seed.id));
 
-      if (!result) {
+      if (!seed.status) {
         if (
           derived &&
           (derived.discrepancyMs === null ||
@@ -302,7 +300,7 @@ function HeatCard({
           send({
             kind: "result",
             meetId: detail.meet.id,
-            seedId: seed.id,
+            swimId: seed.id,
             status: "OK",
             timeMs: derived.timeMs,
             auto: true,
@@ -311,19 +309,19 @@ function HeatCard({
         continue;
       }
 
-      if (result.decidedBy !== "auto") continue;
+      if (seed.decidedBy !== "auto") continue;
 
       if (
         !derived ||
         (derived.discrepancyMs !== null &&
           derived.discrepancyMs > OK_DISCREPANCY_MS)
       ) {
-        send({ kind: "unresult", meetId: detail.meet.id, seedId: seed.id });
-      } else if (derived.timeMs !== result.timeMs) {
+        send({ kind: "unresult", meetId: detail.meet.id, swimId: seed.id });
+      } else if (derived.timeMs !== seed.officialTimeMs) {
         send({
           kind: "result",
           meetId: detail.meet.id,
-          seedId: seed.id,
+          swimId: seed.id,
           status: "OK",
           timeMs: derived.timeMs,
           auto: true,
@@ -339,14 +337,10 @@ function HeatCard({
   // and once a lane reads OK on its own, or there is nothing left to time,
   // there is nothing more the timing table can add.
   const anyActivity = seeds.some(
-    (seed) => watchesOn(detail, seed.id).length > 0,
+    (seed) => currentWatches(detail, seed.id).length > 0,
   );
-  const anyOk = seeds.some(
-    (seed) => resultFor(detail, seed.id)?.status === "OK",
-  );
-  const allNS =
-    seeds.length > 0 &&
-    seeds.every((seed) => resultFor(detail, seed.id)?.status === "NS");
+  const anyOk = seeds.some((seed) => seed.status === "OK");
+  const allNS = seeds.length > 0 && seeds.every((seed) => seed.status === "NS");
   const readyToComplete = anyOk || seeds.length === 0 || allNS;
 
   /**
@@ -359,12 +353,12 @@ function HeatCard({
    */
   const markComplete = () => {
     for (const seed of seeds) {
-      if (resultFor(detail, seed.id)) continue;
-      const derived = laneTime(watchesOn(detail, seed.id));
+      if (seed.status) continue;
+      const derived = laneTime(currentWatches(detail, seed.id));
       send({
         kind: "result",
         meetId: detail.meet.id,
-        seedId: seed.id,
+        swimId: seed.id,
         status: derived ? "OK" : "NS",
         timeMs: derived ? derived.timeMs : 0,
       });
@@ -375,8 +369,8 @@ function HeatCard({
    *  automatic status can pick the swims back up on its own. */
   const fixResults = () => {
     for (const seed of seeds) {
-      if (!resultFor(detail, seed.id)) continue;
-      send({ kind: "unresult", meetId: detail.meet.id, seedId: seed.id });
+      if (!seed.status) continue;
+      send({ kind: "unresult", meetId: detail.meet.id, swimId: seed.id });
     }
   };
 
@@ -575,14 +569,14 @@ function LaneRow({
   const [draft, setDraft] = useState<string | null>(null);
 
   /** The swim in this lane, if anybody has said who is in it. */
-  const seed = detail.seeds.find(
+  const seed = detail.swims.find(
     (s) => s.eventId === event.id && s.heat === heat && s.lane === lane,
   );
-  const watches = seed ? watchesOn(detail, seed.id) : [];
+  const watches = seed ? currentWatches(detail, seed.id) : [];
   const timed = watches.filter((w) => w.timeMs !== undefined);
   const running = seed ? runningWatches(detail, seed.id) : [];
   const stopped = seed ? stoppedWatches(detail, seed.id) : [];
-  const result = seed ? resultFor(detail, seed.id) : undefined;
+  const result = seed?.status ? seed : undefined;
   const accepted = seed ? swimTime(detail, seed.id) : null;
   const derived = laneTime(watches);
   const progress = seed ? laneProgress(detail, seed.id) : "none";
@@ -613,7 +607,7 @@ function LaneRow({
     send({
       kind: "watch",
       meetId: detail.meet.id,
-      seedId: seed.id,
+      swimId: seed.id,
       // The server files it under the signed-in user regardless; this is what
       // the optimistic overlay needs to agree with it about.
       timerId: me ?? "desk",
@@ -623,7 +617,7 @@ function LaneRow({
       // before the server answers.
       role: "admin",
       timeMs,
-      recordedAt: Date.now(),
+      submittedAt: Date.now(),
     });
   };
 
@@ -652,14 +646,16 @@ function LaneRow({
     setDraft(null);
     if (text === null || !seed || closed) return;
 
-    const mine = watches.find((w) => w.role === "admin" && w.timerId === me);
+    const mine = watches.find(
+      (w) => w.role === "admin" && w.submittedBy === me,
+    );
     if (text.trim() === "") {
       if (mine) {
         send({
           kind: "drop-watch",
           meetId: detail.meet.id,
-          seedId: seed.id,
-          timerId: mine.timerId,
+          swimId: seed.id,
+          timerId: mine.submittedBy,
         });
       }
       return;
@@ -683,7 +679,7 @@ function LaneRow({
     send({
       kind: "result",
       meetId: detail.meet.id,
-      seedId: seed.id,
+      swimId: seed.id,
       status,
       // A no-show or a disqualification needn't have a time behind it.
       timeMs: accepted?.timeMs ?? 0,
@@ -703,7 +699,7 @@ function LaneRow({
     send({
       kind: "exhibition",
       meetId: detail.meet.id,
-      seedId: seed.id,
+      swimId: seed.id,
       exhibition: !seed.exhibition,
     });
   };
@@ -806,8 +802,8 @@ function LaneRow({
               this is still counting up. */}
           {running.map((a) => (
             <span
-              key={`running-${a.timerId}`}
-              title={`Timer ${a.timerId} is still timing this lane`}
+              key={a.id}
+              title={`Timer ${a.submittedBy} is still timing this lane`}
               className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-amber-900 dark:bg-amber-950 dark:text-amber-200"
             >
               <span aria-hidden className="text-[0.6rem]">
@@ -826,8 +822,8 @@ function LaneRow({
               (and can't sign the lane off OK on the strength of it). */}
           {stopped.map((a) => (
             <span
-              key={`stopped-${a.timerId}`}
-              title={`Timer ${a.timerId} stopped their watch — waiting for it to submit`}
+              key={a.id}
+              title={`Timer ${a.submittedBy} stopped their watch — waiting for it to submit`}
               className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-300"
             >
               <span aria-hidden className="text-[0.6rem]">
@@ -853,9 +849,9 @@ function LaneRow({
             const counted = derived !== null && w.role === derived.from;
             return (
               <span
-                key={w.timerId}
+                key={w.id}
                 title={
-                  `${ROLE_LABEL[w.role]}${w.userId ? "" : ` ${w.timerId}`}` +
+                  `${ROLE_LABEL[w.role]}${w.userId ? "" : ` ${w.submittedBy}`}` +
                   (fromStopwatch(w) ? " · off a stopwatch" : " · typed in") +
                   (counted ? "" : " · not counted, outranked")
                 }
@@ -881,8 +877,8 @@ function LaneRow({
                     send({
                       kind: "drop-watch",
                       meetId: detail.meet.id,
-                      seedId: seed.id,
-                      timerId: w.timerId,
+                      swimId: seed.id,
+                      timerId: w.submittedBy,
                     })
                   }
                   className="text-red-600 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"

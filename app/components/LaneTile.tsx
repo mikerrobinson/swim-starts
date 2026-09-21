@@ -3,6 +3,7 @@ import type { SwimTime } from "~/lib/timing";
 import { displayName, type LaneLayout } from "~/types/meet";
 import { type NameOrder } from "~/types/preferences";
 import type { Athlete } from "~/types/athlete";
+
 /**
  * Grid tiles stack their content; list rows run it left to right so the lane
  * number sits in a fixed column down the edge, which is the whole point of the

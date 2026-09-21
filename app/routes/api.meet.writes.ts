@@ -80,16 +80,16 @@ export async function action({ params, request, context }: Route.ActionArgs) {
        * timer fixing a name behind the blocks all write this same row, and the
        * last one wins — because it is one person deciding one thing, not a
        * vote. Addressed by where the lane is rather than by a row id, because
-       * the seed may not exist yet: naming somebody behind the blocks is
-       * creating the swim, not editing one.
+       * the swim may not exist yet: naming somebody behind the blocks is
+       * creating it, not editing one. Never backports to an entry.
        */
-      case "seed":
-      case "unseed": {
+      case "swim":
+      case "unswim": {
         if (!mayRecordTime(access)) {
           throw new SyncError("Only the teams racing can seed a lane.", 403);
         }
-        if (write.kind === "unseed") {
-          await stub.unseat({ meetId: params.meetId, seedId: write.seedId });
+        if (write.kind === "unswim") {
+          await stub.unseat({ meetId: params.meetId, swimId: write.swimId });
           return json({ ok: true });
         }
         if (!Number.isInteger(write.heat) || write.heat < 1) {
@@ -98,20 +98,20 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         if (!Number.isInteger(write.lane) || write.lane < 1) {
           throw new SyncError("Which lane?", 400);
         }
-        // An empty athlete id is how a seed says "nobody has named this lane
+        // An empty athlete id is how a swim says "nobody has named this lane
         // yet", and only a time arriving for an unnamed lane may create one.
         // A seeding write means to put somebody somewhere, so a blank here is
         // a bug on the way in rather than a lane to be emptied.
         if (!write.athleteId) throw new SyncError("Which swimmer?", 400);
-        const seed = await stub.seat({
+        const swim = await stub.seat({
           meetId: params.meetId,
           eventId: write.eventId,
           heat: write.heat,
           lane: write.lane,
           athleteId: write.athleteId,
-          seedId: write.seedId,
+          swimId: write.swimId,
         });
-        return json({ seed });
+        return json({ swim });
       }
 
       /**
@@ -130,7 +130,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         }
         await stub.setExhibition({
           meetId: params.meetId,
-          seedId: write.seedId,
+          swimId: write.swimId,
           exhibition: write.exhibition,
         });
         return json({ ok: true });
@@ -169,7 +169,12 @@ export async function action({ params, request, context }: Route.ActionArgs) {
               403,
             );
           }
-          await stub.dropWatch({ meetId: params.meetId, seedId: write.seedId, timerId: whose });
+          await stub.dropWatch({
+            meetId: params.meetId,
+            swimId: write.swimId,
+            timerId: whose,
+            slot: write.slot,
+          });
           return json({ ok: true });
         }
 
@@ -184,12 +189,13 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
         await stub.recordWatch({
           meetId: params.meetId,
-          seedId: write.seedId,
+          swimId: write.swimId,
           timerId: submitter,
           userId: user?.id,
           role: access.admin ? "admin" : user ? "coach" : "timer",
+          slot: write.slot,
           timeMs: hasTime ? Math.round(timeMs) : undefined,
-          recordedAt: Number(write.recordedAt) || Date.now(),
+          submittedAt: Number(write.submittedAt) || Date.now(),
           startedAt: Number(write.startedAt) || undefined,
           stoppedAt: Number(write.stoppedAt) || undefined,
         });
@@ -215,7 +221,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
           throw new SyncError("Whoever is running this meet decides a lane.", 403);
         }
         if (write.kind === "unresult") {
-          await stub.undecideResult({ meetId: params.meetId, seedId: write.seedId });
+          await stub.undecideResult({ meetId: params.meetId, swimId: write.swimId });
           return json({ ok: true });
         }
 
@@ -224,7 +230,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
           await stub.decideResult(
             {
               meetId: params.meetId,
-              seedId: write.seedId,
+              swimId: write.swimId,
               status:
                 write.status === "DQ" || write.status === "NS" ? write.status : "OK",
               // A no-show or a disqualification with nothing on the clock is

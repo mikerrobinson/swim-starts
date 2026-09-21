@@ -20,7 +20,7 @@ export function useMeetLive(
   initialSnapshot?: MeetSnapshot,
 ): MeetLiveState {
   const [state, setState] = useState<MeetLiveState>(() => ({
-    snapshot: initialSnapshot ?? { entries: {}, seeds: [], watches: [], results: [], athletes: [] },
+    snapshot: initialSnapshot ?? { entries: {}, swims: [], watches: [], athletes: [] },
     connected: false,
   }));
 

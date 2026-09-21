@@ -1,11 +1,16 @@
 import { generateId } from "./id";
 import { formatTime } from "./time";
-import { fromStopwatch, swimTime, watchesOn, type SwimTime } from "./timing";
+import {
+  fromStopwatch,
+  swimTime,
+  currentWatches,
+  type SwimTime,
+} from "./timing";
 import {
   eventName,
   athleteName,
   type MeetDetail,
-  type Seed,
+  type Swim,
 } from "~/types/meet";
 import { type Enrollment } from "~/types/team";
 import type { Athlete, Gender } from "~/types/athlete";
@@ -304,11 +309,11 @@ export function resultsToCsv(
     ],
   ];
 
-  // Every swim that has a time. A seed with nothing against it is somebody
+  // Every swim that has a time. A swim with nothing against it is somebody
   // whose time never arrived, which is a hole rather than a row to export.
-  const swims = detail.seeds
+  const swims = detail.swims
     .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
-    .filter((row): row is { seed: Seed; time: SwimTime } => row.time !== null);
+    .filter((row): row is { seed: Swim; time: SwimTime } => row.time !== null);
 
   detail.events.forEach((event, eventIndex) => {
     const forEvent = swims.filter(({ seed }) => seed.eventId === event.id);
@@ -346,7 +351,9 @@ export function resultsToCsv(
         place.get(seed.id) ?? "",
         // Whether a stopwatch in this app ran the race, or the number was
         // typed in from a handheld or the board.
-        watchesOn(detail, seed.id).some(fromStopwatch) ? "stopwatch" : "manual",
+        currentWatches(detail, seed.id).some(fromStopwatch)
+          ? "stopwatch"
+          : "manual",
       ]);
     }
   });

@@ -15,11 +15,11 @@ import {
   type EventGender,
   type Event,
   type ScoringRules,
-  type Seed,
+  type Swim,
 } from "~/types/meet";
 
 export interface RankedSwim {
-  seed: Seed;
+  seed: Swim;
   time: SwimTime;
 }
 

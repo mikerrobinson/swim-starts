@@ -12,30 +12,8 @@
  * point of moving the timer onto the same tables as everything else.
  */
 
-import { meetDetail } from "./meets.server";
-import { fromDevice } from "./timing";
-import type { Grant } from "./grants.server";
-import {
-  withLiveTables,
-  type Event,
-  type MeetSnapshot,
-  type Seed,
-  type Watch,
-} from "~/types/meet";
-
-/** A team as a timer needs it: something to tap, and an id to send back. */
-export interface TimerTeam {
-  id: string;
-  name: string;
-}
-
-/** A person as a timer needs them: a name, and who they swim for. */
-export interface TimerAthlete {
-  id: string;
-  firstName: string;
-  lastName: string;
-  team?: string;
-}
+import type { TimerAthlete, TimerTeam } from "./timer";
+import type { MeetDetail, Event, Swim, Watch } from "~/types/meet";
 
 export interface TimerSnapshot {
   /** The server's clock, so six phones can be compared to one another later. */
@@ -63,7 +41,7 @@ export interface TimerSnapshot {
   ownTeam: string;
   /** In running order. */
   events: Event[];
-  seeds: Seed[];
+  swims: Swim[];
   /** eventId -> athleteIds registered in it. */
   entries: Record<string, string[]>;
   athletes: TimerAthlete[];
@@ -75,22 +53,20 @@ export interface TimerSnapshot {
   mine: Watch[];
 }
 
-export async function timerSnapshot(
-  db: D1Database,
-  grant: Grant,
+/**
+ * Takes the meet's detail already merged with the DO's live tables
+ * (`withLiveTables`) rather than assembling it itself — the caller needs
+ * that same merged `detail` for other things (resolving a seed cookie
+ * against it), and a timer phone's whole world is cheap enough that
+ * building it twice is pure waste, not a second source of truth to keep
+ * in sync.
+ */
+export function timerSnapshot(
+  detail: MeetDetail,
   timerId: string,
-  live: MeetSnapshot,
+  expiresAt: number,
   now = Date.now(),
-): Promise<TimerSnapshot | null> {
-  const loaded = await meetDetail(db, grant.meetId);
-  if (!loaded) return null;
-  // The DO is the source of truth for entries/seeds/watches/results the
-  // moment anything has touched the meet — a plain D1 read here would show
-  // whatever the last checkpoint happened to catch, up to
-  // `CHECKPOINT_INTERVAL_MS` stale, which is exactly what left a timer phone
-  // staring at "the coach hasn't set the heats" right after seeding ran.
-  const detail = withLiveTables(loaded, live);
-
+): TimerSnapshot {
   // Short labels to group the picker under, from the teams actually racing.
   const label = new Map(
     detail.teams.map((t) => [t.id, t.code || t.name] as const),
@@ -108,18 +84,22 @@ export async function timerSnapshot(
 
   return {
     serverTime: now,
-    expiresAt: grant.expiresAt,
+    expiresAt,
     meet: {
       id: detail.meet.id,
       name: detail.meet.name,
       date: detail.meet.date,
       laneCount: detail.meet.laneCount,
       timersPerLane: detail.meet.timersPerLane,
-      teams: detail.teams.map((t) => ({ id: t.id, name: t.name })),
+      teams: detail.teams.map((t) => ({
+        id: t.id,
+        name: t.name,
+        code: t.code,
+      })),
     },
     ownTeam: host || label.get(detail.meet.teamIds[0] ?? "") || "Home",
     events: detail.events,
-    seeds: detail.seeds,
+    swims: detail.swims,
     entries: detail.entries,
     // Selected fields only — a timer never receives a birth date, which is the
     // one thing on an athlete record worth guarding.
@@ -129,8 +109,8 @@ export async function timerSnapshot(
       lastName: a.lastName,
       team: teamOf.get(a.id) || undefined,
     })),
-    // A clipboard's watches are keyed to this same device with a column
-    // number after them, so "mine" is the device and everything in its hand.
-    mine: detail.watches.filter((w) => fromDevice(w.timerId, timerId)),
+    // A clipboard's watches (several slots, one submitter) are all filed
+    // under this same device id, so "mine" is everything this device holds.
+    mine: detail.watches.filter((w) => w.submittedBy === timerId),
   };
 }

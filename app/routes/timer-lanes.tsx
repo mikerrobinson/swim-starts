@@ -1,18 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/timer-lanes";
-import {
-  fetchSnapshot,
-  loadRole,
-  saveRole,
-  type Snapshot,
-  type TimerRole,
-} from "~/lib/timer";
+import type { loader as shellLoader } from "./timer-shell";
+import { loadRole, saveRole, type TimerRole } from "~/lib/timer";
 import { firstStopPath } from "~/lib/timer-path";
-
-export function meta({}: Route.MetaArgs) {
-  return [{ title: "Timing · Swim Starts" }];
-}
 
 /**
  * Standing behind a lane is the first thing that happens.
@@ -35,8 +26,10 @@ export function meta({}: Route.MetaArgs) {
  * device, so it is asked once and not again at every lane change.
  */
 export default function TimerLanes({ params }: Route.ComponentProps) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { snapshot } = useRouteLoaderData<typeof shellLoader>(
+    "routes/timer-shell",
+  )!;
+
   /**
    * What this phone is: its own stopwatch, or the clipboard for the lane.
    *
@@ -52,13 +45,6 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
     // hasn't gets the clipboard, because a coach only sets "three timers a
     // lane" when the lanes have three watches on them and one sheet.
     setRole(loadRole() ?? "clipboard");
-    fetchSnapshot()
-      .then(setSnapshot)
-      .catch((err: unknown) =>
-        setError(
-          err instanceof Error ? err.message : "Couldn't load the meet.",
-        ),
-      );
   }, []);
 
   const choose = (next: TimerRole) => {
@@ -66,26 +52,7 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
     saveRole(params.meetId, next);
   };
 
-  if (error) {
-    return (
-      <main className="flex min-h-screen items-center justify-center p-6">
-        <div className="max-w-sm text-center">
-          <p className="text-lg font-bold">Not timing yet</p>
-          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-            {error}
-          </p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!snapshot) {
-    return (
-      <main className="flex min-h-screen items-center justify-center text-slate-400">
-        Loading…
-      </main>
-    );
-  }
+  if (!snapshot) return null;
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center p-6">

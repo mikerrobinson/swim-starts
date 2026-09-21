@@ -13,8 +13,8 @@
  * contract, not a detail of how the queue happens to work.
  */
 
-import type { Athlete } from "~/types/athlete";
 import type { ResultStatus, WatchRole } from "~/types/meet";
+import type { Athlete } from "~/types/athlete";
 
 /** One thing somebody did. */
 export type Write =
@@ -24,36 +24,46 @@ export type Write =
       eventId: string;
       athleteId: string;
       entering: boolean;
+      /** Decided at entry time, copied onto the swim the next seeding
+       *  creates for this entry. See `Entry.seedTimeMs`/`Entry.exhibition`. */
+      seedTimeMs?: number;
+      exhibition?: boolean;
     }
   /**
    * Put somebody in a lane, by where the lane is rather than by a row id.
    *
    * Addressed as event/heat/lane because that is what the person doing it can
-   * see — and because the seed may not exist yet, which is the whole point: a
-   * timer naming somebody behind the blocks is creating the swim.
+   * see — and because the swim may not exist yet, which is the whole point: a
+   * timer naming somebody behind the blocks is creating it. Never backports
+   * to an entry — an un-entered swim is allowed to exist and stay that way.
    */
   | {
-      kind: "seed";
+      kind: "swim";
       meetId: string;
       eventId: string;
       heat: number;
       lane: number;
       athleteId: string;
       /** What the server will call it, so the overlay agrees about the id. */
-      seedId: string;
+      swimId: string;
     }
-  | { kind: "unseed"; meetId: string; seedId: string }
+  | { kind: "unswim"; meetId: string; swimId: string }
   /**
    * Whether a swim counts towards scoring and placing.
    *
    * Open to whoever may record a time, not just the desk — it's known before
-   * there's a result to sign off, and often by whoever's standing at the lane.
+   * there's anything to sign off, and often by whoever's standing at the lane.
    */
-  | { kind: "exhibition"; meetId: string; seedId: string; exhibition: boolean }
+  | { kind: "exhibition"; meetId: string; swimId: string; exhibition: boolean }
+  /**
+   * One reading of one stopwatch. Append-only on the server: this always
+   * creates a new row, never edits an old one, so a retry after the wifi
+   * drops at the wall is just another identical row rather than a collision.
+   */
   | {
       kind: "watch";
       meetId: string;
-      seedId: string;
+      swimId: string;
       /** Whose watch: a device id, or the user id of whoever is signed in. */
       timerId: string;
       /**
@@ -64,23 +74,35 @@ export type Write =
        */
       userId?: string;
       role: WatchRole;
+      /** Which of this submitter's concurrent stopwatches this is. Absent
+       *  means 1 — plain own-stopwatch mode, not a clipboard slot. */
+      slot?: number;
       /** Absent for a stopwatch that has started and not been submitted. */
       timeMs?: number;
-      recordedAt: number;
+      submittedAt: number;
       startedAt?: number;
       stoppedAt?: number;
     }
-  | { kind: "drop-watch"; meetId: string; seedId: string; timerId: string }
+  /** Clears a slot's whole history — "this clock claim shouldn't exist,"
+   *  not "this clock's last reading was wrong" (that's a new `watch`). */
+  | {
+      kind: "drop-watch";
+      meetId: string;
+      swimId: string;
+      timerId: string;
+      slot?: number;
+    }
   /**
    * Sign a swim off, or take the sign-off back.
    *
-   * There is no half-way: a result exists or it doesn't, and the status is
+   * There is no half-way: a swim is decided or it isn't, and the status is
    * chosen as part of accepting it rather than recorded separately beforehand.
+   * Writes straight onto the swim row — there is no separate results table.
    */
   | {
       kind: "result";
       meetId: string;
-      seedId: string;
+      swimId: string;
       status: ResultStatus;
       timeMs: number;
       /**
@@ -90,7 +112,29 @@ export type Write =
        */
       auto?: boolean;
     }
-  | { kind: "unresult"; meetId: string; seedId: string };
+  | { kind: "unresult"; meetId: string; swimId: string };
+
+/**
+ * The subset of `Write` a live connection may send over its own socket,
+ * rather than through the resilient cookie/action path — the WS "fast path"
+ * (see `migration-plan.md`). Armed/stopped visibility and exhibition are
+ * worth the latency win and cost nothing if lost, since the cookie already
+ * carries the full, durable restatement. A final timed watch, an entry (which
+ * reseeds) and a decision (irreversible) are deliberately excluded — those
+ * stay on the resilient path or an explicit action, never "fire and hope".
+ */
+export type LiveSignal =
+  | Extract<Write, { kind: "swim" }>
+  | Extract<Write, { kind: "exhibition" }>
+  | (Extract<Write, { kind: "watch" }> & { timeMs?: undefined });
+
+export function isLiveSignal(write: Write): write is LiveSignal {
+  return (
+    write.kind === "swim" ||
+    write.kind === "exhibition" ||
+    (write.kind === "watch" && write.timeMs === undefined)
+  );
+}
 
 /**
  * A name added behind the blocks (`MeetDurableObject.addWalkupAthlete`) —

@@ -62,7 +62,7 @@ async function teamCounts(
       .all<{ team_id: string; n: number }>(),
     db
       .prepare(
-        `SELECT mt.team_id AS team_id, COUNT(DISTINCT w.seed_id) AS n
+        `SELECT mt.team_id AS team_id, COUNT(DISTINCT w.swim_id) AS n
        FROM meet_teams mt JOIN watches w ON w.meet_id = mt.meet_id
        WHERE mt.team_id IN (${holes}) AND w.time_ms IS NOT NULL
        GROUP BY mt.team_id`,
@@ -338,7 +338,7 @@ export async function publicAthleteDetail(
     .prepare(
       `SELECT DISTINCT meet_id FROM (
          SELECT meet_id FROM entries WHERE athlete_id = ?1
-         UNION SELECT meet_id FROM seeds WHERE athlete_id = ?1)`,
+         UNION SELECT meet_id FROM swims WHERE athlete_id = ?1)`,
     )
     .bind(athleteId)
     .all<{ meet_id: string }>();

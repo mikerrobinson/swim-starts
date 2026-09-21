@@ -2,23 +2,23 @@
  * Working an official time out of the watches on a swim, and what an
  * administrator decided about it.
  *
- * Two concepts. **Watches** are evidence: several per swim, one per submitter,
- * nobody overwriting anybody. A **result** is the decision: one per swim,
- * written only when an administrator signs it off, carrying the number they
- * accepted. Everything in between — the proposed time, which swims are still
- * outstanding, whether a heat or an event is done — is derived, so it can
- * never disagree with the rows underneath it.
+ * Two concepts. **Watches** are evidence: several per swim, one per submitter
+ * per slot, append-only — a correction is a new row, never an edit to an old
+ * one. A **decision** is the administrator's own call, written directly onto
+ * the swim it's about once, and taken back by clearing those same fields
+ * rather than deleting a row elsewhere. Everything in between — the proposed
+ * time, which swims are still outstanding, whether a heat or an event is
+ * done — is derived, so it can never disagree with the rows underneath it.
  *
  * Everything here is pure and takes plain arrays. No document, no store.
  */
 
-import type { Event, Result, Seed, Watch, WatchRole } from "~/types/meet";
+import type { Event, Swim, Watch, WatchRole } from "~/types/meet";
 
-/** The rows these functions read. Anything holding all three will do. */
+/** The rows these functions read. Anything holding both will do. */
 export interface TimingRows {
-  seeds: Seed[];
+  swims: Swim[];
   watches: Watch[];
-  results: Result[];
 }
 
 /**
@@ -39,7 +39,42 @@ function meanOf(times: number[]): number {
 /* ----------------------------------------------------------------- watches */
 
 /**
- * The watches on a swim that actually carry a time.
+ * Every watch on a swim, history included — for a screen that wants the
+ * whole audit trail. Everything that works out a *current* time or state
+ * goes through `currentWatches` instead.
+ */
+export function allWatches(
+  rows: Pick<TimingRows, "watches">,
+  swimId: string,
+): Watch[] {
+  return rows.watches.filter((w) => w.swimId === swimId);
+}
+
+/**
+ * One swim's watches, collapsed to the latest row per `(submittedBy, slot)`.
+ *
+ * Watches are append-only, so a correction — a re-stop, a retimed sheet — is
+ * a new row rather than an edit to the old one. Every reader that works out
+ * a time, a lane's progress, or whether an event is touched wants only the
+ * *current* state of each slot, not its history, which is exactly what this
+ * collapses to. Clipboard mode's several concurrent slots from one submitter
+ * are untouched by this — only re-submissions *within* a slot collapse.
+ */
+export function currentWatches(
+  rows: Pick<TimingRows, "watches">,
+  swimId: string,
+): Watch[] {
+  const latest = new Map<string, Watch>();
+  for (const w of allWatches(rows, swimId)) {
+    const key = `${w.submittedBy}#${w.slot}`;
+    const seen = latest.get(key);
+    if (!seen || w.submittedAt > seen.submittedAt) latest.set(key, w);
+  }
+  return [...latest.values()];
+}
+
+/**
+ * The current watches on a swim that actually carry a time.
  *
  * The one gate between "a stopwatch is running" and "somebody swam this".
  * A watch with no `timeMs` is a thumb that has gone down and not yet come up,
@@ -48,19 +83,11 @@ function meanOf(times: number[]): number {
  */
 export function timedWatches(
   rows: Pick<TimingRows, "watches">,
-  seedId: string,
+  swimId: string,
 ): Watch[] {
-  return rows.watches
-    .filter((w) => w.seedId === seedId && w.timeMs !== undefined)
+  return currentWatches(rows, swimId)
+    .filter((w) => w.timeMs !== undefined)
     .sort((a, b) => a.timeMs! - b.timeMs!);
-}
-
-/** Every watch on a swim, running ones included — for a screen showing them. */
-export function watchesOn(
-  rows: Pick<TimingRows, "watches">,
-  seedId: string,
-): Watch[] {
-  return rows.watches.filter((w) => w.seedId === seedId);
 }
 
 /**
@@ -69,59 +96,6 @@ export function watchesOn(
  */
 export function fromStopwatch(watch: Watch): boolean {
   return watch.startedAt !== undefined && watch.stoppedAt !== undefined;
-}
-
-/* ------------------------------------------- one device, several watches */
-
-/**
- * The separator between a device and which of its watches this is.
- *
- * A device id is `[A-Za-z0-9_-]` and nothing else (`grants.server.ts`), so a
- * `#` in a `timerId` can only ever be this, and a plain id can never be
- * mistaken for a slotted one.
- */
-const SLOT = "#";
-
-/**
- * The id one of a clipboard's watches is filed under.
- *
- * A lane timed by three people used to mean three phones, one watch each,
- * keyed by three device ids. It usually means one phone and three handheld
- * watches, and those three still have to be three rows — `watches` is keyed
- * `(seed_id, timer_id)`, one row per submitter, so a device filing three
- * times needs three ids or it would overwrite itself twice.
- *
- * Which is all the suffix is: the same device, saying which of the watches
- * in its hand this reading came off. Re-submitting a corrected sheet lands on
- * exactly the same rows.
- *
- * The first watch keeps the bare device id, so a phone that is itself the
- * stopwatch and a clipboard's watch 1 are the same row rather than two. That
- * is what makes swapping between the two mid-meet harmless: the device holds
- * one place on the lane and adds rows beside it, instead of leaving an
- * orphaned watch behind every time the person changes how they are working.
- */
-export function slotTimerId(deviceId: string, slot: number): string {
-  return slot > 1 ? `${deviceId}${SLOT}${slot}` : deviceId;
-}
-
-/**
- * Which watch on the clipboard this was — 1, 2 or 3.
- *
- * A timer that never held a clipboard has no suffix and is watch 1, which is
- * the honest answer rather than a special case: a phone that is itself the
- * stopwatch is the first and only watch on its lane.
- */
-export function watchSlot(timerId: string): number {
-  const at = timerId.lastIndexOf(SLOT);
-  if (at < 0) return 1;
-  const slot = Number(timerId.slice(at + 1));
-  return Number.isInteger(slot) && slot > 0 ? slot : 1;
-}
-
-/** Whether a watch came off this device, whichever of its watches it is. */
-export function fromDevice(timerId: string, deviceId: string): boolean {
-  return timerId === deviceId || timerId.startsWith(`${deviceId}${SLOT}`);
 }
 
 export interface ProposedTime {
@@ -175,7 +149,7 @@ export interface LaneTime {
 /**
  * How much daylight between watches still counts as one lane, one time.
  * Past this, the watches disagree about what actually happened rather than
- * just rounding differently, and a person needs to look rather than the app
+ * just rounding differences, and a person needs to look rather than the app
  * quietly picking a number.
  */
 export const OK_DISCREPANCY_MS = 300;
@@ -255,9 +229,9 @@ export type LaneProgress = "none" | "waiting" | "complete";
  */
 export function laneProgress(
   rows: Pick<TimingRows, "watches">,
-  seedId: string,
+  swimId: string,
 ): LaneProgress {
-  const timers = watchesOn(rows, seedId).filter((w) => w.role === "timer");
+  const timers = currentWatches(rows, swimId).filter((w) => w.role === "timer");
   if (timers.length === 0) return "none";
   return timers.every((w) => w.timeMs !== undefined) ? "complete" : "waiting";
 }
@@ -265,9 +239,9 @@ export function laneProgress(
 /** Stopwatches still running on a swim: started, not stopped, no time sent yet. */
 export function runningWatches(
   rows: Pick<TimingRows, "watches">,
-  seedId: string,
+  swimId: string,
 ): Watch[] {
-  return watchesOn(rows, seedId).filter(
+  return currentWatches(rows, swimId).filter(
     (w) =>
       w.timeMs === undefined &&
       w.startedAt !== undefined &&
@@ -284,33 +258,26 @@ export function runningWatches(
  */
 export function stoppedWatches(
   rows: Pick<TimingRows, "watches">,
-  seedId: string,
+  swimId: string,
 ): Watch[] {
-  return watchesOn(rows, seedId).filter(
+  return currentWatches(rows, swimId).filter(
     (w) => w.timeMs === undefined && w.stoppedAt !== undefined,
   );
 }
 
 /* ----------------------------------------------------------------- results */
 
-export function resultFor(
-  rows: Pick<TimingRows, "results">,
-  seedId: string,
-): Result | undefined {
-  return rows.results.find((r) => r.seedId === seedId);
-}
-
 /**
- * What a swim reads as right now: the signed-off result, or what the watches
- * propose if nobody has signed it off yet.
+ * What a swim reads as right now: the signed-off decision, or what the
+ * watches propose if nobody has signed it off yet.
  *
  * The distinction matters on every screen. A proposal moves when a watch
- * arrives or is discarded; a result does not, because the number was written
- * down when somebody accepted it.
+ * arrives; a decision does not, because the number was written down when
+ * somebody accepted it.
  */
 export interface SwimTime {
   timeMs: number;
-  status: Result["status"];
+  status: NonNullable<Swim["status"]>;
   watchCount: number;
   from: WatchRole;
   discrepancyMs: number | null;
@@ -318,12 +285,12 @@ export interface SwimTime {
   official: boolean;
 }
 
-export function swimTime(rows: TimingRows, seedId: string): SwimTime | null {
-  const result = resultFor(rows, seedId);
-  if (result) {
+export function swimTime(rows: TimingRows, swimId: string): SwimTime | null {
+  const swim = rows.swims.find((s) => s.id === swimId);
+  if (swim?.status) {
     return {
-      timeMs: result.timeMs,
-      status: result.status,
+      timeMs: swim.officialTimeMs ?? 0,
+      status: swim.status,
       watchCount: 0,
       from: "admin",
       discrepancyMs: null,
@@ -331,38 +298,38 @@ export function swimTime(rows: TimingRows, seedId: string): SwimTime | null {
     };
   }
 
-  const proposed = laneTime(watchesOn(rows, seedId));
+  const proposed = laneTime(timedWatches(rows, swimId));
   if (!proposed) return null;
   return { ...proposed, status: "OK", official: false };
 }
 
 /* ----------------------------------------------------------------- closing */
 
-/** The seeds of one event, in heat then lane order. */
-export function seedsForEvent(
-  rows: Pick<TimingRows, "seeds">,
+/** The swims of one event, in heat then lane order. */
+export function swimsForEvent(
+  rows: Pick<TimingRows, "swims">,
   eventId: string,
-): Seed[] {
-  return rows.seeds
+): Swim[] {
+  return rows.swims
     .filter((s) => s.eventId === eventId)
     .sort((a, b) => a.heat - b.heat || a.lane - b.lane);
 }
 
-/** The seeds of one heat of one event. */
-export function seedsForHeat(
-  rows: Pick<TimingRows, "seeds">,
+/** The swims of one heat of one event. */
+export function swimsForHeat(
+  rows: Pick<TimingRows, "swims">,
   eventId: string,
   heat: number,
-): Seed[] {
-  return seedsForEvent(rows, eventId).filter((s) => s.heat === heat);
+): Swim[] {
+  return swimsForEvent(rows, eventId).filter((s) => s.heat === heat);
 }
 
 /** Which heats an event has, in order. A heat with nothing in it isn't one. */
 export function heatsOf(
-  rows: Pick<TimingRows, "seeds">,
+  rows: Pick<TimingRows, "swims">,
   eventId: string,
 ): number[] {
-  return [...new Set(seedsForEvent(rows, eventId).map((s) => s.heat))].sort(
+  return [...new Set(swimsForEvent(rows, eventId).map((s) => s.heat))].sort(
     (a, b) => a - b,
   );
 }
@@ -371,30 +338,30 @@ export function heatsOf(
  * Whether anything has been recorded against an event.
  *
  * The test for "this event is history now". Reseeding may rearrange an event
- * nobody has swum; once there is a watch or a result against one of its seeds,
- * rearranging it would leave those pointing at swims that no longer mean what
- * they meant.
+ * nobody has swum; once there is a watch or a decision against one of its
+ * swims, rearranging it would leave those pointing at a swim that no longer
+ * means what it meant.
  */
 export function eventTouched(rows: TimingRows, eventId: string): boolean {
-  const ids = new Set(seedsForEvent(rows, eventId).map((s) => s.id));
+  const ids = new Set(swimsForEvent(rows, eventId).map((s) => s.id));
   return (
-    rows.watches.some((w) => ids.has(w.seedId)) ||
-    rows.results.some((r) => ids.has(r.seedId))
+    rows.watches.some((w) => ids.has(w.swimId)) ||
+    rows.swims.some((s) => ids.has(s.id) && !!s.status)
   );
 }
 
 /**
  * A heat is done once every swim in it has been signed off. Derived rather
- * than stored, so "done" can never disagree with the results underneath it.
+ * than stored, so "done" can never disagree with the swims underneath it.
  */
 export function heatClosed(
   rows: TimingRows,
   eventId: string,
   heat: number,
 ): boolean {
-  const seeds = seedsForHeat(rows, eventId, heat);
-  if (seeds.length === 0) return false;
-  return seeds.every((seed) => resultFor(rows, seed.id) !== undefined);
+  const swims = swimsForHeat(rows, eventId, heat);
+  if (swims.length === 0) return false;
+  return swims.every((swim) => !!swim.status);
 }
 
 /** An event is done once all of its heats are. Its results are then official. */
@@ -410,20 +377,20 @@ export function heatProgress(
   eventId: string,
   heat: number,
 ): { signedOff: number; swims: number } {
-  const seeds = seedsForHeat(rows, eventId, heat);
+  const swims = swimsForHeat(rows, eventId, heat);
   return {
-    signedOff: seeds.filter((s) => resultFor(rows, s.id) !== undefined).length,
-    swims: seeds.length,
+    signedOff: swims.filter((s) => !!s.status).length,
+    swims: swims.length,
   };
 }
 
 /** How many swims have anything recorded — the meet's "times" count. */
 export function recordedCount(
-  rows: Pick<TimingRows, "watches" | "results">,
+  rows: Pick<TimingRows, "swims" | "watches">,
 ): number {
   const swims = new Set<string>();
-  for (const w of rows.watches) if (w.timeMs !== undefined) swims.add(w.seedId);
-  for (const r of rows.results) swims.add(r.seedId);
+  for (const w of rows.watches) if (w.timeMs !== undefined) swims.add(w.swimId);
+  for (const s of rows.swims) if (s.status) swims.add(s.id);
   return swims.size;
 }
 

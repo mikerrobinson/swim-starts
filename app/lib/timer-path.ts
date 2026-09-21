@@ -16,18 +16,23 @@
  * cookies here.
  */
 
-import type { Snapshot } from "./timer";
-import { runningOrder, type Stop } from "./timer";
+import { appBasePath } from "./http";
+import { runningOrder, timerPath, type Stop } from "./timer";
+import type { Event, Swim } from "~/types/meet";
 
-/** The lane picker: the first thing a scanned code lands on. */
-export function timerPath(meetId: string): string {
-  return `/meets/${encodeURIComponent(meetId)}/timer`;
+/**
+ * The same address, but as an absolute cookie `Path` rather than a route to
+ * navigate to — prefixed with the app's own base, which a `<Link>` never
+ * needs (the router already knows its basename) but a `Path` attribute does.
+ * Every `seed-*` cookie is scoped to exactly this string, so whatever's
+ * pending rides along on any request under the timer workspace.
+ */
+export function timerCookiePath(meetId: string): string {
+  return `${appBasePath()}${timerPath(meetId).slice(1)}`;
 }
 
 export function stopPath(meetId: string, stop: Stop, lane: number): string {
-  return (
-    `${timerPath(meetId)}/${stop.event.position + 1}/${stop.heat}/${lane}`
-  );
+  return `${timerPath(meetId)}/${stop.event.position + 1}/${stop.heat}/${lane}`;
 }
 
 /**
@@ -56,13 +61,13 @@ export function isTimingPath(pathname: string): boolean {
  * makes them think the app is broken before they have pressed anything.
  */
 export function firstStopPath(
-  snapshot: Snapshot,
+  meet: { events: Event[]; swims: Swim[] },
   meetId: string,
   lane: number,
 ): string {
-  // The first heat with anything in it — which, since a heat *is* its seeds,
+  // The first heat with anything in it — which, since a heat *is* its swims,
   // is simply the first heat there is.
-  const order = runningOrder(snapshot.events, snapshot.seeds);
+  const order = runningOrder(meet.events, meet.swims);
   const first = order[0];
 
   // A meet with no heats seeded at all still has to go somewhere, and event 1

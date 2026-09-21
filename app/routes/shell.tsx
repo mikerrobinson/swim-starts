@@ -11,8 +11,9 @@ import { AccountMenu } from "~/components/AccountMenu";
 import { useViewPrefs } from "~/state/view-prefs";
 import { useOutbox } from "~/state/outbox";
 import { useSession } from "~/state/session";
-import { LANE_LAYOUTS, meetSubtitle, type LaneLayout } from "~/types/meet";
+import { meetSubtitle } from "~/types/meet";
 import type { loader as meetLoader } from "./meet-layout";
+import { LANE_LAYOUTS, type LaneLayout } from "~/lib/storage";
 
 interface Tab {
   to: string;

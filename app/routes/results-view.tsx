@@ -131,7 +131,7 @@ export default function ResultsView({
    */
   const byEvent = useMemo(() => {
     const map = new Map<string, RankedSwim[]>();
-    for (const seed of detail.seeds) {
+    for (const seed of detail.swims) {
       const time = swimTime(detail, seed.id);
       if (!time) continue;
       const list = map.get(seed.eventId) ?? [];

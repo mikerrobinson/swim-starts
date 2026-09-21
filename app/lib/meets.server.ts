@@ -12,7 +12,6 @@
  * touch the same row.
  */
 
-import type { Athlete, Gender } from "~/types/athlete";
 import { ensureSchema } from "./schema.server";
 import { generateId } from "./id";
 import { DUAL_MEET_SCORING, isLaneCount, isTimersPerLane } from "~/types/meet";
@@ -24,17 +23,16 @@ import type {
   MeetCourse,
   MeetDetail,
   Event,
-  Result,
   ScoringRules,
-  Seed,
+  Swim,
   MeetType,
   ResultStatus,
   Stroke,
   TimersPerLane,
   Watch,
 } from "~/types/meet";
-import type { Enrollment } from "~/types/team";
 import type { Team } from "~/types/team";
+import type { Athlete, Gender } from "~/types/athlete";
 import { athleteRow, type AthleteRow } from "./athletes.server";
 import {
   enrollmentFrom,
@@ -135,73 +133,69 @@ function eventFrom(row: EventRow): Event {
   };
 }
 
-interface SeedRow {
+interface SwimRow {
   id: string;
   meet_id: string;
   event_id: string;
   heat: number;
   lane: number;
   athlete_id: string;
-  seed_time_ms: number | null;
+  athlete_name: string;
+  athlete_team: string;
   exhibition: number | null;
+  status: string | null;
+  official_time_ms: number | null;
+  decided_at: number | null;
+  decided_by: string | null;
 }
 
-function seedFrom(row: SeedRow): Seed {
+function asResultStatus(value: string | null): ResultStatus | undefined {
+  if (value === "DQ" || value === "NS") return value;
+  return value === "OK" ? "OK" : undefined;
+}
+
+function swimFrom(row: SwimRow): Swim {
   return {
     id: row.id,
     eventId: row.event_id,
     heat: row.heat,
     lane: row.lane,
     athleteId: row.athlete_id,
-    seedTimeMs: row.seed_time_ms ?? undefined,
+    athleteName: row.athlete_name,
+    athleteTeam: row.athlete_team,
     exhibition: row.exhibition === 1 ? true : undefined,
+    status: asResultStatus(row.status),
+    officialTimeMs: row.official_time_ms ?? undefined,
+    decidedAt: row.decided_at ?? undefined,
+    decidedBy: row.decided_by ?? undefined,
   };
 }
 
 interface WatchRow {
-  seed_id: string;
-  timer_id: string;
+  id: string;
+  swim_id: string;
+  submitted_by: string;
   user_id: string | null;
   role: string | null;
+  slot: number;
   time_ms: number | null;
-  recorded_at: number;
   started_at: number | null;
   stopped_at: number | null;
+  submitted_at: number;
 }
 
 function watchFrom(row: WatchRow): Watch {
   return {
-    seedId: row.seed_id,
-    timerId: row.timer_id,
+    id: row.id,
+    swimId: row.swim_id,
+    submittedBy: row.submitted_by,
     userId: row.user_id ?? undefined,
     role: row.role === "admin" || row.role === "coach" ? row.role : "timer",
+    slot: row.slot,
     timeMs: row.time_ms ?? undefined,
-    recordedAt: row.recorded_at,
     startedAt: row.started_at ?? undefined,
     stoppedAt: row.stopped_at ?? undefined,
-  };
-}
-
-interface ResultRow {
-  seed_id: string;
-  meet_id: string;
-  event_id: string;
-  athlete_id: string;
-  status: string;
-  time_ms: number;
-  decided_by: string | null;
-  decided_at: number;
-}
-
-function resultFrom(row: ResultRow): Result {
-  return {
-    seedId: row.seed_id,
-    eventId: row.event_id,
-    athleteId: row.athlete_id,
-    status: row.status === "DQ" || row.status === "NS" ? row.status : "OK",
-    timeMs: row.time_ms,
-    decidedBy: row.decided_by ?? undefined,
-    decidedAt: row.decided_at,
+    submittedAt: row.submitted_at,
   };
 }
 
@@ -284,7 +278,7 @@ export async function listMeets(
       .all<{ meet_id: string; n: number }>(),
     db
       .prepare(
-        `SELECT meet_id, COUNT(DISTINCT seed_id) AS n
+        `SELECT meet_id, COUNT(DISTINCT swim_id) AS n
        FROM watches WHERE meet_id IN (${holes}) AND time_ms IS NOT NULL
        GROUP BY meet_id`,
       )
@@ -346,38 +340,33 @@ export async function meetDetail(
     .prepare("SELECT * FROM meets WHERE id = ?")
     .bind(meetId)
     .first<MeetRow>();
-  const [meetRow, links, events, entries, seeds, watches, results] =
-    await Promise.all([
-      meetRowP,
-      db
-        .prepare("SELECT team_id FROM meet_teams WHERE meet_id = ?")
-        .bind(meetId)
-        .all<{ team_id: string }>(),
-      db
-        .prepare("SELECT * FROM events WHERE meet_id = ? ORDER BY position")
-        .bind(meetId)
-        .all<EventRow>(),
-      // Ordered by when each entry was made: first entered swims the middle
-      // lane until the app has a real seed time to rank by.
-      db
-        .prepare(
-          "SELECT event_id, athlete_id FROM entries WHERE meet_id = ? ORDER BY created_at",
-        )
-        .bind(meetId)
-        .all<{ event_id: string; athlete_id: string }>(),
-      db
-        .prepare("SELECT * FROM seeds WHERE meet_id = ?")
-        .bind(meetId)
-        .all<SeedRow>(),
-      db
-        .prepare("SELECT * FROM watches WHERE meet_id = ?")
-        .bind(meetId)
-        .all<WatchRow>(),
-      db
-        .prepare("SELECT * FROM results WHERE meet_id = ?")
-        .bind(meetId)
-        .all<ResultRow>(),
-    ]);
+  const [meetRow, links, events, entries, swims, watches] = await Promise.all([
+    meetRowP,
+    db
+      .prepare("SELECT team_id FROM meet_teams WHERE meet_id = ?")
+      .bind(meetId)
+      .all<{ team_id: string }>(),
+    db
+      .prepare("SELECT * FROM events WHERE meet_id = ? ORDER BY position")
+      .bind(meetId)
+      .all<EventRow>(),
+    // Ordered by when each entry was made: first entered swims the middle
+    // lane until the app has a real seed time to rank by.
+    db
+      .prepare(
+        "SELECT event_id, athlete_id FROM entries WHERE meet_id = ? ORDER BY entered_at",
+      )
+      .bind(meetId)
+      .all<{ event_id: string; athlete_id: string }>(),
+    db
+      .prepare("SELECT * FROM swims WHERE meet_id = ?")
+      .bind(meetId)
+      .all<SwimRow>(),
+    db
+      .prepare("SELECT * FROM watches WHERE meet_id = ?")
+      .bind(meetId)
+      .all<WatchRow>(),
+  ]);
   if (!meetRow) return null;
 
   const teamIds = links.results.map((r) => r.team_id);
@@ -395,8 +384,8 @@ export async function meetDetail(
     for (const id of list) wanted.add(id);
   // Skipping the lanes nobody has named yet, whose `athlete_id` is empty —
   // there is no such person to fetch.
-  for (const seed of seeds.results) {
-    if (seed.athlete_id) wanted.add(seed.athlete_id);
+  for (const swim of swims.results) {
+    if (swim.athlete_id) wanted.add(swim.athlete_id);
   }
 
   const holes = teamIds.map(() => "?").join(", ");
@@ -431,9 +420,8 @@ export async function meetDetail(
     teams: teams.results.map(teamRow),
     events: events.results.map(eventFrom),
     entries: entryMap,
-    seeds: seeds.results.map(seedFrom),
+    swims: swims.results.map(swimFrom),
     watches: watches.results.map(watchFrom),
-    results: results.results.map(resultFrom),
     athletes: await athletesByIds(db, [...wanted]),
     enrollments: rosters.results.map(enrollmentFrom),
   };
@@ -617,7 +605,7 @@ export async function deleteMeet(
 ): Promise<void> {
   await ensureSchema(db);
   await db.batch(
-    ["results", "watches", "seeds", "entries", "events", "meet_teams"]
+    ["watches", "swims", "entries", "events", "meet_teams"]
       .map((table) =>
         db.prepare(`DELETE FROM ${table} WHERE meet_id = ?`).bind(meetId),
       )
@@ -694,20 +682,18 @@ export async function addEventsToMeet(
 /**
  * Remove an event and everything under it.
  *
- * Watches and results hang off seeds rather than the event, so they are found
- * through them — a subselect rather than two round trips, and one that cannot
- * miss a row the way a list of ids fetched a moment earlier can.
+ * Watches hang off swims rather than the event, so nothing here deletes them
+ * directly — `reseedEvent` refuses once the event has a watch or a decision
+ * against it, so by the time this runs there is nothing hanging off a swim
+ * that this would orphan.
  */
 export async function removeEvent(
   db: D1Database,
   eventId: string,
 ): Promise<void> {
   await ensureSchema(db);
-  // Nothing hanging off these seeds is deleted, and nothing needs to be:
-  // `reseedEvent` refuses once the event has a watch or a result against it,
-  // so by the time this runs there is nothing to orphan.
   await db.batch([
-    db.prepare("DELETE FROM seeds WHERE event_id = ?").bind(eventId),
+    db.prepare("DELETE FROM swims WHERE event_id = ?").bind(eventId),
     db.prepare("DELETE FROM entries WHERE event_id = ?").bind(eventId),
     db.prepare("DELETE FROM events WHERE id = ?").bind(eventId),
   ]);
@@ -732,18 +718,18 @@ export async function setEventOrder(
 /* ------------------------------------------------------------------ heats */
 
 /** Find the swim in a lane, if there is one. */
-export async function seedAt(
+export async function swimAt(
   db: D1Database,
   eventId: string,
   heat: number,
   lane: number,
-): Promise<Seed | null> {
+): Promise<Swim | null> {
   await ensureSchema(db);
   const row = await db
-    .prepare("SELECT * FROM seeds WHERE event_id = ? AND heat = ? AND lane = ?")
+    .prepare("SELECT * FROM swims WHERE event_id = ? AND heat = ? AND lane = ?")
     .bind(eventId, heat, lane)
-    .first<SeedRow>();
-  return row ? seedFrom(row) : null;
+    .first<SwimRow>();
+  return row ? swimFrom(row) : null;
 }
 
 /**
@@ -765,16 +751,16 @@ export async function ensureLane(
   db: D1Database,
   meetId: string,
   place: { eventId: string; heat: number; lane: number },
-): Promise<Seed> {
+): Promise<Swim> {
   await ensureSchema(db);
 
-  const existing = await seedAt(db, place.eventId, place.heat, place.lane);
+  const existing = await swimAt(db, place.eventId, place.heat, place.lane);
   if (existing) return existing;
 
   const id = generateId();
   await db
     .prepare(
-      `INSERT INTO seeds (id, meet_id, event_id, heat, lane, athlete_id)
+      `INSERT INTO swims (id, meet_id, event_id, heat, lane, athlete_id)
        VALUES (?, ?, ?, ?, ?, '')
        ON CONFLICT(event_id, heat, lane) DO NOTHING`,
     )
@@ -785,12 +771,14 @@ export async function ensureLane(
   // both arrive here, and the one that lost has to come away with the id that
   // won — otherwise their watches would hang off two different swims.
   return (
-    (await seedAt(db, place.eventId, place.heat, place.lane)) ?? {
+    (await swimAt(db, place.eventId, place.heat, place.lane)) ?? {
       id,
       eventId: place.eventId,
       heat: place.heat,
       lane: place.lane,
       athleteId: "",
+      athleteName: "",
+      athleteTeam: "",
     }
   );
 }
@@ -810,7 +798,7 @@ export async function addHeat(
 ): Promise<number> {
   await ensureSchema(db);
   const row = await db
-    .prepare("SELECT COALESCE(MAX(heat), 0) AS h FROM seeds WHERE event_id = ?")
+    .prepare("SELECT COALESCE(MAX(heat), 0) AS h FROM swims WHERE event_id = ?")
     .bind(eventId)
     .first<{ h: number }>();
   const heat = (row?.h ?? 0) + 1;

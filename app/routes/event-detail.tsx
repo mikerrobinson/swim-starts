@@ -4,7 +4,7 @@ import { requireDb, type SyncEnv } from "~/lib/api.server";
 import { meetDetail } from "~/lib/meets.server";
 import { enrollmentIndex } from "~/lib/roster";
 import { useMeetLive } from "~/hooks/use-meet-live";
-import { heatsOf, seedsForHeat, swimTime } from "~/lib/timing";
+import { heatsOf, swimsForHeat, swimTime } from "~/lib/timing";
 import { formatTime } from "~/lib/time";
 import { useMeet } from "./meet-layout";
 import { displayName, eventName, findAthlete, withLiveTables } from "~/types/meet";
@@ -101,7 +101,7 @@ export default function EventDetail({ loaderData }: Route.ComponentProps) {
                 </tr>
               </thead>
               <tbody>
-                {seedsForHeat(detail, event.id, heat).map((seed) => {
+                {swimsForHeat(detail, event.id, heat).map((seed) => {
                   const athlete = findAthlete(detail.athletes, seed.athleteId);
                   const enrollment = enrollments.get(seed.athleteId);
                   const team = enrollment ? teamsById.get(enrollment.teamId) : undefined;

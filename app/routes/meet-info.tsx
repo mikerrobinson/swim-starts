@@ -338,7 +338,7 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
   const { admins, grant } = loaderData;
   const detail = loaderData.detail!;
   const { access } = useMeet();
-  const { meet, events, entries, seeds } = detail;
+  const { meet, events, entries, swims } = detail;
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const mayEdit = mayEditMeet(access);
@@ -348,7 +348,7 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
   const stats = [
     { label: "Events", value: events.length },
     { label: "Entries", value: entryCount },
-    { label: "Swims", value: seeds.length },
+    { label: "Swims", value: swims.length },
     { label: "Times", value: times },
   ];
 

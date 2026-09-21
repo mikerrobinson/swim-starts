@@ -17,11 +17,11 @@ import {
 import { useElapsed, useWakeLock } from "~/hooks/use-stopwatch";
 import { useMeetLive } from "~/hooks/use-meet-live";
 import {
+  currentWatches,
   fromStopwatch,
   heatsOf,
-  seedsForHeat,
+  swimsForHeat,
   swimTime,
-  watchesOn,
 } from "~/lib/timing";
 
 import { formatClock, formatTime, parseTime } from "~/lib/time";
@@ -37,7 +37,6 @@ import {
   eventName,
   findAthlete,
   isDiving,
-  orderedLanes,
   withLiveTables,
   type MeetDetail,
   type Event,
@@ -73,6 +72,12 @@ export async function loader({ params, context }: Route.LoaderArgs) {
     params.meetId,
   );
   return { detail: withLiveTables(detail, live) };
+}
+
+/** Lane numbers in the order they should be drawn for a layout. */
+function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
+  const lanes = Array.from({ length: laneCount }, (_, i) => i + 1);
+  return layout === "list-desc" ? lanes.reverse() : lanes;
 }
 
 /**
@@ -179,7 +184,7 @@ export default function SplitsHeat({
   /** The swims in the heat on screen. A lane with nobody in it isn't one. */
   const seeds = useMemo(
     () =>
-      event && heat !== undefined ? seedsForHeat(detail, event.id, heat) : [],
+      event && heat !== undefined ? swimsForHeat(detail, event.id, heat) : [],
     [detail, event, heat],
   );
   const seedByLane = useMemo(
@@ -214,8 +219,8 @@ export default function SplitsHeat({
     const lanes = new Set<number>();
     for (const seed of seeds) {
       if (
-        watchesOn(detail, seed.id).some(
-          (w) => w.timerId === mine && w.timeMs !== undefined,
+        currentWatches(detail, seed.id).some(
+          (w) => w.submittedBy === mine && w.timeMs !== undefined,
         )
       ) {
         lanes.add(seed.lane);
@@ -400,12 +405,12 @@ export default function SplitsHeat({
                   send({
                     kind: "watch",
                     meetId: meet.id,
-                    seedId: seed.id,
+                    swimId: seed.id,
                     timerId: mine,
                     userId: access.userId ?? undefined,
                     role: myRole,
                     timeMs: at - clock!.startedAt,
-                    recordedAt: at,
+                    submittedAt: at,
                     startedAt: clock!.startedAt,
                     stoppedAt: at,
                   });
@@ -448,7 +453,7 @@ export default function SplitsHeat({
                     send({
                       kind: "drop-watch",
                       meetId: meet.id,
-                      seedId: seed.id,
+                      swimId: seed.id,
                       timerId: mine,
                     });
                   }
@@ -492,7 +497,7 @@ export default function SplitsHeat({
                   send({
                     kind: "drop-watch",
                     meetId: meet.id,
-                    seedId: seed.id,
+                    swimId: seed.id,
                     timerId: mine,
                   });
                 }
@@ -548,13 +553,13 @@ export default function SplitsHeat({
           lane={assigningLane}
           onAssign={(athleteId) =>
             send({
-              kind: "seed",
+              kind: "swim",
               meetId: meet.id,
               eventId: event.id,
               heat: heat!,
               lane: assigningLane,
               athleteId,
-              seedId: generateId(),
+              swimId: generateId(),
             })
           }
           onClose={() => setAssigningLane(null)}
@@ -576,7 +581,7 @@ export default function SplitsHeat({
                   ? displayName(athlete, nameOrder)
                   : `Lane ${editingLane}`
               }
-              watches={watchesOn(detail, seed.id).filter(
+              watches={currentWatches(detail, seed.id).filter(
                 (w) => w.timeMs !== undefined,
               )}
               timerId={mine}
@@ -585,7 +590,7 @@ export default function SplitsHeat({
                 send({
                   kind: "exhibition",
                   meetId: meet.id,
-                  seedId: seed.id,
+                  swimId: seed.id,
                   exhibition: !seed.exhibition,
                 })
               }
@@ -593,12 +598,12 @@ export default function SplitsHeat({
                 send({
                   kind: "watch",
                   meetId: meet.id,
-                  seedId: seed.id,
+                  swimId: seed.id,
                   timerId: mine,
                   userId: access.userId ?? undefined,
                   role: myRole,
                   timeMs,
-                  recordedAt: Date.now(),
+                  submittedAt: Date.now(),
                 });
                 setEditingLane(null);
               }}
@@ -606,12 +611,12 @@ export default function SplitsHeat({
                 send({
                   kind: "drop-watch",
                   meetId: meet.id,
-                  seedId: seed.id,
+                  swimId: seed.id,
                   timerId: who,
                 })
               }
               onRemoveFromLane={() => {
-                send({ kind: "unseed", meetId: meet.id, seedId: seed.id });
+                send({ kind: "unswim", meetId: meet.id, swimId: seed.id });
                 setEditingLane(null);
               }}
             />
@@ -710,7 +715,7 @@ function LaneSheet({
 }) {
   // Prefilled with this device's own watch, since typing a time replaces that
   // one — never somebody else's.
-  const own = watches.find((w) => w.timerId === timerId);
+  const own = watches.find((w) => w.submittedBy === timerId);
   const [value, setValue] = useState(own ? formatTime(own.timeMs!) : "");
 
   // Parsed on every keystroke so the sheet can show what will actually be
@@ -796,20 +801,22 @@ function LaneSheet({
               <ul className="divide-y divide-slate-200 dark:divide-slate-700">
                 {watches.map((watch) => (
                   <li
-                    key={watch.timerId}
+                    key={watch.id}
                     className="flex items-center justify-between gap-2 py-1"
                   >
                     <span className="text-sm tabular-nums">
                       {formatTime(watch.timeMs!)}
                       <span className="ml-2 text-xs text-slate-500">
-                        {watch.timerId === timerId ? "you" : "another timer"}
+                        {watch.submittedBy === timerId
+                          ? "you"
+                          : "another timer"}
                         {!fromStopwatch(watch) && " · typed"}
                       </span>
                     </span>
                     <button
                       type="button"
                       aria-label={`Discard the ${formatTime(watch.timeMs!)} watch`}
-                      onClick={() => onRemoveWatch(watch.timerId)}
+                      onClick={() => onRemoveWatch(watch.submittedBy)}
                       className="h-8 w-8 shrink-0 touch-manipulation rounded-lg text-sm text-red-600"
                     >
                       ✕

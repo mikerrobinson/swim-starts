@@ -14,6 +14,12 @@
  * Every write's effect here has to match what the server (or the DO) does
  * with it, and that pairing is the only thing to be careful about in this
  * file: if a write grows a rule on either side, it grows the same rule here.
+ *
+ * One deliberate simplification: the server's `watches` table is append-only
+ * (a correction is a new row), but this overlay only needs the *current*
+ * view, not history, so a pending or incoming `watch` write is folded
+ * upsert-style by `(swimId, submittedBy, slot)` — good enough for "what does
+ * the screen show right now," which is all an overlay is for.
  */
 
 import type { MeetDetail, MeetSnapshot, Watch } from "~/types/meet";
@@ -32,9 +38,8 @@ export function applyWrite<T extends MeetSnapshot>(
   message: MeetBroadcast,
 ): T {
   let entries = detail.entries;
-  let seeds = detail.seeds;
+  let swims = detail.swims;
   let watches = detail.watches;
-  let results = detail.results;
   let athletes = detail.athletes;
 
   switch (message.kind) {
@@ -49,10 +54,10 @@ export function applyWrite<T extends MeetSnapshot>(
       break;
     }
 
-    case "seed": {
+    case "swim": {
       // Nobody swims an event twice, so vacate whatever other lane they
       // held — the same rule `setSeed`/`seat` applies on the server.
-      seeds = seeds.filter(
+      swims = swims.filter(
         (s) =>
           !(
             s.eventId === message.eventId &&
@@ -60,99 +65,117 @@ export function applyWrite<T extends MeetSnapshot>(
             !(s.heat === message.heat && s.lane === message.lane)
           ),
       );
-      const at = seeds.findIndex(
+      const at = swims.findIndex(
         (s) =>
           s.eventId === message.eventId &&
           s.heat === message.heat &&
           s.lane === message.lane,
       );
+      const before = at >= 0 ? swims[at] : undefined;
       const next = {
-        id: at >= 0 ? seeds[at].id : message.seedId,
+        id: before?.id ?? message.swimId,
         meetId: message.meetId,
         eventId: message.eventId,
         heat: message.heat,
         lane: message.lane,
         athleteId: message.athleteId,
+        athleteName:
+          before?.athleteId === message.athleteId ? before.athleteName : "",
+        athleteTeam:
+          before?.athleteId === message.athleteId ? before.athleteTeam : "",
       };
-      seeds =
-        at >= 0 ? seeds.map((s, i) => (i === at ? next : s)) : [...seeds, next];
+      swims =
+        at >= 0 ? swims.map((s, i) => (i === at ? next : s)) : [...swims, next];
 
-      // Swimming a race is being in it.
-      const current = entries[message.eventId] ?? [];
-      if (!current.includes(message.athleteId)) {
-        entries = {
-          ...entries,
-          [message.eventId]: [...current, message.athleteId],
-        };
-      }
+      // Note: unlike `entry`, seating never backports here either — swims
+      // never update entries, on the client's own copy any more than on the
+      // server's.
       break;
     }
 
-    case "unseed":
-      seeds = seeds.filter((s) => s.id !== message.seedId);
-      watches = watches.filter((w) => w.seedId !== message.seedId);
-      results = results.filter((r) => r.seedId !== message.seedId);
+    case "unswim":
+      swims = swims.filter((s) => s.id !== message.swimId);
+      watches = watches.filter((w) => w.swimId !== message.swimId);
       break;
 
     case "exhibition":
-      seeds = seeds.map((s) =>
-        s.id === message.seedId
+      swims = swims.map((s) =>
+        s.id === message.swimId
           ? { ...s, exhibition: message.exhibition || undefined }
           : s,
       );
       break;
 
     case "watch": {
-      const existing = watches.find(
-        (w) => w.seedId === message.seedId && w.timerId === message.timerId,
-      );
+      const slot = message.slot ?? 1;
       const next: Watch = {
-        seedId: message.seedId,
-        timerId: message.timerId,
+        id: message.swimId + "|" + message.timerId + "|" + slot,
+        swimId: message.swimId,
+        submittedBy: message.timerId,
         userId: message.userId,
         role: message.role,
-        // A start that follows a time must not blank it — the same
-        // `COALESCE` the server writes.
-        timeMs: message.timeMs ?? existing?.timeMs,
-        recordedAt: message.recordedAt,
-        startedAt: message.startedAt ?? existing?.startedAt,
-        stoppedAt: message.stoppedAt ?? existing?.stoppedAt,
+        slot,
+        timeMs: message.timeMs,
+        startedAt: message.startedAt,
+        stoppedAt: message.stoppedAt,
+        submittedAt: message.submittedAt,
       };
       watches = [
         ...watches.filter(
-          (w) => !(w.seedId === next.seedId && w.timerId === next.timerId),
+          (w) =>
+            !(
+              w.swimId === next.swimId &&
+              w.submittedBy === next.submittedBy &&
+              w.slot === next.slot
+            ),
         ),
         next,
       ];
       break;
     }
 
-    case "drop-watch":
+    case "drop-watch": {
+      const slot = message.slot ?? 1;
       watches = watches.filter(
-        (w) => !(w.seedId === message.seedId && w.timerId === message.timerId),
+        (w) =>
+          !(
+            w.swimId === message.swimId &&
+            w.submittedBy === message.timerId &&
+            w.slot === slot
+          ),
       );
       break;
+    }
 
     case "result": {
-      const seed = seeds.find((s) => s.id === message.seedId);
-      if (!seed) break;
-      results = [
-        ...results.filter((r) => r.seedId !== message.seedId),
-        {
-          seedId: message.seedId,
-          eventId: seed.eventId,
-          athleteId: seed.athleteId,
-          status: message.status,
-          timeMs: message.timeMs,
-          decidedBy: message.auto ? "auto" : undefined,
-          decidedAt: Date.now(),
-        },
-      ];
+      const swim = swims.find((s) => s.id === message.swimId);
+      if (!swim) break;
+      swims = swims.map((s) =>
+        s.id === message.swimId
+          ? {
+              ...s,
+              status: message.status,
+              officialTimeMs: message.timeMs,
+              decidedBy: message.auto ? "auto" : undefined,
+              decidedAt: Date.now(),
+            }
+          : s,
+      );
       break;
     }
 
     case "unresult":
-      results = results.filter((r) => r.seedId !== message.seedId);
+      swims = swims.map((s) =>
+        s.id === message.swimId
+          ? {
+              ...s,
+              status: undefined,
+              officialTimeMs: undefined,
+              decidedAt: undefined,
+              decidedBy: undefined,
+            }
+          : s,
+      );
       break;
 
     case "walkup":
@@ -162,7 +185,7 @@ export function applyWrite<T extends MeetSnapshot>(
       break;
   }
 
-  return { ...detail, entries, seeds, watches, results, athletes };
+  return { ...detail, entries, swims, watches, athletes };
 }
 
 /** `applyWrite`, reduced over a queue of this device's own pending writes —

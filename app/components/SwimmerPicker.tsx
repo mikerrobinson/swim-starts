@@ -70,6 +70,13 @@ export function SwimmerPicker({
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
   const [newTeam, setNewTeam] = useState(meetTeams[0]?.id ?? "");
+  /**
+   * Pre-set from the event, so the common case never has to touch it — a
+   * timer typing in a name is answering "who", not "which sex", and asking
+   * would be a timer not watching the water. Overridable in one tap for the
+   * cases the event alone can't say: an "Open" event, or a mixed relay leg.
+   */
+  const [newGender, setNewGender] = useState<Gender>(eventGender);
 
   const teamOf = (athlete: TimerAthlete) => athlete.team ?? ownTeam;
   const homeTeam = current ? teamOf(current) : ownTeam;
@@ -105,9 +112,7 @@ export function SwimmerPicker({
 
   const confirmAdd = () => {
     if (!newName.trim()) return;
-    // Gender comes from the event, never from a question. A timer being asked
-    // to classify a stranger mid-heat is a timer not watching the water.
-    onAdd(newVisitingAthlete(newName, newTeam, eventGender));
+    onAdd(newVisitingAthlete(newName, newTeam, newGender));
   };
 
   return (
@@ -132,6 +137,21 @@ export function SwimmerPicker({
               autoCapitalize="words"
               autoFocus
             />
+          </div>
+          <div>
+            <span className="mb-1 block text-sm font-semibold text-slate-600 dark:text-slate-300">
+              Sex
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              {(["F", "M"] as Gender[]).map((value) => (
+                <TeamButton
+                  key={value}
+                  label={value === "F" ? "Girls" : "Boys"}
+                  active={newGender === value}
+                  onClick={() => setNewGender(value)}
+                />
+              ))}
+            </div>
           </div>
           <div>
             <span className="mb-1 block text-sm font-semibold text-slate-600 dark:text-slate-300">

@@ -8,7 +8,7 @@ import {
   type RankedSwim,
 } from "../app/lib/scoring.ts";
 import { DUAL_MEET_SCORING } from "../app/types/meet.ts";
-import type { Event, Seed } from "../app/types/meet.ts";
+import type { Event, Swim } from "../app/types/meet.ts";
 import type { SwimTime } from "../app/lib/timing.ts";
 
 const MEET = "m1";
@@ -24,13 +24,15 @@ function ev(id: string, extra: Partial<Event> = {}): Event {
   };
 }
 
-function seed(id: string, athleteId: string, exhibition = false): Seed {
+function seed(id: string, athleteId: string, exhibition = false): Swim {
   return {
     id,
     eventId: "e1",
     heat: 1,
     lane: 1,
     athleteId,
+    athleteName: "",
+    athleteTeam: "",
     exhibition: exhibition || undefined,
   };
 }

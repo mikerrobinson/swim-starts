@@ -39,8 +39,8 @@ a poll costs one row; during a heat it costs what it costs now.
 
 **Step two, if sub-second is ever actually wanted — the DO as a doorbell, not a
 store.** The write endpoint pokes the meet's object, the object broadcasts
-`version: N`, clients revalidate. That is the *same client contract as step
-one*, push instead of pull, so building step one builds the client half of
+`version: N`, clients revalidate. That is the _same client contract as step
+one_, push instead of pull, so building step one builds the client half of
 this. D1 stays the source of truth and there is no delta reducer — which is the
 point: `writes.ts` already names three places the `Write` union has to mean the
 same thing, and a socket carrying row deltas would make it four, the fourth
@@ -58,7 +58,7 @@ transport for something that has to survive a locked phone.
 **Why not plain HTTP caching and ETags?** Considered and set aside, for the
 loader path at least. To emit an ETag you have to know whether anything
 changed, so a body-hash ETag runs all nine queries and then throws the response
-away — it saves bytes, which was never the cost. A *cheap* ETag has to derive
+away — it saves bytes, which was never the cost. A _cheap_ ETag has to derive
 from a version column, so it needs step one regardless and is then just the
 version carried in a header. Three things make it the worse carrier here: RR7
 single-fetch bundles parent and leaf loaders into one `.data` response, so one
@@ -71,7 +71,7 @@ cycle, handing back fresh object identities, so every lane tile on `run.tsx`
 re-renders every 3s anyway. The version check skips the render as well as the
 request.
 
-Where ETags *would* fit cleanly is the plain fetch endpoints — `api.timer.meet.ts`,
+Where ETags _would_ fit cleanly is the plain fetch endpoints — `api.timer.meet.ts`,
 `api.teams.ts` — which have no single-fetch encoding and no revalidation cycle.
 
 One hazard either way: these responses are permission-scoped (`meetAccess`,
@@ -80,12 +80,12 @@ never `public`. Getting that wrong serves one coach's entry view to another,
 and it hides well, because it only appears with a warm cache.
 
 One thing to watch on a deck first: the deck stopwatch treats a lane as
-stopped if *any* time arrives on it after START (`run.tsx`, `allStopped`), so a
+stopped if _any_ time arrives on it after START (`run.tsx`, `allStopped`), so a
 coach timing two of six lanes isn't left waiting on the four the phones cover.
 That branch could never fire mid-race before, because the loader didn't
 refresh. Now it can. It is what the code intends — but it has never actually
 happened during a race, so watch the first heat it does. Version-gating the
-poll changes *when* a refresh lands, not whether one does, so it doesn't make
+poll changes _when_ a refresh lands, not whether one does, so it doesn't make
 this any safer.
 
 ### 2. The stopwatch screen has had the least use
@@ -95,7 +95,7 @@ properly against a real database — the deck stopwatch has not been driven
 through a whole heat since the rewrite. Before a meet: START, stop several
 lanes, Reset, Next heat, and the lane sheet's "Replace my time".
 
-Known cosmetic thing: on a *re-swim*, lanes carrying times from the previous
+Known cosmetic thing: on a _re-swim_, lanes carrying times from the previous
 swim render green with those times rather than a red STOP, so it's not obvious
 which lanes still need taking here. Tapping them works.
 
@@ -156,7 +156,7 @@ team, not refusing the removal.
 ### ~~Timer link stuck on "Getting ready…"~~ — gone with the cookie
 
 The claim screen kept the scanned token in localStorage from an effect, so the
-whole timing path needed script to run *and* the browser to agree to store
+whole timing path needed script to run _and_ the browser to agree to store
 things — neither being a safe bet about a stranger's phone opening a link from
 a camera app. `/t/:token` is now a loader with no component: it sets an
 HttpOnly cookie and redirects. Verified with `curl` alone, no JS in the loop.
@@ -245,8 +245,6 @@ In a split lineup, adding "100 Fly" nearly always means adding both girls' and
 boys'. Right now you add one and repeat. Could add the pair in lead order from
 one tap.
 
-
-
 ### SD3 import and export
 
 The plan: read the standard `.sd3` files Hy-Tek, SwimTopia and Commit export, so
@@ -285,7 +283,6 @@ A relay lane is currently held by a single swimmer standing in for the squad.
 Letting a lane be labelled "Blue A" / "Gold B" instead would read better, at the
 cost of a real relay model.
 
-
 ### Column striping on registration
 
 Rows are striped now. Columns could be too, though doing both makes a
@@ -312,7 +309,6 @@ accident, one gesture instead of seven.
 
 It sits bottom-right, big and blue, and ending a heat early drops times for any
 lane that hadn't stopped. Could require a confirm while lanes are outstanding.
-
 
 ---
 
@@ -358,7 +354,7 @@ lane that hadn't stopped. Could require a confirm while lanes are outstanding.
 describe a coach, an athlete, a parent, a viewer and somebody waiting to be let
 in. Only the first ever changed what the code did — every check in the app was
 `isCoach()` or `canAdmit()` — and the rest described relationships that already
-lived somewhere truer: a swimmer is on a team because they're *enrolled* in one
+lived somewhere truer: a swimmer is on a team because they're _enrolled_ in one
 of its seasons, and their account is tied to them by `athletes.user_id`.
 
 It's now `team_coaches (team_id, user_id, added_at, added_by)`, the same shape
@@ -374,8 +370,10 @@ coach is the coach's move now, as it is for a meet), the role on an invitation,
 linking a swimmer's account.
 
 Asymmetry worth keeping straight: a meet is always created with an
-administrator, a team may start with none. An empty coach list *is* unclaimed,
+administrator, a team may start with none. An empty coach list _is_ unclaimed,
 and it's the only time somebody can add themselves — `POST
 /api/teams/:id/coaches { claim: true }`. Falling back into that state from one
 coach would mean a team anybody could take over, so removing the last coach is
 refused.
+
+Timer UI has a Confirm/Change Swimmer prompt to generate positive acknowledgement signal
