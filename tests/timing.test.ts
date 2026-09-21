@@ -24,7 +24,7 @@ const MEET = "m1";
 const EVENT = "e1";
 
 function seed(id: string, heat: number, lane: number, athleteId: string): Seed {
-  return { id, meetId: MEET, eventId: EVENT, heat, lane, athleteId };
+  return { id, eventId: EVENT, heat, lane, athleteId };
 }
 
 function watch(
@@ -33,13 +33,23 @@ function watch(
   timeMs: number | undefined,
   extra: Partial<Watch> = {},
 ): Watch {
-  return { seedId, timerId, role: "timer", timeMs, recordedAt: 1_000, ...extra };
-}
-
-function result(seedId: string, timeMs: number, status: Result["status"] = "OK"): Result {
   return {
     seedId,
-    meetId: MEET,
+    timerId,
+    role: "timer",
+    timeMs,
+    recordedAt: 1_000,
+    ...extra,
+  };
+}
+
+function result(
+  seedId: string,
+  timeMs: number,
+  status: Result["status"] = "OK",
+): Result {
+  return {
+    seedId,
     eventId: EVENT,
     athleteId: "a1",
     status,
@@ -92,17 +102,32 @@ eq(
     watch("s1", "u-a", 27_500, { role: "coach", userId: "u-a" }),
     watch("s1", "u-b", 27_700, { role: "coach", userId: "u-b" }),
   ];
-  const official = watch("s1", "u-ref", 26_990, { role: "admin", userId: "u-ref" });
+  const official = watch("s1", "u-ref", 26_990, {
+    role: "admin",
+    userId: "u-ref",
+  });
 
   eq(laneTime([]), null, "a swim nobody timed has no time");
   eq(
     laneTime(timers),
-    { timeMs: 27_160, method: "median", watchCount: 3, from: "timer", discrepancyMs: 3_860 },
+    {
+      timeMs: 27_160,
+      method: "median",
+      watchCount: 3,
+      from: "timer",
+      discrepancyMs: 3_860,
+    },
     "three timers take the middle one — the slow thumb is outvoted, not averaged",
   );
   eq(
     laneTime(coaches),
-    { timeMs: 27_600, method: "average", watchCount: 2, from: "coach", discrepancyMs: 200 },
+    {
+      timeMs: 27_600,
+      method: "average",
+      watchCount: 2,
+      from: "coach",
+      discrepancyMs: 200,
+    },
     "coaches are averaged when there are no timers",
   );
   eq(
@@ -112,7 +137,13 @@ eq(
   );
   eq(
     laneTime([...timers, ...coaches, official]),
-    { timeMs: 26_990, method: "official", watchCount: 1, from: "admin", discrepancyMs: null },
+    {
+      timeMs: 26_990,
+      method: "official",
+      watchCount: 1,
+      from: "admin",
+      discrepancyMs: null,
+    },
     "whoever runs the meet decides, whatever the rest say",
   );
 
@@ -128,7 +159,11 @@ eq(
 
   /* --- a result outranks everything, and doesn't move --- */
   const rows = { seeds: [s], watches: timers, results: [] as Result[] };
-  eq(swimTime(rows, "s1")?.timeMs, 27_160, "with no result, the watches propose");
+  eq(
+    swimTime(rows, "s1")?.timeMs,
+    27_160,
+    "with no result, the watches propose",
+  );
   eq(swimTime(rows, "s1")?.official, false, "and a proposal is not official");
 
   const signed = { ...rows, results: [result("s1", 27_160)] };
@@ -162,7 +197,10 @@ eq(
   // The distinction the colour exists for: this looks identical to the line
   // above if you only read the number, and wants the opposite response.
   eq(
-    laneProgress({ ...base, watches: [watch("s1", "d-1", undefined, { startedAt: 1 })] }, "s1"),
+    laneProgress(
+      { ...base, watches: [watch("s1", "d-1", undefined, { startedAt: 1 })] },
+      "s1",
+    ),
     "waiting",
     "a watch running on it is not nothing — it is in hand",
   );
@@ -170,7 +208,10 @@ eq(
     laneProgress(
       {
         ...base,
-        watches: [watch("s1", "d-1", 27_140), watch("s1", "d-2", undefined, { startedAt: 1 })],
+        watches: [
+          watch("s1", "d-1", 27_140),
+          watch("s1", "d-2", undefined, { startedAt: 1 }),
+        ],
       },
       "s1",
     ),
@@ -179,7 +220,10 @@ eq(
   );
   eq(
     laneProgress(
-      { ...base, watches: [watch("s1", "d-1", 27_140), watch("s1", "d-2", 27_160)] },
+      {
+        ...base,
+        watches: [watch("s1", "d-1", 27_140), watch("s1", "d-2", 27_160)],
+      },
       "s1",
     ),
     "complete",
@@ -200,26 +244,56 @@ eq(
 /* ---------------------------------------------------------------- closing */
 
 {
-  const seeds = [seed("s1", 1, 3, "a1"), seed("s2", 1, 4, "a2"), seed("s3", 2, 3, "a3")];
+  const seeds = [
+    seed("s1", 1, 3, "a1"),
+    seed("s2", 1, 4, "a2"),
+    seed("s3", 2, 3, "a3"),
+  ];
   const rows = { seeds, watches: [] as Watch[], results: [] as Result[] };
 
-  eq(heatsOf(rows, EVENT), [1, 2], "an event's heats are the distinct heats of its seeds");
-  eq(seedsForHeat(rows, EVENT, 1).map((s) => s.lane), [3, 4], "in lane order");
+  eq(
+    heatsOf(rows, EVENT),
+    [1, 2],
+    "an event's heats are the distinct heats of its seeds",
+  );
+  eq(
+    seedsForHeat(rows, EVENT, 1).map((s) => s.lane),
+    [3, 4],
+    "in lane order",
+  );
   eq(heatClosed(rows, EVENT, 1), false, "nothing signed off, nothing closed");
   eq(eventClosed(rows, EVENT), false, "nor the event");
 
   const one = { ...rows, results: [result("s1", 27_140)] };
-  eq(heatClosed(one, EVENT, 1), false, "one of two swims signed off is not a closed heat");
+  eq(
+    heatClosed(one, EVENT, 1),
+    false,
+    "one of two swims signed off is not a closed heat",
+  );
 
-  const heat1 = { ...rows, results: [result("s1", 27_140), result("s2", 27_500)] };
+  const heat1 = {
+    ...rows,
+    results: [result("s1", 27_140), result("s2", 27_500)],
+  };
   eq(heatClosed(heat1, EVENT, 1), true, "both signed off closes the heat");
   eq(eventClosed(heat1, EVENT), false, "but heat 2 is still out");
 
-  const all = { ...rows, results: [result("s1", 1), result("s2", 2), result("s3", 3)] };
-  eq(eventClosed(all, EVENT), true, "every heat closed makes the event official");
+  const all = {
+    ...rows,
+    results: [result("s1", 1), result("s2", 2), result("s3", 3)],
+  };
+  eq(
+    eventClosed(all, EVENT),
+    true,
+    "every heat closed makes the event official",
+  );
 
   // An event with nothing seeded hasn't started, so it isn't finished either.
-  eq(eventClosed({ seeds: [], watches: [], results: [] }, EVENT), false, "an unseeded event is not closed");
+  eq(
+    eventClosed({ seeds: [], watches: [], results: [] }, EVENT),
+    false,
+    "an unseeded event is not closed",
+  );
 }
 
 /* ------------------------------------------------- reseeding's guard rail */
@@ -232,12 +306,18 @@ eq(
     "an event nobody has timed can be reseeded",
   );
   eq(
-    eventTouched({ seeds, watches: [watch("s1", "d-1", 27_140)], results: [] }, EVENT),
+    eventTouched(
+      { seeds, watches: [watch("s1", "d-1", 27_140)], results: [] },
+      EVENT,
+    ),
     true,
     "one watch is enough to make it history",
   );
   eq(
-    eventTouched({ seeds, watches: [], results: [result("s1", 27_140)] }, EVENT),
+    eventTouched(
+      { seeds, watches: [], results: [result("s1", 27_140)] },
+      EVENT,
+    ),
     true,
     "so is a result with no watch behind it — a DQ is still a record",
   );
@@ -245,7 +325,11 @@ eq(
   // out from under a thumb that is already down.
   eq(
     eventTouched(
-      { seeds, watches: [watch("s1", "d-1", undefined, { startedAt: 1 })], results: [] },
+      {
+        seeds,
+        watches: [watch("s1", "d-1", undefined, { startedAt: 1 })],
+        results: [],
+      },
       EVENT,
     ),
     true,
@@ -259,7 +343,10 @@ eq(
   const seeds = [seed("s1", 1, 3, "a1"), seed("s2", 1, 4, "a2")];
   eq(
     recordedCount({
-      watches: [watch("s1", "d-1", 27_140), watch("s2", "d-2", undefined, { startedAt: 1 })],
+      watches: [
+        watch("s1", "d-1", 27_140),
+        watch("s2", "d-2", undefined, { startedAt: 1 }),
+      ],
       results: [],
     }),
     1,
@@ -270,9 +357,17 @@ eq(
     1,
     "a signed-off swim is, even with no watch left under it",
   );
-  eq(watchesOn({ watches: [watch("s1", "d-1", 1), watch("s2", "d-1", 2)] }, "s1").length, 1,
-    "watches are read per swim");
-  eq(resultFor({ results: [result("s1", 1)] }, "s2"), undefined, "and results likewise");
+  eq(
+    watchesOn({ watches: [watch("s1", "d-1", 1), watch("s2", "d-1", 2)] }, "s1")
+      .length,
+    1,
+    "watches are read per swim",
+  );
+  eq(
+    resultFor({ results: [result("s1", 1)] }, "s2"),
+    undefined,
+    "and results likewise",
+  );
 }
 
 /* ------------------------------------------------ a lane nobody has named */
@@ -292,7 +387,15 @@ eq(
       { seeds: [unnamed], watches: [watch("s9", "d-1", 27_140)], results: [] },
       "s9",
     ),
-    { timeMs: 27_140, method: "single", watchCount: 1, status: "OK", official: false, from: "timer", discrepancyMs: null },
+    {
+      timeMs: 27_140,
+      method: "single",
+      watchCount: 1,
+      status: "OK",
+      official: false,
+      from: "timer",
+      discrepancyMs: null,
+    },
     "an unnamed lane's watch still proposes a time",
   );
   eq(
@@ -327,10 +430,22 @@ eq(slotTimerId("d-abc", 1), "d-abc", "the first watch is just the device");
 eq(slotTimerId("d-abc", 3), "d-abc#3", "the rest say which watch they are");
 eq(watchSlot("d-abc"), 1, "a plain timer is watch one");
 eq(watchSlot("d-abc#3"), 3, "and a slotted one says so");
-eq(watchSlot("d-abc#nonsense"), 1, "garbage after the marker is still watch one");
-eq(fromDevice("d-abc#2", "d-abc"), true, "a column belongs to the device holding it");
+eq(
+  watchSlot("d-abc#nonsense"),
+  1,
+  "garbage after the marker is still watch one",
+);
+eq(
+  fromDevice("d-abc#2", "d-abc"),
+  true,
+  "a column belongs to the device holding it",
+);
 eq(fromDevice("d-abc", "d-abc"), true, "so does the bare one");
-eq(fromDevice("d-abcdef", "d-abc"), false, "and a device whose id merely starts the same does not");
+eq(
+  fromDevice("d-abcdef", "d-abc"),
+  false,
+  "and a device whose id merely starts the same does not",
+);
 
 // The point of the third watch, filed by one phone: it outvotes the slow
 // thumb rather than dragging an average toward it.
@@ -343,7 +458,15 @@ eq(fromDevice("d-abcdef", "d-abc"), false, "and a device whose id merely starts 
   ];
   eq(
     swimTime({ seeds: [s10], watches: sheet, results: [] }, "s10"),
-    { timeMs: 27_200, method: "median", watchCount: 3, status: "OK", official: false, from: "timer", discrepancyMs: 1_760 },
+    {
+      timeMs: 27_200,
+      method: "median",
+      watchCount: 3,
+      status: "OK",
+      official: false,
+      from: "timer",
+      discrepancyMs: 1_760,
+    },
     "three watches off one clipboard are three watches, and take the middle one",
   );
   eq(
@@ -355,7 +478,10 @@ eq(fromDevice("d-abcdef", "d-abc"), false, "and a device whose id merely starts 
   // on the way in (`api.timer.lane.ts`), so the lane is not left waiting on a
   // watch nobody is holding.
   eq(
-    laneProgress({ watches: [sheet[0], watch("s10", slotTimerId("d-1", 2), undefined)] }, "s10"),
+    laneProgress(
+      { watches: [sheet[0], watch("s10", slotTimerId("d-1", 2), undefined)] },
+      "s10",
+    ),
     "waiting",
     "a column still running is a lane still waiting",
   );

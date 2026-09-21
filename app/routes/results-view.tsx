@@ -16,7 +16,13 @@ import {
 import { requireDb, type SyncEnv } from "~/lib/api.server";
 import { meetDetail } from "~/lib/meets.server";
 import { useMeetLive } from "~/hooks/use-meet-live";
-import { eventName, athleteName, withLiveTables, type Athlete, type MeetDetail } from "~/types/meet";
+import {
+  eventName,
+  athleteName,
+  withLiveTables,
+  type MeetDetail,
+} from "~/types/meet";
+import type { Athlete } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Results · Swim Starts" }];
@@ -37,7 +43,9 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   const detail = await meetDetail(db, params.meetId);
   if (!detail) return { detail: null };
 
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(params.meetId);
+  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(
+    params.meetId,
+  );
   return { detail: withLiveTables(detail, live) };
 }
 
@@ -75,13 +83,19 @@ function compareSwims(
   return nameOf(a).localeCompare(nameOf(b));
 }
 
-export default function ResultsView({ loaderData, params }: Route.ComponentProps) {
+export default function ResultsView({
+  loaderData,
+  params,
+}: Route.ComponentProps) {
   const loaded = loaderData.detail!;
   // The screen a parent in the stands leaves open. Nothing here is written by
   // this device, so everything on it shows up this way or not at all —
   // the meet's live connection now, rather than a poll.
   const live = useMeetLive(loaded.meet.id, loaded);
-  const detail = useMemo(() => withLiveTables(loaded, live.snapshot), [loaded, live.snapshot]);
+  const detail = useMemo(
+    () => withLiveTables(loaded, live.snapshot),
+    [loaded, live.snapshot],
+  );
   const meet = detail.meet;
   const [openEvent, setOpenEvent] = useState<string | null>(null);
   const view = params.view === "team-scores" ? "team-scores" : params.view;
@@ -272,7 +286,10 @@ export default function ResultsView({ loaderData, params }: Route.ComponentProps
                       const shownPlace = ranked ? ++place : null;
                       const pts = points[index] ?? 0;
                       return (
-                        <li key={seed.id} className="flex items-center gap-3 py-2">
+                        <li
+                          key={seed.id}
+                          className="flex items-center gap-3 py-2"
+                        >
                           <span className="w-6 text-center text-sm font-bold text-slate-400">
                             {shownPlace ?? (seed.exhibition ? "X" : "—")}
                           </span>
@@ -333,8 +350,12 @@ function TeamScores({
   detail: MeetDetail;
   totals: Map<ScoreGroup, Map<string, number>>;
 }) {
-  const teamsById = new Map(detail.teams.map((team) => [team.id, team] as const));
-  const groups = GROUP_ORDER.filter((group) => (totals.get(group)?.size ?? 0) > 0);
+  const teamsById = new Map(
+    detail.teams.map((team) => [team.id, team] as const),
+  );
+  const groups = GROUP_ORDER.filter(
+    (group) => (totals.get(group)?.size ?? 0) > 0,
+  );
 
   if (groups.length === 0) {
     return (
@@ -363,7 +384,9 @@ function TeamScores({
                     <span className="min-w-0 flex-1 truncate font-semibold">
                       {team ? team.name : "(unknown team)"}
                     </span>
-                    <span className="text-lg font-bold tabular-nums">{points}</span>
+                    <span className="text-lg font-bold tabular-nums">
+                      {points}
+                    </span>
                   </li>
                 );
               })}

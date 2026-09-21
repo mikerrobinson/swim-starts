@@ -13,7 +13,8 @@ import {
   saveLaneLayout,
   saveNameOrder,
 } from "~/lib/storage";
-import type { LaneLayout, NameOrder } from "~/types/meet";
+import type { LaneLayout } from "~/types/meet";
+import type { NameOrder } from "~/types/preferences";
 
 /**
  * How this device likes to look at things, as opposed to what's true about a

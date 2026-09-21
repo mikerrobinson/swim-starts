@@ -1,13 +1,10 @@
 import { useState } from "react";
 import { Button, Field, Segmented, Sheet, TextInput } from "./ui";
 import { generateId } from "~/lib/id";
-import {
-  ageOn,
-  todayIso,
-  type Enrollment,
-  type Gender,
-  type Athlete,
-} from "~/types/meet";
+import { todayIso } from "~/types/athlete";
+import { ageOn } from "~/types/athlete";
+import { type Enrollment } from "~/types/team";
+import type { Athlete, Gender } from "~/types/athlete";
 
 /**
  * Add or edit one athlete. Mount it only while it's open (or key it by athlete
@@ -114,7 +111,13 @@ export function AthleteSheet({
             onChange={(e) => setBirthDate(e.target.value)}
           />
         </Field>
-        <Button variant="primary" size="lg" full onClick={save} disabled={!canSave}>
+        <Button
+          variant="primary"
+          size="lg"
+          full
+          onClick={save}
+          disabled={!canSave}
+        >
           Save
         </Button>
         {onDelete && (

@@ -1,20 +1,14 @@
 import { generateId } from "./id";
 import { formatTime } from "./time";
-import {
-  fromStopwatch,
-  swimTime,
-  watchesOn,
-  type SwimTime,
-} from "./timing";
+import { fromStopwatch, swimTime, watchesOn, type SwimTime } from "./timing";
 import {
   eventName,
   athleteName,
-  type Athlete,
-  type Enrollment,
-  type Gender,
   type MeetDetail,
   type Seed,
 } from "~/types/meet";
+import { type Enrollment } from "~/types/team";
+import type { Athlete, Gender } from "~/types/athlete";
 
 /**
  * One row of a roster import: the person, plus what's true of them this
@@ -78,7 +72,10 @@ export function parseCsv(text: string): string[][] {
 }
 
 function normalizeHeader(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
 }
 
 /** Header aliases, so a coach's export doesn't need renaming first. */
@@ -88,21 +85,15 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   fullName: ["name", "fullname", "swimmer", "swimmername", "athlete"],
   gender: ["gender", "sex", "m/f", "mf"],
   year: ["year", "schoolyear", "grade", "gradelevel", "class", "yr"],
-  birthDate: [
-    "birthdate",
-    "birthday",
-    "dob",
-    "dateofbirth",
-    "birth",
-    "bday",
-  ],
+  birthDate: ["birthdate", "birthday", "dob", "dateofbirth", "birth", "bday"],
   squad: ["squad", "team", "side", "color", "group"],
 };
 
 function parseGender(value: string): Gender | null {
   const v = value.trim().toLowerCase();
   if (["m", "male", "b", "boy", "boys", "men"].includes(v)) return "M";
-  if (["f", "female", "g", "girl", "girls", "w", "women"].includes(v)) return "F";
+  if (["f", "female", "g", "girl", "girls", "w", "women"].includes(v))
+    return "F";
   return null;
 }
 
@@ -144,7 +135,9 @@ export function parseBirthDate(
       if (year > today.getFullYear()) year -= 100;
     }
   } else {
-    return { error: `"${text}" isn't a date we recognise (try 2009-03-14 or 3/14/2009)` };
+    return {
+      error: `"${text}" isn't a date we recognise (try 2009-03-14 or 3/14/2009)`,
+    };
   }
 
   if (month < 1 || month > 12 || day < 1 || day > 31) {
@@ -156,7 +149,10 @@ export function parseBirthDate(
 
   // Round-tripping catches the 31st of February and friends.
   const check = new Date(`${date}T00:00:00Z`);
-  if (Number.isNaN(check.getTime()) || check.toISOString().slice(0, 10) !== date) {
+  if (
+    Number.isNaN(check.getTime()) ||
+    check.toISOString().slice(0, 10) !== date
+  ) {
     return { error: `"${text}" isn't a real date` };
   }
   if (year < 1900 || date > today.toISOString().slice(0, 10)) {
@@ -227,7 +223,8 @@ export function parseRosterCsv(text: string): RosterImport {
       } else {
         const parts = full.split(/\s+/).filter(Boolean);
         firstName = parts.slice(0, -1).join(" ");
-        lastName = parts.length > 1 ? parts[parts.length - 1] : (parts[0] ?? "");
+        lastName =
+          parts.length > 1 ? parts[parts.length - 1] : (parts[0] ?? "");
       }
     }
 

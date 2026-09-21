@@ -29,7 +29,7 @@ import {
   type PublicTeam,
   type TeamRef,
 } from "./public";
-import type { Athlete } from "~/types/meet";
+import type { Athlete } from "~/types/athlete";
 
 /* ------------------------------------------------------------------- teams */
 

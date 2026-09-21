@@ -22,18 +22,16 @@
 
 import { eventClosed, swimTime, type SwimTime } from "./timing";
 import { athleteName, eventName, isDiving } from "~/types/meet";
+import type { Athlete, Gender } from "~/types/athlete";
 import type {
   Seed,
-  TimeMethod,
-  Athlete,
-  Gender,
   Meet,
   MeetCourse,
   MeetDetail,
   MeetType,
   Result,
-  Team,
 } from "~/types/meet";
+import type { Team } from "~/types/team";
 
 /* ------------------------------------------------------------------ people */
 
@@ -146,7 +144,6 @@ export interface PublicPlacing {
   timeMs: number;
   status: Result["status"];
   /** How the time was arrived at — "median of three", and so on. */
-  method: TimeMethod;
   watchCount: number;
   /**
    * Signed off by whoever is running the meet. Until then these numbers are
@@ -185,7 +182,10 @@ export interface PublicMeetDetail extends PublicMeetSummary {
  * order to put them in — it's so the page doesn't reshuffle two of them on
  * every reload.
  */
-function resultGroup(row: { status: Result["status"]; seed: Pick<Seed, "exhibition"> }): 0 | 1 | 2 | 3 {
+function resultGroup(row: {
+  status: Result["status"];
+  seed: Pick<Seed, "exhibition">;
+}): 0 | 1 | 2 | 3 {
   if (row.status === "DQ") return 2;
   if (row.status !== "OK") return 3;
   return row.seed.exhibition ? 1 : 0;
@@ -248,7 +248,6 @@ export function meetResults(
         heat: row.seed.heat,
         timeMs: row.timeMs,
         status: row.status,
-        method: row.method,
         watchCount: row.watchCount,
         final: row.official,
         exhibition: row.seed.exhibition === true,
@@ -311,7 +310,9 @@ export function athleteSwims(
     const events = new Map(detail.events.map((e) => [e.id, e] as const));
     const all = detail.seeds
       .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
-      .filter((row): row is { seed: Seed; time: SwimTime } => row.time !== null);
+      .filter(
+        (row): row is { seed: Seed; time: SwimTime } => row.time !== null,
+      );
 
     for (const { seed, time } of all) {
       if (seed.athleteId !== athleteId) continue;
@@ -356,10 +357,12 @@ export function athleteSwims(
     }
   }
   for (const swim of swims) {
-    swim.best = swim.status === "OK" && fastest.get(swim.raceKey) === swim.timeMs;
+    swim.best =
+      swim.status === "OK" && fastest.get(swim.raceKey) === swim.timeMs;
   }
 
   return swims.sort(
-    (a, b) => b.date.localeCompare(a.date) || a.eventName.localeCompare(b.eventName),
+    (a, b) =>
+      b.date.localeCompare(a.date) || a.eventName.localeCompare(b.eventName),
   );
 }

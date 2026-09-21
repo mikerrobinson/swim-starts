@@ -30,11 +30,11 @@ import {
   MEET_COURSES,
   MEET_TYPES,
   meetTypeLabel,
-  todayIso,
   type LaneCount,
   type MeetCourse,
   type MeetType,
 } from "~/types/meet";
+import { todayIso } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Meets · Swim Starts" }];

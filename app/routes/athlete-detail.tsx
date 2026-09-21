@@ -24,7 +24,10 @@ import { publicAthleteDetail } from "~/lib/public.server";
 import { describeUser } from "~/lib/auth.server";
 import { seasonForDate } from "~/lib/roster";
 import { ensureSchema } from "~/lib/schema.server";
-import { ageOn, athleteName, todayIso, type Gender } from "~/types/meet";
+import { athleteName } from "~/types/meet";
+import { todayIso } from "~/types/athlete";
+import { ageOn } from "~/types/athlete";
+import type { Gender } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Athlete · Swim Starts" }];

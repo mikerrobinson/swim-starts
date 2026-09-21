@@ -15,7 +15,7 @@ import { listPublicTeams } from "~/lib/public.server";
 import { useSession } from "~/state/session";
 import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
-import { normalizeTeamCode } from "~/types/meet";
+import { normalizeTeamCode } from "~/types/team";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Teams · Swim Starts" }];

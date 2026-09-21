@@ -11,15 +11,15 @@ import { defaultEvents } from "../app/lib/events.ts";
 import { buildSeeds } from "../app/lib/heats.ts";
 import { makeEnrollment } from "../app/lib/roster.ts";
 import { DUAL_MEET_SCORING } from "../app/types/meet.ts";
+import type { Athlete } from "../app/types/athlete.ts";
 import type {
-  Athlete,
   Result,
   Meet,
   MeetDetail,
   Seed,
-  Team,
   Watch,
 } from "../app/types/meet.ts";
+import type { Team } from "~/types/team.ts";
 
 /* ------------------------------------------------------------- redaction */
 
@@ -117,7 +117,6 @@ const detail: MeetDetail = {
   results: [
     {
       seedId: seedOf("a2").id,
-      meetId: "m1",
       eventId: free50.id,
       athleteId: "a2",
       status: "DQ",
@@ -209,7 +208,9 @@ const detail: MeetDetail = {
   const exhibitionDetail: MeetDetail = { ...detail, seeds: exhibitionSeeds };
 
   const teamOf = (id: string) => {
-    const enrolled = exhibitionDetail.enrollments.find((e) => e.athleteId === id);
+    const enrolled = exhibitionDetail.enrollments.find(
+      (e) => e.athleteId === id,
+    );
     if (!enrolled) return null;
     return enrolled.teamId === home.id ? teamRef(home) : teamRef(away);
   };
@@ -232,11 +233,7 @@ const detail: MeetDetail = {
     [false, true, false],
     "only her swim is flagged exhibition",
   );
-  eq(
-    race.placings[1].timeMs,
-    26_100,
-    "her time still shows, same as anyone's",
-  );
+  eq(race.placings[1].timeMs, 26_100, "her time still shows, same as anyone's");
 }
 
 /* ---- ordering: what counts, then exhibition, then DQ, then NS ---- */
@@ -254,24 +251,68 @@ const detail: MeetDetail = {
     { id: "w1", firstName: "Aaron", lastName: "Young", gender: "F" },
   ];
   const orderSeeds: Seed[] = [
-    { id: "sx", meetId: "m9", eventId: free50.id, heat: 1, lane: 1, athleteId: "x1" },
+    {
+      id: "sx",
+      eventId: free50.id,
+      heat: 1,
+      lane: 1,
+      athleteId: "x1",
+    },
     {
       id: "sy",
-      meetId: "m9",
       eventId: free50.id,
       heat: 1,
       lane: 2,
       athleteId: "y1",
       exhibition: true,
     },
-    { id: "sz1", meetId: "m9", eventId: free50.id, heat: 1, lane: 3, athleteId: "z1" },
-    { id: "sz2", meetId: "m9", eventId: free50.id, heat: 1, lane: 4, athleteId: "z2" },
-    { id: "sw", meetId: "m9", eventId: free50.id, heat: 1, lane: 5, athleteId: "w1" },
+    {
+      id: "sz1",
+      eventId: free50.id,
+      heat: 1,
+      lane: 3,
+      athleteId: "z1",
+    },
+    {
+      id: "sz2",
+      eventId: free50.id,
+      heat: 1,
+      lane: 4,
+      athleteId: "z2",
+    },
+    {
+      id: "sw",
+      eventId: free50.id,
+      heat: 1,
+      lane: 5,
+      athleteId: "w1",
+    },
   ];
   const orderResults: Result[] = [
-    { seedId: "sz1", meetId: "m9", eventId: free50.id, athleteId: "z1", status: "DQ", timeMs: 0, decidedAt: 1 },
-    { seedId: "sz2", meetId: "m9", eventId: free50.id, athleteId: "z2", status: "DQ", timeMs: 0, decidedAt: 1 },
-    { seedId: "sw", meetId: "m9", eventId: free50.id, athleteId: "w1", status: "NS", timeMs: 0, decidedAt: 1 },
+    {
+      seedId: "sz1",
+      eventId: free50.id,
+      athleteId: "z1",
+      status: "DQ",
+      timeMs: 0,
+      decidedAt: 1,
+    },
+    {
+      seedId: "sz2",
+      eventId: free50.id,
+      athleteId: "z2",
+      status: "DQ",
+      timeMs: 0,
+      decidedAt: 1,
+    },
+    {
+      seedId: "sw",
+      eventId: free50.id,
+      athleteId: "w1",
+      status: "NS",
+      timeMs: 0,
+      decidedAt: 1,
+    },
   ];
   const orderDetail: MeetDetail = {
     ...detail,
@@ -280,8 +321,20 @@ const detail: MeetDetail = {
     entries: { [free50.id]: ["x1", "y1", "z1", "z2", "w1"] },
     watches: [
       // Yolanda's exhibition swim is the fastest time in the pool.
-      { seedId: "sx", timerId: "t1", role: "timer", timeMs: 30_000, recordedAt: 1 },
-      { seedId: "sy", timerId: "t1", role: "timer", timeMs: 20_000, recordedAt: 1 },
+      {
+        seedId: "sx",
+        timerId: "t1",
+        role: "timer",
+        timeMs: 30_000,
+        recordedAt: 1,
+      },
+      {
+        seedId: "sy",
+        timerId: "t1",
+        role: "timer",
+        timeMs: 20_000,
+        recordedAt: 1,
+      },
     ],
     results: orderResults,
     athletes: orderAthletes,
@@ -296,7 +349,11 @@ const detail: MeetDetail = {
     ["Xena", "Yolanda", "Amber", "Zoe", "Aaron"],
     "counts first (by time), then exhibition (by time), then DQ (by name), then NS (by name)",
   );
-  eq(race.placings.map((p) => p.place), [1, null, null, null, null], "only the swim that counts gets a place");
+  eq(
+    race.placings.map((p) => p.place),
+    [1, null, null, null, null],
+    "only the swim that counts gets a place",
+  );
 }
 
 /* ---- one athlete's history ---- */

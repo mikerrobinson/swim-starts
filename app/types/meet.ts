@@ -18,7 +18,9 @@
  * is a DELETE.
  */
 
-export type Gender = "M" | "F";
+import type { Athlete, Gender } from "./athlete";
+import type { NameOrder } from "./preferences";
+import type { Enrollment, Team } from "./team";
 
 /** Events can be restricted to one gender, or open to everyone. */
 export type EventGender = Gender | "Open";
@@ -53,7 +55,7 @@ export const STROKES: Stroke[] = [
  * registration grid alongside their swims — plenty of divers swim too. It
  * isn't timed, scored, or run here; the app is not a diving tool.
  */
-export function isDiving(event: Pick<MeetEvent, "stroke">): boolean {
+export function isDiving(event: Pick<Event, "stroke">): boolean {
   return event.stroke === "Diving";
 }
 
@@ -65,7 +67,7 @@ export const DIVING_DISTANCE = 1;
  * time. The app doesn't model the four legs — a relay lane is held by a single
  * athlete standing in for the squad, usually whoever leads off.
  */
-export function isRelay(event: Pick<MeetEvent, "stroke">): boolean {
+export function isRelay(event: Pick<Event, "stroke">): boolean {
   return event.stroke.endsWith("Relay");
 }
 
@@ -130,156 +132,6 @@ export function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
   return layout === "list-desc" ? lanes.reverse() : lanes;
 }
 
-/* ------------------------------------------------------------ people, teams */
-
-/**
- * A person, and only the things that stay true about them wherever they swim.
- *
- * Global: an athlete belongs to no team. Who they swim for, and when, is said
- * by an `Enrollment` — which is what lets one person swim for a school in
- * winter and a club in summer without becoming two people, and what stops a
- * visiting swimmer being copied into the roster of every team that races them.
- *
- * Durable and never deleted, since results reference athletes by id forever.
- */
-export interface Athlete {
-  id: string;
-  firstName: string;
-  lastName: string;
-  gender: Gender;
-  /**
-   * ISO date (yyyy-mm-dd). Optional: a high-school dual meet never asks, but
-   * age-group entries do, and the SDIF (.sd3) files other systems exchange
-   * carry it on every athlete record.
-   *
-   * Private. It never leaves the server except to this person or their coach.
-   */
-  birthDate?: string;
-  /**
-   * The account this athlete is, when they have one. Absent for everyone who
-   * has never signed in, which is most of a roster.
-   */
-  userId?: string;
-}
-
-/**
- * A team: a name, a code, and the seasons it runs.
- *
- * Deliberately does *not* hold its athletes. The roster is the set of
- * enrollments pointing at global athlete records, so two teams racing the same
- * swimmer point at one person rather than keeping a copy each.
- *
- * A team can exist without anyone owning it. Setting up a meet against a school
- * that has never used the app mints an unclaimed team; a coach from that school
- * claims it later, and the meets it already appears in are unaffected.
- */
-export interface Team {
-  id: string;
-  name: string;
-  /** Short code as it appears on a heat sheet or an SD3 file — "CHAP". */
-  code: string;
-  /** Which season the app works in when nothing says otherwise. */
-  currentSeasonId?: string;
-  /** Who set it up. Absent for the teams typed in as opponents before this
-   *  was recorded, and for the ones that predate accounts entirely. */
-  createdBy?: string;
-}
-
-/**
- * A team's competitive year. Scoped to the team on purpose: a high-school
- * season and a club season don't line up, so there's no useful global one.
- *
- * Both dates are optional — a season with neither runs from the beginning of
- * time to the end of it.
- */
-export interface Season {
-  id: string;
-  teamId: string;
-  /** Free text as the coach writes it — "2026-27", "Summer 2027". */
-  name: string;
-  /** ISO date (yyyy-mm-dd), inclusive. */
-  startDate?: string;
-  /** ISO date (yyyy-mm-dd), inclusive. */
-  endDate?: string;
-}
-
-/**
- * On the roster, but only for a while.
- *
- * Everything seasonal about an athlete lives here rather than on the athlete,
- * so last year's sophomore is this year's junior without anyone editing
- * anything, and an athlete who moves between a club and a school team is one
- * person with two enrollments.
- */
-export interface Enrollment {
-  id: string;
-  teamId: string;
-  seasonId: string;
-  athleteId: string;
-  /** School year as entered — "9", "Fr", "Senior", whatever the CSV had. */
-  year: string;
-  /** Optional squad/side for an inter-squad meet (e.g. "Blue" / "Gold"). */
-  squad?: string;
-  /**
-   * "inactive" is someone who left mid-season: off the roster for new races,
-   * but they were on it, and any times they swam still stand. Someone who
-   * simply isn't on the team this year has no enrollment at all.
-   */
-  status: EnrollmentStatus;
-}
-
-export type EnrollmentStatus = "active" | "inactive";
-
-/**
- * How names are ordered and written. "last" gives "Aaronson, Avery" sorted by
- * surname; "first" gives "Avery Aaronson" sorted by given name. A preference
- * of whoever is looking, so it lives on the device.
- */
-export type NameOrder = "first" | "last";
-
-/** Team codes are short and upper-case wherever they're exchanged. */
-export function normalizeTeamCode(value: string): string {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "")
-    .slice(0, 6);
-}
-
-/**
- * Age on a given date — what age-group entries are seeded by, and what an
- * export has to state. Returns null when the birth date is missing or
- * unparseable rather than guessing at one.
- */
-export function ageOn(
-  athlete: Pick<Athlete, "birthDate">,
-  isoDate: string,
-): number | null {
-  const born = parseIsoDate(athlete.birthDate);
-  const on = parseIsoDate(isoDate);
-  if (!born || !on) return null;
-
-  let age = on.year - born.year;
-  // Not yet had this year's birthday.
-  if (on.month < born.month || (on.month === born.month && on.day < born.day)) {
-    age -= 1;
-  }
-  return age >= 0 ? age : null;
-}
-
-function parseIsoDate(
-  value: string | undefined,
-): { year: number; month: number; day: number } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? "");
-  if (!match) return null;
-  const [, year, month, day] = match;
-  return { year: Number(year), month: Number(month), day: Number(day) };
-}
-
-/** Today, as the plain ISO day the rest of the model speaks in. */
-export function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 /* -------------------------------------------------------------------- meet */
 
 export type MeetType =
@@ -314,8 +166,8 @@ export const MEET_COURSES: Array<{
   detail: string;
 }> = [
   { value: "SCY", label: "SCY", detail: "25 yard" },
-  { value: "LCM", label: "LCM", detail: "50 metre" },
-  { value: "SCM", label: "SCM", detail: "25 metre" },
+  { value: "LCM", label: "LCM", detail: "50 meter" },
+  { value: "SCM", label: "SCM", detail: "25 meter" },
 ];
 
 export function isMeetCourse(value: unknown): value is MeetCourse {
@@ -378,70 +230,59 @@ export function formatNumberList(values: number[]): string {
   return values.join(", ");
 }
 
-/**
- * One day's racing.
- *
- * The lineup, entries, heats and times are their own rows in their own tables,
- * fetched when a screen needs them. A meet row is just the meet.
- */
+export type SwimKey = `${string}:h${number}:l${number}`;
+
+export type EventId = string;
+
+export function makeSwimKey(
+  eventId: string,
+  heat: number,
+  lane: number,
+): SwimKey {
+  return `${eventId}:h${heat}:l${lane}`;
+}
+
+export function parseSwimKey(key: SwimKey): {
+  eventId: string;
+  heat: number;
+  lane: number;
+} {
+  const [eventId, h, l] = key.split(":");
+  return {
+    eventId,
+    heat: Number(h.replace("h", "")),
+    lane: Number(l.replace("l", "")),
+  };
+}
+
 export interface Meet {
   id: string;
   name: string;
-  /** ISO date (yyyy-mm-dd). */
   date: string;
   type: MeetType;
   course: MeetCourse;
-  /** Where it's being swum, free text — e.g. "Cactus Aquatic Center". */
   location?: string;
-  /** The teams racing, by reference. A meet belongs to none of them. */
   teamIds: string[];
-  /** Whose pool it is, when that matters. Always one of `teamIds`. */
   hostTeamId?: string;
-  /** The account that set it up. */
   createdBy?: string;
   laneCount: LaneCount;
-  /**
-   * How many watches a lane is expected to be timed by.
-   *
-   * One — the default, and what every meet before this setting existed was —
-   * means a timing phone is one person's stopwatch. More means a lane has
-   * that many handheld watches on it, and a phone standing behind that lane
-   * may be the clipboard recording all of them. Which of the two a given
-   * phone is doing is that phone's own answer, not the meet's: see
-   * `timer-lanes.tsx`.
-   */
   timersPerLane: TimersPerLane;
-  /** Which gender swims first in each pair of a split lineup. */
   leadGender: Gender;
-  /** Whether the lineup carries a Diving event. */
   includeDiving: boolean;
   limits: EntryLimits;
   entryVisibility: EntryVisibility;
-  /**
-   * Whether a swimmer whose account is linked may enter and scratch
-   * themselves. Off by default: most coaches pick the lineup.
-   */
   athletesMayEnter: boolean;
-  /**
-   * Which lanes each team swims. Usually one team gets the odds and the other
-   * the evens in a dual meet, but that's an assumption a triangular meet or an
-   * odd-width pool breaks — so it's said explicitly rather than derived.
-   */
   laneAssignments: LaneAssignments;
-  /** How this meet's races turn into points. See `ScoringRules`. */
   scoring: ScoringRules;
 }
 
-/** One race in a meet's programme. `position` is the order it's swum in. */
-export interface MeetEvent {
+export interface Event {
   id: string;
-  meetId: string;
   position: number;
   distance: number;
   stroke: Stroke;
   gender: EventGender;
-  /** Optional label override; otherwise derived from distance/stroke/gender. */
-  name?: string;
+  name?: string; // optional - if not set, app concatenates gender, distance, and stroke
 }
 
 /**
@@ -459,7 +300,6 @@ export interface MeetEvent {
  */
 export interface Seed {
   id: string;
-  meetId: string;
   eventId: string;
   /** Which heat of the event, 1-based. Usually 1. */
   heat: number;
@@ -490,73 +330,34 @@ export interface Seed {
 }
 
 export type ResultStatus = "OK" | "DQ" | "NS";
-
-/**
- * One person's watch on one lane.
- *
- * A lane is timed by whoever is standing at it — often two or three people,
- * plus a coach — so a race produces several times for the same swim and the
- * official one is worked out from them. Each watch is its own row: nobody
- * overwrites anybody, a timer can correct their own time and only their own,
- * and two timers on different lanes never touch the same thing.
- *
- * Keyed by heat, lane and timer, so sending the same watch twice — a retry
- * after the wifi drops at the wall — is an update rather than a duplicate.
- */
 export type WatchRole = "timer" | "coach" | "admin";
 
 export interface Watch {
-  /** The swim it measures. */
+  id: string;
   seedId: string;
-  /**
-   * Whoever took it, and the key one watch per swim is filed under.
-   *
-   * A device id for a volunteer behind a lane, who has no account and is
-   * identified only by the phone they scanned with. A *user* id for anybody
-   * signed in — a coach on the multi-lane stopwatch, an administrator typing
-   * a time at the desk — so that person keeps one watch per swim whichever
-   * device they happen to pick up.
-   */
   timerId: string;
-  /**
-   * The account behind it, when there was one. Absent for a QR-code timer.
-   * The server sets it from the session rather than believing the client.
-   */
   userId?: string;
-  /**
-   * What the submitter was to this meet when they took it.
-   *
-   * Recorded rather than looked up later: a coach made an administrator in
-   * March must not retroactively turn the watch they held in January into the
-   * official's own reading.
-   */
   role: WatchRole;
-  /**
-   * The time, once there is one.
-   *
-   * Absent means a stopwatch is running and nothing has been submitted yet —
-   * which is how the desk tells a lane nobody is covering from one whose
-   * timers are still holding their clocks. There is no separate table of
-   * armed stopwatches, because a watch with a start and no time says it.
-   *
-   * Nothing that works out a swim's time may see one of these; they are
-   * filtered out in `timedWatches`, which every such reader goes through.
-   */
   timeMs?: number;
   recordedAt: number;
-  /**
-   * When the watch was started and stopped, on the server's clock.
-   *
-   * Both present means a stopwatch in this app ran the race; neither means the
-   * time was typed in. There is no "source" field saying which, because it
-   * could only repeat what these two already say.
-   *
-   * Translated from the phone's own clock on the way in, because the desk
-   * draws a running stopwatch from `startedAt` and that means comparing it
-   * against the desk's now.
-   */
   startedAt?: number;
   stoppedAt?: number;
+}
+
+export interface Swim {
+  id: string;
+  eventId: EventId;
+  heat: number; // 1-based (Heat 1, 2, 3)
+  lane: number; // 1-based (Lane 1, 2, 3, 4, 5, 6)
+  athleteId?: string; // Optional for open lanes
+  athleteName?: string;
+  athleteTeam?: string;
+  exhibition: boolean;
+  status: "pending" | "official" | "dq" | "dns";
+  officialTimeMs?: number;
+  decidedAt?: number;
+  decidedBy?: string;
+  watches?: Watch[]; // Hydrated watches for easy UI display
 }
 
 /**
@@ -575,7 +376,6 @@ export interface Watch {
  */
 export interface Result {
   seedId: string;
-  meetId: string;
   eventId: string;
   athleteId: string;
   status: ResultStatus;
@@ -585,13 +385,10 @@ export interface Result {
   decidedAt: number;
 }
 
-/** How a proposed time was arrived at, for anyone asking why it says that. */
-export type TimeMethod = "single" | "average" | "median" | "official";
-
 export interface MeetDetail {
   meet: Meet;
   teams: Team[];
-  events: MeetEvent[];
+  events: Event[];
   /** eventId -> athleteIds registered in it. */
   entries: Record<string, string[]>;
   /** Every planned swim: who is in which lane of which heat. */
@@ -639,7 +436,10 @@ export type MeetSnapshot = Pick<
  * copies win on id collisions since they can include a just-added walk-in
  * before D1's own read would.
  */
-export function withLiveTables(detail: MeetDetail, live: MeetSnapshot): MeetDetail {
+export function withLiveTables(
+  detail: MeetDetail,
+  live: MeetSnapshot,
+): MeetDetail {
   const athletes = new Map(detail.athletes.map((a) => [a.id, a]));
   for (const athlete of live.athletes) athletes.set(athlete.id, athlete);
   return {
@@ -701,7 +501,7 @@ export function displayName(s: Athlete, order: NameOrder = "last"): string {
 }
 
 export function eventName(
-  e: Pick<MeetEvent, "name" | "gender" | "stroke" | "distance">,
+  e: Pick<Event, "name" | "gender" | "stroke" | "distance">,
 ): string {
   if (e.name) return e.name;
   const prefix =
@@ -721,14 +521,14 @@ export function meetSubtitle(meet: Pick<Meet, "type">): string {
  * one column per race and picks the right event from the swimmer's gender, so
  * a split lineup doesn't double the width of the grid.
  */
-export function raceKey(event: Pick<MeetEvent, "distance" | "stroke">): string {
+export function raceKey(event: Pick<Event, "distance" | "stroke">): string {
   return `${event.distance}|${event.stroke}`;
 }
 
 /** Whether an athlete is eligible for an event, given its gender restriction. */
 export function isEligible(
   athlete: Athlete,
-  event: Pick<MeetEvent, "gender">,
+  event: Pick<Event, "gender">,
 ): boolean {
   return event.gender === "Open" || event.gender === athlete.gender;
 }

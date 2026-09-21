@@ -12,30 +12,29 @@
  * touch the same row.
  */
 
+import type { Athlete, Gender } from "~/types/athlete";
 import { ensureSchema } from "./schema.server";
 import { generateId } from "./id";
 import { DUAL_MEET_SCORING, isLaneCount, isTimersPerLane } from "~/types/meet";
 import type {
-  Athlete,
-  Enrollment,
   EntryLimits,
-  Gender,
   LaneAssignments,
   LaneCount,
   Meet,
   MeetCourse,
   MeetDetail,
-  MeetEvent,
+  Event,
   Result,
   ScoringRules,
   Seed,
   MeetType,
   ResultStatus,
   Stroke,
-  Team,
   TimersPerLane,
   Watch,
 } from "~/types/meet";
+import type { Enrollment } from "~/types/team";
+import type { Team } from "~/types/team";
 import { athleteRow, type AthleteRow } from "./athletes.server";
 import {
   enrollmentFrom,
@@ -125,14 +124,13 @@ interface EventRow {
   name: string | null;
 }
 
-function eventFrom(row: EventRow): MeetEvent {
+function eventFrom(row: EventRow): Event {
   return {
     id: row.id,
-    meetId: row.meet_id,
     position: row.position,
     distance: row.distance,
     stroke: row.stroke as Stroke,
-    gender: row.gender as MeetEvent["gender"],
+    gender: row.gender as Event["gender"],
     name: row.name ?? undefined,
   };
 }
@@ -151,7 +149,6 @@ interface SeedRow {
 function seedFrom(row: SeedRow): Seed {
   return {
     id: row.id,
-    meetId: row.meet_id,
     eventId: row.event_id,
     heat: row.heat,
     lane: row.lane,
@@ -199,7 +196,6 @@ interface ResultRow {
 function resultFrom(row: ResultRow): Result {
   return {
     seedId: row.seed_id,
-    meetId: row.meet_id,
     eventId: row.event_id,
     athleteId: row.athlete_id,
     status: row.status === "DQ" || row.status === "NS" ? row.status : "OK",
@@ -637,10 +633,10 @@ export async function addEvent(
   event: {
     distance: number;
     stroke: Stroke;
-    gender: MeetEvent["gender"];
+    gender: Event["gender"];
     name?: string;
   },
-): Promise<MeetEvent> {
+): Promise<Event> {
   await ensureSchema(db);
   const last = await db
     .prepare(
@@ -664,14 +660,14 @@ export async function addEvent(
       event.name ?? null,
     )
     .run();
-  return { id, meetId, position: (last?.p ?? -1) + 1, ...event };
+  return { id, position: (last?.p ?? -1) + 1, ...event };
 }
 
 /** Write a whole lineup at once — what "start from the standard order" does. */
 export async function addEventsToMeet(
   db: D1Database,
   meetId: string,
-  events: MeetEvent[],
+  events: Event[],
 ): Promise<void> {
   await ensureSchema(db);
   if (events.length === 0) return;
@@ -791,7 +787,6 @@ export async function ensureLane(
   return (
     (await seedAt(db, place.eventId, place.heat, place.lane)) ?? {
       id,
-      meetId,
       eventId: place.eventId,
       heat: place.heat,
       lane: place.lane,
@@ -822,4 +817,3 @@ export async function addHeat(
   await ensureLane(db, meetId, { eventId, heat, lane: 1 });
   return heat;
 }
-

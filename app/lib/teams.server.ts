@@ -8,14 +8,13 @@
 
 import { ensureSchema } from "./schema.server";
 import { generateId } from "./id";
-import { normalizeTeamCode, todayIso } from "~/types/meet";
-import type {
-  Athlete,
-  Enrollment,
-  EnrollmentStatus,
-  Season,
-  Team,
-} from "~/types/meet";
+import { todayIso } from "~/types/athlete";
+import { normalizeTeamCode } from "~/types/team";
+import type { Athlete } from "~/types/athlete";
+import type { EnrollmentStatus } from "~/types/team";
+import type { Enrollment } from "~/types/team";
+import type { Season } from "~/types/team";
+import type { Team } from "~/types/team";
 import { athleteRow, type AthleteRow } from "./athletes.server";
 
 export interface TeamRow {
@@ -79,22 +78,35 @@ export function enrollmentFrom(row: EnrollmentRow): Enrollment {
 
 /* ------------------------------------------------------------------ reads */
 
-export async function getTeam(db: D1Database, id: string): Promise<Team | null> {
+export async function getTeam(
+  db: D1Database,
+  id: string,
+): Promise<Team | null> {
   await ensureSchema(db);
-  const row = await db.prepare("SELECT * FROM teams WHERE id = ?").bind(id).first<TeamRow>();
+  const row = await db
+    .prepare("SELECT * FROM teams WHERE id = ?")
+    .bind(id)
+    .first<TeamRow>();
   return row ? teamRow(row) : null;
 }
 
 export async function listTeams(db: D1Database): Promise<Team[]> {
   await ensureSchema(db);
-  const { results } = await db.prepare("SELECT * FROM teams ORDER BY name").all<TeamRow>();
+  const { results } = await db
+    .prepare("SELECT * FROM teams ORDER BY name")
+    .all<TeamRow>();
   return results.map(teamRow);
 }
 
-export async function listSeasons(db: D1Database, teamId: string): Promise<Season[]> {
+export async function listSeasons(
+  db: D1Database,
+  teamId: string,
+): Promise<Season[]> {
   await ensureSchema(db);
   const { results } = await db
-    .prepare("SELECT * FROM seasons WHERE team_id = ? ORDER BY COALESCE(start_date, ''), name")
+    .prepare(
+      "SELECT * FROM seasons WHERE team_id = ? ORDER BY COALESCE(start_date, ''), name",
+    )
     .bind(teamId)
     .all<SeasonRow>();
   return results.map(seasonRow);
@@ -156,9 +168,12 @@ export function seasonForDate(
 ): Season | undefined {
   const covering = seasons.find(
     (s) =>
-      (!s.startDate || s.startDate <= isoDate) && (!s.endDate || s.endDate >= isoDate),
+      (!s.startDate || s.startDate <= isoDate) &&
+      (!s.endDate || s.endDate >= isoDate),
   );
-  return covering ?? seasons.find((s) => s.id === currentSeasonId) ?? seasons.at(-1);
+  return (
+    covering ?? seasons.find((s) => s.id === currentSeasonId) ?? seasons.at(-1)
+  );
 }
 
 /* ----------------------------------------------------------------- writing */
@@ -185,7 +200,13 @@ export async function createTeam(
        VALUES (?, ?, ?, NULL, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, code = excluded.code`,
     )
-    .bind(id, input.name.trim().slice(0, 80), code, input.createdBy ?? null, now)
+    .bind(
+      id,
+      input.name.trim().slice(0, 80),
+      code,
+      input.createdBy ?? null,
+      now,
+    )
     .run();
   return (await getTeam(db, id))!;
 }
@@ -211,7 +232,8 @@ export async function updateTeam(
     binds.push(patch.currentSeasonId || null);
   }
   if (sets.length === 0) return;
-  await db.prepare(`UPDATE teams SET ${sets.join(", ")} WHERE id = ?`)
+  await db
+    .prepare(`UPDATE teams SET ${sets.join(", ")} WHERE id = ?`)
     .bind(...binds, teamId)
     .run();
 }
@@ -227,9 +249,21 @@ export async function createSeason(
       `INSERT INTO seasons (id, team_id, name, start_date, end_date)
        VALUES (?, ?, ?, ?, ?)`,
     )
-    .bind(id, input.teamId, input.name, input.startDate ?? null, input.endDate ?? null)
+    .bind(
+      id,
+      input.teamId,
+      input.name,
+      input.startDate ?? null,
+      input.endDate ?? null,
+    )
     .run();
-  return { id, teamId: input.teamId, name: input.name, startDate: input.startDate, endDate: input.endDate };
+  return {
+    id,
+    teamId: input.teamId,
+    name: input.name,
+    startDate: input.startDate,
+    endDate: input.endDate,
+  };
 }
 
 export interface EnrolInput {
@@ -248,7 +282,10 @@ export interface EnrolInput {
  * enrolling the same person twice — a re-import, a timer adding a visiting
  * swimmer who was already there — updates one row instead of making a second.
  */
-export async function enrol(db: D1Database, input: EnrolInput): Promise<Enrollment> {
+export async function enrol(
+  db: D1Database,
+  input: EnrolInput,
+): Promise<Enrollment> {
   await ensureSchema(db);
   const id = `${input.seasonId}:${input.athleteId}`;
   await db
@@ -317,7 +354,11 @@ export async function enrolVisitor(
     .first<{ date: string }>();
   const team = await getTeam(db, teamId);
   const seasons = await listSeasons(db, teamId);
-  const season = seasonForDate(seasons, team?.currentSeasonId, meet?.date ?? todayIso());
+  const season = seasonForDate(
+    seasons,
+    team?.currentSeasonId,
+    meet?.date ?? todayIso(),
+  );
   if (!season) return null;
 
   return enrol(db, { teamId, seasonId: season.id, athleteId });

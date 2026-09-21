@@ -18,11 +18,10 @@ import {
   raceKey,
   shortStroke,
   withLiveTables,
-  type Gender,
-  type MeetEvent,
+  type Event,
   type Stroke,
-  type Athlete,
 } from "~/types/meet";
+import type { Athlete, Gender } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Entries · Swim Starts" }];
@@ -45,7 +44,9 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   const detail = await meetDetail(db, params.meetId);
   if (!detail) return { detail: null };
 
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(params.meetId);
+  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(
+    params.meetId,
+  );
   return { detail: withLiveTables(detail, live) };
 }
 
@@ -88,9 +89,9 @@ interface Race {
    * Kept off the header to save a line, but surfaced in its tooltip.
    */
   numbers: number[];
-  girls?: MeetEvent;
-  boys?: MeetEvent;
-  open?: MeetEvent;
+  girls?: Event;
+  boys?: Event;
+  open?: Event;
 }
 
 /** The event in this race that a given athlete would actually swim. */
@@ -101,7 +102,7 @@ function raceLabel(race: Race): string {
     : `${race.distance} ${race.stroke}`;
 }
 
-function eventFor(race: Race, athlete: Athlete): MeetEvent | undefined {
+function eventFor(race: Race, athlete: Athlete): Event | undefined {
   const own = athlete.gender === "F" ? race.girls : race.boys;
   return own ?? race.open;
 }
@@ -244,7 +245,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   // sees their own team's count under a column of their own team's ticks,
   // not the whole meet's.
   const rosterIds = new Set(roster.map((a) => a.id));
-  const entryCount = (event?: MeetEvent) =>
+  const entryCount = (event?: Event) =>
     event
       ? (entries[event.id] ?? []).filter((id) => rosterIds.has(id)).length
       : 0;

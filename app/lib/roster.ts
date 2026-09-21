@@ -8,7 +8,8 @@
  */
 
 import { generateId } from "./id";
-import type { Enrollment, Season } from "~/types/meet";
+import type { Enrollment } from "~/types/team";
+import type { Season } from "~/types/team";
 
 /**
  * The season a date falls in.
@@ -33,7 +34,9 @@ export function seasonForDate<
       (!s.startDate || s.startDate <= isoDate) &&
       (!s.endDate || s.endDate >= isoDate),
   );
-  return covering ?? seasons.find((s) => s.id === currentSeasonId) ?? seasons.at(-1);
+  return (
+    covering ?? seasons.find((s) => s.id === currentSeasonId) ?? seasons.at(-1)
+  );
 }
 
 export function findSeason(

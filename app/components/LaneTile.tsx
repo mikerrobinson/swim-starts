@@ -1,12 +1,8 @@
 import { formatTime } from "~/lib/time";
 import type { SwimTime } from "~/lib/timing";
-import {
-  displayName,
-  type LaneLayout,
-  type NameOrder,
-  type Athlete,
-} from "~/types/meet";
-
+import { displayName, type LaneLayout } from "~/types/meet";
+import { type NameOrder } from "~/types/preferences";
+import type { Athlete } from "~/types/athlete";
 /**
  * Grid tiles stack their content; list rows run it left to right so the lane
  * number sits in a fixed column down the edge, which is the whole point of the
@@ -138,7 +134,9 @@ export function LaneTile({
             X
           </span>
         )}
-        <span className="shrink-0 text-2xl font-bold tabular-nums">{value}</span>
+        <span className="shrink-0 text-2xl font-bold tabular-nums">
+          {value}
+        </span>
       </button>
     );
   }

@@ -8,7 +8,7 @@
 
 import { ensureSchema } from "./schema.server";
 import { generateId } from "./id";
-import type { Athlete, Gender } from "~/types/meet";
+import type { Athlete, Gender } from "~/types/athlete";
 
 export interface AthleteRow {
   id: string;
@@ -60,7 +60,9 @@ export async function listAthletes(
         .bind(`%${search}%`, limit)
         .all<AthleteRow>()
     : await db
-        .prepare("SELECT * FROM athletes ORDER BY last_name, first_name LIMIT ?")
+        .prepare(
+          "SELECT * FROM athletes ORDER BY last_name, first_name LIMIT ?",
+        )
         .bind(limit)
         .all<AthleteRow>();
 

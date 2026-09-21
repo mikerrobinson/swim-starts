@@ -36,7 +36,8 @@ import { downloadFile, parseRosterCsv, toCsv } from "~/lib/csv";
 import type { RosterEntry } from "~/lib/csv";
 import { dayBefore, nextSeasonName, seasonForDate } from "~/lib/roster";
 import { useViewPrefs } from "~/state/view-prefs";
-import { meetTypeLabel, todayIso } from "~/types/meet";
+import { meetTypeLabel } from "~/types/meet";
+import { todayIso } from "~/types/athlete";
 
 export function meta({ data }: Route.MetaArgs) {
   return [{ title: `${data?.team?.name ?? "Team"} · Swim Starts` }];

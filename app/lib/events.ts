@@ -1,11 +1,11 @@
 import { generateId } from "./id";
 import { DIVING_DISTANCE, isDiving, isRelay, raceKey } from "~/types/meet";
+import type { Gender } from "~/types/athlete";
 import type {
   EntryLimits,
   EventGender,
-  Gender,
   MeetCourse,
-  MeetEvent,
+  Event,
   Stroke,
 } from "~/types/meet";
 
@@ -14,7 +14,7 @@ import type {
  * caps. A loader has all three; nothing here wants a whole meet.
  */
 export interface EntryContext {
-  events: MeetEvent[];
+  events: Event[];
   /** eventId -> athleteIds registered in it. */
   entries: Record<string, string[]>;
   limits: EntryLimits;
@@ -82,12 +82,12 @@ export function makeEvent(
   distance: number,
   stroke: Stroke,
   gender: EventGender = "Open",
-): MeetEvent {
-  return { id: generateId(), meetId, position: 0, distance, stroke, gender };
+): Event {
+  return { id: generateId(), position: 0, distance, stroke, gender };
 }
 
 /** Stamp array order onto `position`, ready to be written. */
-export function renumber(events: MeetEvent[]): MeetEvent[] {
+export function renumber(events: Event[]): Event[] {
   return events.map((event, position) => ({ ...event, position }));
 }
 
@@ -105,21 +105,23 @@ export function otherGender(gender: Gender): Gender {
 export function defaultEvents(
   meetId: string,
   {
-  mode = "split",
-  leadGender = "F",
-  includeDiving = true,
-  course = "SCY",
-}: {
-  mode?: "split" | "open";
-  leadGender?: Gender;
-  includeDiving?: boolean;
-  course?: MeetCourse;
+    mode = "split",
+    leadGender = "F",
+    includeDiving = true,
+    course = "SCY",
+  }: {
+    mode?: "split" | "open";
+    leadGender?: Gender;
+    includeDiving?: boolean;
+    course?: MeetCourse;
   } = {},
-): MeetEvent[] {
+): Event[] {
   const order = standardOrder(course, includeDiving);
 
   if (mode === "open") {
-    return renumber(order.map((e) => makeEvent(meetId, e.distance, e.stroke, "Open")));
+    return renumber(
+      order.map((e) => makeEvent(meetId, e.distance, e.stroke, "Open")),
+    );
   }
   const second = otherGender(leadGender);
   return renumber(
@@ -135,7 +137,7 @@ export function defaultEvents(
  * empty lineup counts as split — that's the high-school default everything
  * else here assumes.
  */
-function isSplitLineup(events: MeetEvent[]): boolean {
+function isSplitLineup(events: Event[]): boolean {
   return events.length === 0 || events.some((e) => e.gender !== "Open");
 }
 
@@ -146,9 +148,9 @@ function isSplitLineup(events: MeetEvent[]): boolean {
  */
 export function withDiving(
   meetId: string,
-  events: MeetEvent[],
+  events: Event[],
   leadGender: Gender,
-): MeetEvent[] {
+): Event[] {
   if (events.some(isDiving)) return events;
 
   const diving = isSplitLineup(events)
@@ -166,7 +168,7 @@ export function withDiving(
   return [...events.slice(0, at), ...diving, ...events.slice(at)];
 }
 
-export function withoutDiving(events: MeetEvent[]): MeetEvent[] {
+export function withoutDiving(events: Event[]): Event[] {
   return events.filter((e) => !isDiving(e));
 }
 
@@ -178,10 +180,10 @@ export function withoutDiving(events: MeetEvent[]): MeetEvent[] {
  * and keep their position in the meet; anything unpaired is left alone.
  */
 export function orderByLeadGender(
-  events: MeetEvent[],
+  events: Event[],
   leadGender: Gender,
-): MeetEvent[] {
-  const ordered: MeetEvent[] = [];
+): Event[] {
+  const ordered: Event[] = [];
 
   for (let i = 0; i < events.length; ) {
     const key = raceKey(events[i]);
@@ -220,10 +222,10 @@ const DISTANCE_PAIRS: Array<[yards: number, metres: number]> = [
  * and converting it would silently turn it into a 500.
  */
 export function convertDistances(
-  events: MeetEvent[],
+  events: Event[],
   from: MeetCourse,
   to: MeetCourse,
-): MeetEvent[] {
+): Event[] {
   if (isYards(from) === isYards(to)) return events;
 
   const toMetres = isYards(from);
@@ -311,7 +313,11 @@ export function whyNotEnter(
   const tally = tallyEntries(ctx, athleteId);
   const relay = isRelay(event);
 
-  if (relay && limits.maxRelays !== undefined && tally.relay >= limits.maxRelays) {
+  if (
+    relay &&
+    limits.maxRelays !== undefined &&
+    tally.relay >= limits.maxRelays
+  ) {
     return `Already in ${tally.relay} relay${tally.relay === 1 ? "" : "s"}, and this meet allows ${limits.maxRelays}.`;
   }
   if (

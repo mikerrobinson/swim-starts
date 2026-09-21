@@ -1,7 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { useFetcher, useNavigate } from "react-router";
 import type { Route } from "./+types/admin-heat";
-import { Button, Card, EmptyState, SectionTitle, TextInput } from "~/components/ui";
+import {
+  Button,
+  Card,
+  EmptyState,
+  SectionTitle,
+  TextInput,
+} from "~/components/ui";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
 import { formatClock, formatTime, parseTime } from "~/lib/time";
 import { enrollmentIndex } from "~/lib/roster";
@@ -30,7 +42,7 @@ import {
   eventName,
   findAthlete,
   type MeetDetail,
-  type MeetEvent,
+  type Event,
   type ResultStatus,
   type WatchRole,
 } from "~/types/meet";
@@ -60,9 +72,10 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
   const navigate = useNavigate();
   const addHeat = useFetcher<{ ok: boolean; heat: number }>();
 
-  const [assigning, setAssigning] = useState<{ heat: number; lane: number } | null>(
-    null,
-  );
+  const [assigning, setAssigning] = useState<{
+    heat: number;
+    lane: number;
+  } | null>(null);
   const roster = detail.athletes;
 
   const eventNo = Number(params.event);
@@ -78,7 +91,9 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
   const addedHeat = addHeat.data?.ok ? addHeat.data.heat : null;
   useEffect(() => {
     if (addedHeat != null && event) {
-      navigate(`/meets/${detail.meet.id}/admin/${event.position + 1}/${addedHeat}`);
+      navigate(
+        `/meets/${detail.meet.id}/admin/${event.position + 1}/${addedHeat}`,
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addedHeat]);
@@ -99,20 +114,23 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
 
   const nextHeat = () => {
     if (!event) return;
-    if (heatIndex + 1 < heats.length) return goTo(eventNo, heats[heatIndex + 1]);
+    if (heatIndex + 1 < heats.length)
+      return goTo(eventNo, heats[heatIndex + 1]);
     const nextEvent = detail.events[event.position + 1];
     if (!nextEvent) return;
     const nextHeats = heatsOf(detail, nextEvent.id);
     goTo(nextEvent.position + 1, nextHeats[0] ?? 1);
   };
 
-  const hasPrev =
-    !!event && (heatIndex > 0 || event.position > 0);
+  const hasPrev = !!event && (heatIndex > 0 || event.position > 0);
   const hasNext =
-    !!event && (heatIndex + 1 < heats.length || event.position + 1 < detail.events.length);
+    !!event &&
+    (heatIndex + 1 < heats.length || event.position + 1 < detail.events.length);
 
   if (!event) {
-    return <EmptyState title="No such event">Pick one from the list.</EmptyState>;
+    return (
+      <EmptyState title="No such event">Pick one from the list.</EmptyState>
+    );
   }
 
   return (
@@ -206,7 +224,7 @@ function HeatCard({
   onAssign,
 }: {
   detail: MeetDetail;
-  event: MeetEvent;
+  event: Event;
   heat: number;
   nameOrder: "first" | "last";
   send: (write: Write) => void;
@@ -220,7 +238,9 @@ function HeatCard({
   // Only while a thumb is actually down somewhere in this heat — a watch
   // that's been stopped and is just waiting on its submit doesn't need
   // ticking, it needs to sit still.
-  const now = useTicker(seeds.some((s) => runningWatches(detail, s.id).length > 0));
+  const now = useTicker(
+    seeds.some((s) => runningWatches(detail, s.id).length > 0),
+  );
 
   /**
    * Where the keyboard goes next, without every `LaneRow` needing to know
@@ -232,7 +252,10 @@ function HeatCard({
    * DOM node sits in which slot never needs to trigger a render of its own.
    */
   const fields = useRef(
-    new Map<number, { name: HTMLButtonElement | null; time: HTMLInputElement | null }>(),
+    new Map<
+      number,
+      { name: HTMLButtonElement | null; time: HTMLInputElement | null }
+    >(),
   );
   const registerField = (
     laneNumber: number,
@@ -292,7 +315,8 @@ function HeatCard({
 
       if (
         !derived ||
-        (derived.discrepancyMs !== null && derived.discrepancyMs > OK_DISCREPANCY_MS)
+        (derived.discrepancyMs !== null &&
+          derived.discrepancyMs > OK_DISCREPANCY_MS)
       ) {
         send({ kind: "unresult", meetId: detail.meet.id, seedId: seed.id });
       } else if (derived.timeMs !== result.timeMs) {
@@ -314,8 +338,12 @@ function HeatCard({
   // Once anybody's clock has moved, sitting on "not started" would be a lie —
   // and once a lane reads OK on its own, or there is nothing left to time,
   // there is nothing more the timing table can add.
-  const anyActivity = seeds.some((seed) => watchesOn(detail, seed.id).length > 0);
-  const anyOk = seeds.some((seed) => resultFor(detail, seed.id)?.status === "OK");
+  const anyActivity = seeds.some(
+    (seed) => watchesOn(detail, seed.id).length > 0,
+  );
+  const anyOk = seeds.some(
+    (seed) => resultFor(detail, seed.id)?.status === "OK",
+  );
   const allNS =
     seeds.length > 0 &&
     seeds.every((seed) => resultFor(detail, seed.id)?.status === "NS");
@@ -353,12 +381,32 @@ function HeatCard({
   };
 
   const heatButton = closed
-    ? { label: "Fix Results", onClick: fixResults, variant: "ghost" as const, disabled: false }
+    ? {
+        label: "Fix Results",
+        onClick: fixResults,
+        variant: "ghost" as const,
+        disabled: false,
+      }
     : readyToComplete
-      ? { label: "Mark as Complete", onClick: markComplete, variant: "primary" as const, disabled: false }
+      ? {
+          label: "Mark as Complete",
+          onClick: markComplete,
+          variant: "primary" as const,
+          disabled: false,
+        }
       : anyActivity
-        ? { label: "In progress", onClick: undefined, variant: undefined, disabled: true }
-        : { label: "Not started", onClick: undefined, variant: undefined, disabled: true };
+        ? {
+            label: "In progress",
+            onClick: undefined,
+            variant: undefined,
+            disabled: true,
+          }
+        : {
+            label: "Not started",
+            onClick: undefined,
+            variant: undefined,
+            disabled: true,
+          };
 
   return (
     <Card>
@@ -405,21 +453,21 @@ function HeatCard({
                 see is a lane it can't fill. */}
             {Array.from({ length: detail.meet.laneCount }, (_, i) => i + 1).map(
               (lane) => (
-              <LaneRow
-                key={lane}
-                detail={detail}
-                event={event}
-                heat={heat}
-                lane={lane}
-                nameOrder={nameOrder}
-                send={send}
-                me={me}
-                now={now}
-                closed={closed}
-                onAssign={onAssign}
-                registerField={registerField}
-                focusField={focusField}
-              />
+                <LaneRow
+                  key={lane}
+                  detail={detail}
+                  event={event}
+                  heat={heat}
+                  lane={lane}
+                  nameOrder={nameOrder}
+                  send={send}
+                  me={me}
+                  now={now}
+                  closed={closed}
+                  onAssign={onAssign}
+                  registerField={registerField}
+                  focusField={focusField}
+                />
               ),
             )}
           </tbody>
@@ -498,7 +546,7 @@ function LaneRow({
   focusField,
 }: {
   detail: MeetDetail;
-  event: MeetEvent;
+  event: Event;
   heat: number;
   lane: number;
   nameOrder: "first" | "last";
@@ -737,9 +785,11 @@ function LaneRow({
           if you can see what it chose between. */}
       <td className="py-2 pr-2">
         <span className="flex flex-wrap items-center gap-1">
-          {timed.length === 0 && running.length === 0 && stopped.length === 0 && (
-            <span className="text-xs text-slate-400">—</span>
-          )}
+          {timed.length === 0 &&
+            running.length === 0 &&
+            stopped.length === 0 && (
+              <span className="text-xs text-slate-400">—</span>
+            )}
 
           {/* A stopwatch that is still going.
 
@@ -760,8 +810,12 @@ function LaneRow({
               title={`Timer ${a.timerId} is still timing this lane`}
               className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-amber-900 dark:bg-amber-950 dark:text-amber-200"
             >
-              <span aria-hidden className="text-[0.6rem]">▶</span>
-              {formatClock(Math.max(0, now - a.startedAt!), { hundredths: false })}
+              <span aria-hidden className="text-[0.6rem]">
+                ▶
+              </span>
+              {formatClock(Math.max(0, now - a.startedAt!), {
+                hundredths: false,
+              })}
             </span>
           ))}
           {/* A stopwatch that's been stopped but hasn't submitted yet.
@@ -776,8 +830,12 @@ function LaneRow({
               title={`Timer ${a.timerId} stopped their watch — waiting for it to submit`}
               className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-300"
             >
-              <span aria-hidden className="text-[0.6rem]">■</span>
-              {formatClock(Math.max(0, a.stoppedAt! - (a.startedAt ?? a.stoppedAt!)))}
+              <span aria-hidden className="text-[0.6rem]">
+                ■
+              </span>
+              {formatClock(
+                Math.max(0, a.stoppedAt! - (a.startedAt ?? a.stoppedAt!)),
+              )}
             </span>
           ))}
           {/* Each watch with a way to drop it.
@@ -794,47 +852,46 @@ function LaneRow({
             // guessing which three it is being asked to accept.
             const counted = derived !== null && w.role === derived.from;
             return (
-            <span
-              key={w.timerId}
-              title={
-                `${ROLE_LABEL[w.role]}${w.userId ? "" : ` ${w.timerId}`}` +
-                (fromStopwatch(w) ? " · off a stopwatch" : " · typed in") +
-                (counted ? "" : " · not counted, outranked")
-              }
-              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs tabular-nums ${
-                !counted
-                  ? "bg-slate-100 text-slate-400 line-through dark:bg-slate-900 dark:text-slate-600"
-                  : w.role === "admin"
-                    ? "bg-amber-100 font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
-                    : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-              }`}
-            >
-              {formatTime(w.timeMs!)}
-              {!fromStopwatch(w) && "✎"}
-              <button
-                type="button"
-                aria-label={`Discard the ${formatTime(w.timeMs!)} watch`}
-                title="Discard this watch"
-                disabled={closed}
-                tabIndex={-1}
-                onClick={() =>
-                  seed &&
-                  !closed &&
-                  send({
-                    kind: "drop-watch",
-                    meetId: detail.meet.id,
-                    seedId: seed.id,
-                    timerId: w.timerId,
-                  })
+              <span
+                key={w.timerId}
+                title={
+                  `${ROLE_LABEL[w.role]}${w.userId ? "" : ` ${w.timerId}`}` +
+                  (fromStopwatch(w) ? " · off a stopwatch" : " · typed in") +
+                  (counted ? "" : " · not counted, outranked")
                 }
-                className="text-red-600 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs tabular-nums ${
+                  !counted
+                    ? "bg-slate-100 text-slate-400 line-through dark:bg-slate-900 dark:text-slate-600"
+                    : w.role === "admin"
+                      ? "bg-amber-100 font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                      : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                }`}
               >
-                ✕
-              </button>
-            </span>
+                {formatTime(w.timeMs!)}
+                {!fromStopwatch(w) && "✎"}
+                <button
+                  type="button"
+                  aria-label={`Discard the ${formatTime(w.timeMs!)} watch`}
+                  title="Discard this watch"
+                  disabled={closed}
+                  tabIndex={-1}
+                  onClick={() =>
+                    seed &&
+                    !closed &&
+                    send({
+                      kind: "drop-watch",
+                      meetId: detail.meet.id,
+                      seedId: seed.id,
+                      timerId: w.timerId,
+                    })
+                  }
+                  className="text-red-600 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  ✕
+                </button>
+              </span>
             );
           })}
-
         </span>
       </td>
 
@@ -859,7 +916,11 @@ function LaneRow({
           inputMode="numeric"
           placeholder={progress === "none" ? "" : "0000"}
           aria-label={`Time for lane ${lane}`}
-          title={closed ? "This heat is complete — Fix Results to change it." : PROGRESS_HINT[progress]}
+          title={
+            closed
+              ? "This heat is complete — Fix Results to change it."
+              : PROGRESS_HINT[progress]
+          }
           tone={TIME_TONE[progress]}
           readOnly={closed}
           className="!w-28 text-center font-mono tabular-nums disabled:opacity-60"

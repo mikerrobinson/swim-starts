@@ -13,7 +13,7 @@ import type { SwimTime } from "./timing";
 import {
   isRelay,
   type EventGender,
-  type MeetEvent,
+  type Event,
   type ScoringRules,
   type Seed,
 } from "~/types/meet";
@@ -25,7 +25,7 @@ export interface RankedSwim {
 
 /** Which points table an event scores off — the relay list or the individual one. */
 export function pointsTable(
-  event: Pick<MeetEvent, "stroke">,
+  event: Pick<Event, "stroke">,
   scoring: Pick<ScoringRules, "individual" | "relay">,
 ): number[] {
   return isRelay(event) ? scoring.relay : scoring.individual;
@@ -55,7 +55,7 @@ export function eventPoints(ranked: RankedSwim[], table: number[]): number[] {
 export type ScoreGroup = EventGender | "all";
 
 export function scoreGroup(
-  event: Pick<MeetEvent, "gender">,
+  event: Pick<Event, "gender">,
   scoring: Pick<ScoringRules, "separateByGender">,
 ): ScoreGroup {
   return scoring.separateByGender ? event.gender : "all";
@@ -77,7 +77,7 @@ export function scoreGroupLabel(group: ScoreGroup): string {
  * it should count for.
  */
 export function teamTotals(
-  events: MeetEvent[],
+  events: Event[],
   byEvent: Map<string, RankedSwim[]>,
   scoring: ScoringRules,
   teamOf: (athleteId: string) => string | undefined,

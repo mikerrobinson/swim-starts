@@ -26,14 +26,10 @@ import {
   type Contact,
 } from "./identity";
 import { addMeetAdmin } from "./admins.server";
-import {
-  addTeamCoach,
-  coachedTeams,
-  teamsCoachedBy,
-} from "./coaches.server";
+import { addTeamCoach, coachedTeams, teamsCoachedBy } from "./coaches.server";
 import { ensureSchema } from "./schema.server";
 import { createSeason, createTeam } from "./teams.server";
-import type { Team } from "~/types/meet";
+import type { Team } from "~/types/team";
 
 /**
  * An account is an id and the contacts that open it — nothing more.
@@ -191,7 +187,10 @@ export async function startChallenge(
     .first<{ created_at: number }>();
 
   if (existing && now - existing.created_at < RESEND_INTERVAL_MS) {
-    return { ok: false, retryInMs: RESEND_INTERVAL_MS - (now - existing.created_at) };
+    return {
+      ok: false,
+      retryInMs: RESEND_INTERVAL_MS - (now - existing.created_at),
+    };
   }
 
   const code = newCode();
@@ -240,7 +239,9 @@ export async function consumeLoginCode(
   await ensureAuthStore(db);
 
   const row = await db
-    .prepare("SELECT code_hash, created_at, attempts FROM login_codes WHERE contact = ?")
+    .prepare(
+      "SELECT code_hash, created_at, attempts FROM login_codes WHERE contact = ?",
+    )
     .bind(contact.value)
     .first<{ code_hash: string; created_at: number; attempts: number }>();
 
@@ -258,14 +259,19 @@ export async function consumeLoginCode(
   if (!check.ok) {
     if (check.reason === "wrong") {
       await db
-        .prepare("UPDATE login_codes SET attempts = attempts + 1 WHERE contact = ?")
+        .prepare(
+          "UPDATE login_codes SET attempts = attempts + 1 WHERE contact = ?",
+        )
         .bind(contact.value)
         .run();
     }
     return { ok: false, check };
   }
 
-  await db.prepare("DELETE FROM login_codes WHERE contact = ?").bind(contact.value).run();
+  await db
+    .prepare("DELETE FROM login_codes WHERE contact = ?")
+    .bind(contact.value)
+    .run();
   return { ok: true };
 }
 
@@ -559,7 +565,9 @@ export async function userForToken(
   // every request into a write.
   if (now - row.last_used_at > SESSION_TOUCH_MS) {
     await db
-      .prepare("UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE token_hash = ?")
+      .prepare(
+        "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE token_hash = ?",
+      )
       .bind(now, now + SESSION_TTL_MS, hash)
       .run();
   }
@@ -644,7 +652,10 @@ export async function endSession(db: D1Database, token: string): Promise<void> {
 }
 
 /** Sign out everywhere — the answer to a lost phone. */
-export async function endAllSessions(db: D1Database, userId: string): Promise<void> {
+export async function endAllSessions(
+  db: D1Database,
+  userId: string,
+): Promise<void> {
   await ensureAuthStore(db);
   await db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
 }
@@ -677,7 +688,9 @@ export async function setLastPlace(
 ): Promise<void> {
   await ensureAuthStore(db);
   await db
-    .prepare("UPDATE users SET last_team_id = ?, last_season_id = ? WHERE id = ?")
+    .prepare(
+      "UPDATE users SET last_team_id = ?, last_season_id = ? WHERE id = ?",
+    )
     .bind(teamId, seasonId, userId)
     .run();
 }
@@ -707,12 +720,23 @@ async function teamFacts(db: D1Database): Promise<Map<string, TeamFacts>> {
               (SELECT COUNT(*) FROM meet_teams mt WHERE mt.team_id = t.id) AS meets
        FROM teams t`,
     )
-    .all<{ id: string; name: string; code: string; athletes: number; meets: number }>();
+    .all<{
+      id: string;
+      name: string;
+      code: string;
+      athletes: number;
+      meets: number;
+    }>();
 
   return new Map(
     results.map((row) => [
       row.id,
-      { name: row.name, code: row.code, athletes: row.athletes, meets: row.meets },
+      {
+        name: row.name,
+        code: row.code,
+        athletes: row.athletes,
+        meets: row.meets,
+      },
     ]),
   );
 }
@@ -732,7 +756,12 @@ export async function coachedTeamsFor(
   const facts = await teamFacts(db);
   return mine.map((teamId) => ({
     teamId,
-    ...(facts.get(teamId) ?? { name: "Untitled team", code: "", athletes: 0, meets: 0 }),
+    ...(facts.get(teamId) ?? {
+      name: "Untitled team",
+      code: "",
+      athletes: 0,
+      meets: 0,
+    }),
   }));
 }
 
@@ -876,7 +905,13 @@ export async function supersedeInvites(
 
 export type InviteInfo =
   | { kind: "team"; teamId: string; name: string; code: string }
-  | { kind: "meet"; meetId: string; name: string; date: string; contact: string | null };
+  | {
+      kind: "meet";
+      meetId: string;
+      name: string;
+      date: string;
+      contact: string | null;
+    };
 
 /**
  * What an invitation is for, before anyone signs in — so the sign-in screen
@@ -959,7 +994,8 @@ export async function redeemInvite(
     .bind(now, userId, await tokenHash(token), now)
     .first<{ team_id: string | null; meet_id: string | null }>();
 
-  if (!claimed) return { ok: false, error: "That invitation has expired or been used." };
+  if (!claimed)
+    return { ok: false, error: "That invitation has expired or been used." };
 
   if (claimed.meet_id) {
     await addMeetAdmin(db, claimed.meet_id, userId, null, now);
@@ -1117,7 +1153,12 @@ export async function describeUser(
        FROM users u WHERE u.id = ?`,
     )
     .bind(userId)
-    .first<{ id: string; name: string | null; contact: string; last_seen_at: number }>();
+    .first<{
+      id: string;
+      name: string | null;
+      contact: string;
+      last_seen_at: number;
+    }>();
   if (!row) return null;
   return {
     userId: row.id,
@@ -1152,7 +1193,12 @@ export async function searchUsers(
        LIMIT ?2`,
     )
     .bind(escaped, limit)
-    .all<{ id: string; name: string | null; contact: string; last_seen_at: number }>();
+    .all<{
+      id: string;
+      name: string | null;
+      contact: string;
+      last_seen_at: number;
+    }>();
 
   return results.map((row) => ({
     userId: row.id,

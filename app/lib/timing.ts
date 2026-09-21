@@ -12,14 +12,7 @@
  * Everything here is pure and takes plain arrays. No document, no store.
  */
 
-import type {
-  MeetEvent,
-  Result,
-  Seed,
-  TimeMethod,
-  Watch,
-  WatchRole,
-} from "~/types/meet";
+import type { Event, Result, Seed, Watch, WatchRole } from "~/types/meet";
 
 /** The rows these functions read. Anything holding all three will do. */
 export interface TimingRows {
@@ -53,14 +46,20 @@ function meanOf(times: number[]): number {
  * and letting one reach `proposedTime` would put a phantom zero into a median.
  * Every reader that works out a time goes through here.
  */
-export function timedWatches(rows: Pick<TimingRows, "watches">, seedId: string): Watch[] {
+export function timedWatches(
+  rows: Pick<TimingRows, "watches">,
+  seedId: string,
+): Watch[] {
   return rows.watches
     .filter((w) => w.seedId === seedId && w.timeMs !== undefined)
     .sort((a, b) => a.timeMs! - b.timeMs!);
 }
 
 /** Every watch on a swim, running ones included — for a screen showing them. */
-export function watchesOn(rows: Pick<TimingRows, "watches">, seedId: string): Watch[] {
+export function watchesOn(
+  rows: Pick<TimingRows, "watches">,
+  seedId: string,
+): Watch[] {
   return rows.watches.filter((w) => w.seedId === seedId);
 }
 
@@ -127,8 +126,6 @@ export function fromDevice(timerId: string, deviceId: string): boolean {
 
 export interface ProposedTime {
   timeMs: number;
-  method: TimeMethod;
-  watchCount: number;
 }
 
 /**
@@ -147,30 +144,24 @@ export function proposedTime(watches: Watch[]): ProposedTime | null {
   if (times.length === 0) return null;
 
   if (times.length === 1) {
-    return { timeMs: times[0], method: "single", watchCount: 1 };
+    return { timeMs: times[0] };
   }
   if (times.length === 2) {
-    return { timeMs: meanOf(times), method: "average", watchCount: 2 };
+    return { timeMs: meanOf(times) };
   }
 
   const middle = times.length / 2;
   return times.length % 2 === 1
     ? {
         timeMs: times[Math.floor(middle)],
-        method: "median",
-        watchCount: times.length,
       }
     : {
         timeMs: meanOf([times[middle - 1], times[middle]]),
-        method: "median",
-        watchCount: times.length,
       };
 }
 
 export interface LaneTime {
   timeMs: number;
-  method: TimeMethod;
-  watchCount: number;
   /** Which tier answered, so a screen can say why. */
   from: WatchRole;
   /**
@@ -220,12 +211,12 @@ export function laneTime(watches: Watch[]): LaneTime | null {
 
   // The most recent, if an administrator has somehow left two — a later
   // reading replaces an earlier one rather than being averaged with it.
-  const official = byRole("admin").sort((a, b) => b.recordedAt - a.recordedAt)[0];
+  const official = byRole("admin").sort(
+    (a, b) => b.recordedAt - a.recordedAt,
+  )[0];
   if (official) {
     return {
       timeMs: official.timeMs!,
-      method: "official",
-      watchCount: 1,
       from: "admin",
       // A ruling, not a reading among several — nothing else to disagree.
       discrepancyMs: null,
@@ -234,14 +225,13 @@ export function laneTime(watches: Watch[]): LaneTime | null {
 
   const timers = byRole("timer");
   const proposed = proposedTime(timers);
-  if (proposed) return { ...proposed, from: "timer", discrepancyMs: spreadOf(timers) };
+  if (proposed)
+    return { ...proposed, from: "timer", discrepancyMs: spreadOf(timers) };
 
   const coaches = byRole("coach");
   if (coaches.length > 0) {
     return {
       timeMs: meanOf(coaches.map((w) => w.timeMs!)),
-      method: coaches.length === 1 ? "single" : "average",
-      watchCount: coaches.length,
       from: "coach",
       discrepancyMs: spreadOf(coaches),
     };
@@ -321,7 +311,6 @@ export function resultFor(
 export interface SwimTime {
   timeMs: number;
   status: Result["status"];
-  method: TimeMethod;
   watchCount: number;
   from: WatchRole;
   discrepancyMs: number | null;
@@ -335,7 +324,6 @@ export function swimTime(rows: TimingRows, seedId: string): SwimTime | null {
     return {
       timeMs: result.timeMs,
       status: result.status,
-      method: "official",
       watchCount: 0,
       from: "admin",
       discrepancyMs: null,
@@ -351,7 +339,10 @@ export function swimTime(rows: TimingRows, seedId: string): SwimTime | null {
 /* ----------------------------------------------------------------- closing */
 
 /** The seeds of one event, in heat then lane order. */
-export function seedsForEvent(rows: Pick<TimingRows, "seeds">, eventId: string): Seed[] {
+export function seedsForEvent(
+  rows: Pick<TimingRows, "seeds">,
+  eventId: string,
+): Seed[] {
   return rows.seeds
     .filter((s) => s.eventId === eventId)
     .sort((a, b) => a.heat - b.heat || a.lane - b.lane);
@@ -367,7 +358,10 @@ export function seedsForHeat(
 }
 
 /** Which heats an event has, in order. A heat with nothing in it isn't one. */
-export function heatsOf(rows: Pick<TimingRows, "seeds">, eventId: string): number[] {
+export function heatsOf(
+  rows: Pick<TimingRows, "seeds">,
+  eventId: string,
+): number[] {
   return [...new Set(seedsForEvent(rows, eventId).map((s) => s.heat))].sort(
     (a, b) => a - b,
   );
@@ -424,7 +418,9 @@ export function heatProgress(
 }
 
 /** How many swims have anything recorded — the meet's "times" count. */
-export function recordedCount(rows: Pick<TimingRows, "watches" | "results">): number {
+export function recordedCount(
+  rows: Pick<TimingRows, "watches" | "results">,
+): number {
   const swims = new Set<string>();
   for (const w of rows.watches) if (w.timeMs !== undefined) swims.add(w.seedId);
   for (const r of rows.results) swims.add(r.seedId);
@@ -432,6 +428,6 @@ export function recordedCount(rows: Pick<TimingRows, "watches" | "results">): nu
 }
 
 /** Events in the order they're swum. */
-export function orderedEvents(events: MeetEvent[]): MeetEvent[] {
+export function orderedEvents(events: Event[]): Event[] {
   return [...events].sort((a, b) => a.position - b.position);
 }

@@ -7,12 +7,11 @@ import {
   eventName,
   isEligible,
   athleteName,
-  type Enrollment,
   type MeetDetail,
-  type NameOrder,
-  type Athlete,
 } from "~/types/meet";
-
+import { type NameOrder } from "~/types/preferences";
+import { type Enrollment } from "~/types/team";
+import type { Athlete } from "~/types/athlete";
 interface Candidate {
   athlete: Athlete;
   /** Where they already sit in this event, if anywhere. */
@@ -107,14 +106,25 @@ export function LaneAssignSheet({
         // meet the lane already says which side of the pool you're looking
         // at, so that team's roster is who you're almost always reaching for.
         if (laneTeamId) {
-          const aSame = enrollments.get(a.athlete.id)?.teamId === laneTeamId ? 0 : 1;
-          const bSame = enrollments.get(b.athlete.id)?.teamId === laneTeamId ? 0 : 1;
+          const aSame =
+            enrollments.get(a.athlete.id)?.teamId === laneTeamId ? 0 : 1;
+          const bSame =
+            enrollments.get(b.athlete.id)?.teamId === laneTeamId ? 0 : 1;
           if (aSame !== bSame) return aSame - bSame;
         }
 
         return byAthlete(nameOrder)(a.athlete, b.athlete);
       });
-  }, [roster, nameOrder, detail, eventId, event, search, enrollments, laneTeamId]);
+  }, [
+    roster,
+    nameOrder,
+    detail,
+    eventId,
+    event,
+    search,
+    enrollments,
+    laneTeamId,
+  ]);
 
   /**
    * Up and down walk the visible list of candidates; the search box feeds

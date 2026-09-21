@@ -15,7 +15,13 @@
 import { meetDetail } from "./meets.server";
 import { fromDevice } from "./timing";
 import type { Grant } from "./grants.server";
-import { withLiveTables, type MeetEvent, type MeetSnapshot, type Seed, type Watch } from "~/types/meet";
+import {
+  withLiveTables,
+  type Event,
+  type MeetSnapshot,
+  type Seed,
+  type Watch,
+} from "~/types/meet";
 
 /** A team as a timer needs it: something to tap, and an id to send back. */
 export interface TimerTeam {
@@ -56,7 +62,7 @@ export interface TimerSnapshot {
    */
   ownTeam: string;
   /** In running order. */
-  events: MeetEvent[];
+  events: Event[];
   seeds: Seed[];
   /** eventId -> athleteIds registered in it. */
   entries: Record<string, string[]>;

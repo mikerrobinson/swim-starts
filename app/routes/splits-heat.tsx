@@ -40,11 +40,11 @@ import {
   orderedLanes,
   withLiveTables,
   type MeetDetail,
-  type MeetEvent,
-  type NameOrder,
-  type Athlete,
+  type Event,
   type Watch,
 } from "~/types/meet";
+import { type NameOrder } from "~/types/preferences";
+import type { Athlete } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Splits · Swim Starts" }];
@@ -69,7 +69,9 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   const detail = await meetDetail(db, params.meetId);
   if (!detail) return { detail: null };
 
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(params.meetId);
+  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(
+    params.meetId,
+  );
   return { detail: withLiveTables(detail, live) };
 }
 
@@ -86,8 +88,14 @@ export async function loader({ params, context }: Route.LoaderArgs) {
  * this device's own pending writes are folded on top the same way they
  * always were.
  */
-export default function SplitsHeat({ loaderData, params }: Route.ComponentProps) {
-  const live = useMeetLive(loaderData.detail?.meet.id, loaderData.detail ?? undefined);
+export default function SplitsHeat({
+  loaderData,
+  params,
+}: Route.ComponentProps) {
+  const live = useMeetLive(
+    loaderData.detail?.meet.id,
+    loaderData.detail ?? undefined,
+  );
   const { access } = useMeet();
   const pending = usePending();
   const send = useSend();
@@ -278,7 +286,9 @@ export default function SplitsHeat({ loaderData, params }: Route.ComponentProps)
     setClock(null);
     setEditingLane(null);
     setAssigningLane(null);
-    navigate(`/meets/${meet.id}/splits/${nextEvent.position + 1}/${targetHeat}`);
+    navigate(
+      `/meets/${meet.id}/splits/${nextEvent.position + 1}/${targetHeat}`,
+    );
   };
 
   const nextHeat = () => {
@@ -623,7 +633,7 @@ function DivingPanel({
   nameOrder,
 }: {
   detail: MeetDetail;
-  event: MeetEvent;
+  event: Event;
   roster: Athlete[];
   nameOrder: NameOrder;
 }) {
@@ -779,8 +789,7 @@ function LaneSheet({
                 {time && !time.official && (
                   <span className="font-normal">
                     {" "}
-                    · official {formatTime(time.timeMs)} (
-                    {METHOD_LABEL[time.method]})
+                    · official {formatTime(time.timeMs)}
                   </span>
                 )}
               </p>

@@ -14,7 +14,8 @@ import { apiUrl, ApiError, appBasePath } from "./http";
 import { A_WEEK, readCookie } from "./cookies";
 import { splitTypedName } from "./timer-messages";
 import { generateId } from "./id";
-import type { Athlete, MeetEvent, Seed, Watch } from "~/types/meet";
+import type { Athlete } from "~/types/athlete";
+import type { Event, Seed, Watch } from "~/types/meet";
 
 /**
  * How far this phone has got, and nothing else.
@@ -110,7 +111,7 @@ export function saveFurthest(meetId: string, index: number): void {
 
 /** One heat, flattened into the order the meet is actually swum in. */
 export interface Stop {
-  event: MeetEvent;
+  event: Event;
   /** Which heat of the event, 1-based. */
   heat: number;
   /** The swims in it, so the phone knows who is in the lane it is timing. */
@@ -129,7 +130,7 @@ export interface Stop {
  * time recorded against nothing. A heat is the distinct heats across an
  * event's seeds, so an empty one cannot arise.
  */
-export function runningOrder(events: MeetEvent[], seeds: Seed[]): Stop[] {
+export function runningOrder(events: Event[], seeds: Seed[]): Stop[] {
   const order: Stop[] = [];
   for (const event of events) {
     const forEvent = seeds.filter((seed) => seed.eventId === event.id);
@@ -215,7 +216,7 @@ export interface Snapshot {
   };
   /** What to call athletes with no team label of their own. */
   ownTeam: string;
-  events: MeetEvent[];
+  events: Event[];
   seeds: Seed[];
   /** eventId -> athleteIds registered in it. */
   entries: Record<string, string[]>;

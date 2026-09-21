@@ -13,11 +13,18 @@
  * contract, not a detail of how the queue happens to work.
  */
 
-import type { Athlete, ResultStatus, WatchRole } from "~/types/meet";
+import type { Athlete } from "~/types/athlete";
+import type { ResultStatus, WatchRole } from "~/types/meet";
 
 /** One thing somebody did. */
 export type Write =
-  | { kind: "entry"; meetId: string; eventId: string; athleteId: string; entering: boolean }
+  | {
+      kind: "entry";
+      meetId: string;
+      eventId: string;
+      athleteId: string;
+      entering: boolean;
+    }
   /**
    * Put somebody in a lane, by where the lane is rather than by a row id.
    *

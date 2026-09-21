@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button, TextInput } from "./ui";
-import type { Athlete, Gender } from "~/types/meet";
+import type { Athlete, Gender } from "~/types/athlete";
 import {
   newVisitingAthlete,
   type QueuedAthlete,
@@ -37,7 +37,8 @@ function fullName(athlete: TimerAthlete): string {
 
 function byName(a: TimerAthlete, b: TimerAthlete): number {
   return (
-    a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)
+    a.lastName.localeCompare(b.lastName) ||
+    a.firstName.localeCompare(b.firstName)
   );
 }
 
@@ -78,7 +79,9 @@ export function SwimmerPicker({
     const matches = (athlete: TimerAthlete) =>
       !needle || fullName(athlete).toLowerCase().includes(needle);
 
-    const sameTeam = athletes.filter((a) => teamOf(a) === homeTeam && matches(a));
+    const sameTeam = athletes.filter(
+      (a) => teamOf(a) === homeTeam && matches(a),
+    );
     const here = sameTeam.filter((a) => inEvent.has(a.id)).sort(byName);
     const rest = sameTeam.filter((a) => !inEvent.has(a.id)).sort(byName);
 
@@ -188,11 +191,15 @@ export function SwimmerPicker({
                         type="button"
                         onClick={() => onPick(athlete)}
                         className={`flex min-h-14 w-full touch-manipulation items-center justify-between gap-3 border-b border-slate-100 px-1 text-left text-lg dark:border-slate-900 ${
-                          athlete.id === current?.id ? "font-bold text-blue-600" : ""
+                          athlete.id === current?.id
+                            ? "font-bold text-blue-600"
+                            : ""
                         }`}
                       >
                         <span className="truncate">{fullName(athlete)}</span>
-                        {athlete.id === current?.id && <span aria-hidden>✓</span>}
+                        {athlete.id === current?.id && (
+                          <span aria-hidden>✓</span>
+                        )}
                       </button>
                     </li>
                   ))}

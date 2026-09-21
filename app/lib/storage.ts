@@ -7,7 +7,8 @@
 
 import { A_YEAR, readCookie, writeCookie } from "./cookies";
 import { local } from "./local";
-import { LANE_LAYOUTS, type LaneLayout, type NameOrder } from "~/types/meet";
+import { LANE_LAYOUTS, type LaneLayout } from "~/types/meet";
+import { type NameOrder } from "~/types/preferences";
 
 const LANE_LAYOUT_KEY = "swim-starts:lane-layout";
 const TIMER_ID_KEY = "swim-starts:timer-id";

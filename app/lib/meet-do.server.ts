@@ -21,10 +21,10 @@ import { mayEnter, type MeetAccess } from "./access";
 import { whyNotEnter } from "./events";
 import { reseedEvent } from "./heats";
 import type { MeetBroadcast, Write } from "./writes";
+import type { Athlete } from "~/types/athlete";
 import type {
-  Athlete,
   Meet,
-  MeetEvent,
+  Event,
   MeetSnapshot,
   Result,
   Seed,
@@ -137,14 +137,13 @@ interface EventRow {
   gender: string;
   name: string | null;
 }
-function eventFromRow(row: EventRow): MeetEvent {
+function eventFromRow(row: EventRow): Event {
   return {
     id: row.id,
-    meetId: row.meet_id,
     position: row.position,
     distance: row.distance,
     stroke: row.stroke as Stroke,
-    gender: row.gender as MeetEvent["gender"],
+    gender: row.gender as Event["gender"],
     name: row.name ?? undefined,
   };
 }
@@ -152,7 +151,6 @@ function eventFromRow(row: EventRow): MeetEvent {
 function seedFromRow(row: SeedRow): Seed {
   return {
     id: row.id,
-    meetId: row.meet_id,
     eventId: row.event_id,
     heat: row.heat,
     lane: row.lane,
@@ -176,7 +174,6 @@ function watchFromRow(row: WatchRow): Watch {
 function resultFromRow(row: ResultRow): Result {
   return {
     seedId: row.seed_id,
-    meetId: row.meet_id,
     eventId: row.event_id,
     athleteId: row.athlete_id,
     status: row.status === "DQ" || row.status === "NS" ? row.status : "OK",
@@ -188,7 +185,10 @@ function resultFromRow(row: ResultRow): Result {
 
 /** One RPC write method's input: the matching `Write` variant, kind dropped
  *  (the method name already says it). */
-type WriteOf<K extends Write["kind"]> = Omit<Extract<Write, { kind: K }>, "kind">;
+type WriteOf<K extends Write["kind"]> = Omit<
+  Extract<Write, { kind: K }>,
+  "kind"
+>;
 
 /** Who a live connection is, resolved by the Worker before the upgrade ever
  *  reaches the DO — see `api.meet.live.ts`. */
@@ -264,37 +264,74 @@ export class MeetDurableObject extends DurableObject<Env> {
   private async hydrateFromD1(meetId: string): Promise<void> {
     const db = this.env.DB;
     const [seeds, watches, results, entries] = await Promise.all([
-      db.prepare("SELECT * FROM seeds WHERE meet_id = ?").bind(meetId).all<SeedRow>(),
-      db.prepare("SELECT * FROM watches WHERE meet_id = ?").bind(meetId).all<WatchRow>(),
-      db.prepare("SELECT * FROM results WHERE meet_id = ?").bind(meetId).all<ResultRow>(),
-      db.prepare("SELECT * FROM entries WHERE meet_id = ?").bind(meetId).all<EntryRow>(),
+      db
+        .prepare("SELECT * FROM seeds WHERE meet_id = ?")
+        .bind(meetId)
+        .all<SeedRow>(),
+      db
+        .prepare("SELECT * FROM watches WHERE meet_id = ?")
+        .bind(meetId)
+        .all<WatchRow>(),
+      db
+        .prepare("SELECT * FROM results WHERE meet_id = ?")
+        .bind(meetId)
+        .all<ResultRow>(),
+      db
+        .prepare("SELECT * FROM entries WHERE meet_id = ?")
+        .bind(meetId)
+        .all<EntryRow>(),
     ]);
 
     for (const s of seeds.results) {
       this.ctx.storage.sql.exec(
         `INSERT INTO seeds (id, meet_id, event_id, heat, lane, athlete_id, seed_time_ms, exhibition)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        s.id, s.meet_id, s.event_id, s.heat, s.lane, s.athlete_id, s.seed_time_ms, s.exhibition,
+        s.id,
+        s.meet_id,
+        s.event_id,
+        s.heat,
+        s.lane,
+        s.athlete_id,
+        s.seed_time_ms,
+        s.exhibition,
       );
     }
     for (const w of watches.results) {
       this.ctx.storage.sql.exec(
         `INSERT INTO watches (seed_id, meet_id, timer_id, user_id, role, time_ms, recorded_at, started_at, stopped_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        w.seed_id, w.meet_id, w.timer_id, w.user_id, w.role, w.time_ms, w.recorded_at, w.started_at, w.stopped_at,
+        w.seed_id,
+        w.meet_id,
+        w.timer_id,
+        w.user_id,
+        w.role,
+        w.time_ms,
+        w.recorded_at,
+        w.started_at,
+        w.stopped_at,
       );
     }
     for (const r of results.results) {
       this.ctx.storage.sql.exec(
         `INSERT INTO results (seed_id, meet_id, event_id, athlete_id, status, time_ms, decided_by, decided_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        r.seed_id, r.meet_id, r.event_id, r.athlete_id, r.status, r.time_ms, r.decided_by, r.decided_at,
+        r.seed_id,
+        r.meet_id,
+        r.event_id,
+        r.athlete_id,
+        r.status,
+        r.time_ms,
+        r.decided_by,
+        r.decided_at,
       );
     }
     for (const e of entries.results) {
       this.ctx.storage.sql.exec(
         `INSERT INTO entries (meet_id, event_id, athlete_id, created_at) VALUES (?, ?, ?, ?)`,
-        e.meet_id, e.event_id, e.athlete_id, e.created_at,
+        e.meet_id,
+        e.event_id,
+        e.athlete_id,
+        e.created_at,
       );
     }
 
@@ -324,10 +361,18 @@ export class MeetDurableObject extends DurableObject<Env> {
    */
   private async dumpToD1(meetId: string): Promise<void> {
     const db = this.env.DB;
-    const seeds = this.ctx.storage.sql.exec<SeedRow>("SELECT * FROM seeds WHERE meet_id = ?", meetId).toArray();
-    const watches = this.ctx.storage.sql.exec<WatchRow>("SELECT * FROM watches WHERE meet_id = ?", meetId).toArray();
-    const results = this.ctx.storage.sql.exec<ResultRow>("SELECT * FROM results WHERE meet_id = ?", meetId).toArray();
-    const entries = this.ctx.storage.sql.exec<EntryRow>("SELECT * FROM entries WHERE meet_id = ?", meetId).toArray();
+    const seeds = this.ctx.storage.sql
+      .exec<SeedRow>("SELECT * FROM seeds WHERE meet_id = ?", meetId)
+      .toArray();
+    const watches = this.ctx.storage.sql
+      .exec<WatchRow>("SELECT * FROM watches WHERE meet_id = ?", meetId)
+      .toArray();
+    const results = this.ctx.storage.sql
+      .exec<ResultRow>("SELECT * FROM results WHERE meet_id = ?", meetId)
+      .toArray();
+    const entries = this.ctx.storage.sql
+      .exec<EntryRow>("SELECT * FROM entries WHERE meet_id = ?", meetId)
+      .toArray();
 
     await db.batch([
       db.prepare("DELETE FROM seeds WHERE meet_id = ?").bind(meetId),
@@ -340,7 +385,16 @@ export class MeetDurableObject extends DurableObject<Env> {
             `INSERT INTO seeds (id, meet_id, event_id, heat, lane, athlete_id, seed_time_ms, exhibition)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .bind(s.id, s.meet_id, s.event_id, s.heat, s.lane, s.athlete_id, s.seed_time_ms, s.exhibition),
+          .bind(
+            s.id,
+            s.meet_id,
+            s.event_id,
+            s.heat,
+            s.lane,
+            s.athlete_id,
+            s.seed_time_ms,
+            s.exhibition,
+          ),
       ),
       ...watches.map((w) =>
         db
@@ -348,7 +402,17 @@ export class MeetDurableObject extends DurableObject<Env> {
             `INSERT INTO watches (seed_id, meet_id, timer_id, user_id, role, time_ms, recorded_at, started_at, stopped_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .bind(w.seed_id, w.meet_id, w.timer_id, w.user_id, w.role, w.time_ms, w.recorded_at, w.started_at, w.stopped_at),
+          .bind(
+            w.seed_id,
+            w.meet_id,
+            w.timer_id,
+            w.user_id,
+            w.role,
+            w.time_ms,
+            w.recorded_at,
+            w.started_at,
+            w.stopped_at,
+          ),
       ),
       ...results.map((r) =>
         db
@@ -356,7 +420,16 @@ export class MeetDurableObject extends DurableObject<Env> {
             `INSERT INTO results (seed_id, meet_id, event_id, athlete_id, status, time_ms, decided_by, decided_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .bind(r.seed_id, r.meet_id, r.event_id, r.athlete_id, r.status, r.time_ms, r.decided_by, r.decided_at),
+          .bind(
+            r.seed_id,
+            r.meet_id,
+            r.event_id,
+            r.athlete_id,
+            r.status,
+            r.time_ms,
+            r.decided_by,
+            r.decided_at,
+          ),
       ),
       ...entries.map((e) =>
         db
@@ -411,7 +484,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     const entries = this.readEntries(meetId);
 
     const wanted = new Set<string>();
-    for (const list of Object.values(entries)) for (const id of list) wanted.add(id);
+    for (const list of Object.values(entries))
+      for (const id of list) wanted.add(id);
     for (const seed of seeds) if (seed.athleteId) wanted.add(seed.athleteId);
     const athletes = [...wanted]
       .map((id) => this.roster.get(id))
@@ -449,14 +523,19 @@ export class MeetDurableObject extends DurableObject<Env> {
     const existing = this.ctx.storage.sql
       .exec<SeedRow>(
         "SELECT * FROM seeds WHERE event_id = ? AND heat = ? AND lane = ?",
-        input.eventId, input.heat, input.lane,
+        input.eventId,
+        input.heat,
+        input.lane,
       )
       .toArray()[0];
 
     // Nobody swims an event twice — vacate whatever other lane they held.
     this.ctx.storage.sql.exec(
       `DELETE FROM seeds WHERE event_id = ? AND athlete_id = ? AND NOT (heat = ? AND lane = ?)`,
-      input.eventId, input.athleteId, input.heat, input.lane,
+      input.eventId,
+      input.athleteId,
+      input.heat,
+      input.lane,
     );
 
     const id = existing?.id ?? input.seedId;
@@ -464,19 +543,26 @@ export class MeetDurableObject extends DurableObject<Env> {
       `INSERT INTO seeds (id, meet_id, event_id, heat, lane, athlete_id, seed_time_ms, exhibition)
        VALUES (?, ?, ?, ?, ?, ?, NULL, 0)
        ON CONFLICT(event_id, heat, lane) DO UPDATE SET athlete_id = excluded.athlete_id`,
-      id, input.meetId, input.eventId, input.heat, input.lane, input.athleteId,
+      id,
+      input.meetId,
+      input.eventId,
+      input.heat,
+      input.lane,
+      input.athleteId,
     );
 
     // Swimming a race is being in it.
     this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO entries (meet_id, event_id, athlete_id, created_at) VALUES (?, ?, ?, ?)`,
-      input.meetId, input.eventId, input.athleteId, Date.now(),
+      input.meetId,
+      input.eventId,
+      input.athleteId,
+      Date.now(),
     );
 
     this.broadcast({ kind: "seed", ...input });
     return {
       id,
-      meetId: input.meetId,
       eventId: input.eventId,
       heat: input.heat,
       lane: input.lane,
@@ -488,8 +574,14 @@ export class MeetDurableObject extends DurableObject<Env> {
 
   async unseat(input: WriteOf<"unseed">): Promise<void> {
     await this.ensureHydrated(input.meetId);
-    this.ctx.storage.sql.exec("DELETE FROM watches WHERE seed_id = ?", input.seedId);
-    this.ctx.storage.sql.exec("DELETE FROM results WHERE seed_id = ?", input.seedId);
+    this.ctx.storage.sql.exec(
+      "DELETE FROM watches WHERE seed_id = ?",
+      input.seedId,
+    );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM results WHERE seed_id = ?",
+      input.seedId,
+    );
     this.ctx.storage.sql.exec("DELETE FROM seeds WHERE id = ?", input.seedId);
     this.broadcast({ kind: "unseed", ...input });
   }
@@ -514,7 +606,9 @@ export class MeetDurableObject extends DurableObject<Env> {
     const existing = this.ctx.storage.sql
       .exec<SeedRow>(
         "SELECT * FROM seeds WHERE event_id = ? AND heat = ? AND lane = ?",
-        input.eventId, input.heat, input.lane,
+        input.eventId,
+        input.heat,
+        input.lane,
       )
       .toArray()[0];
     if (existing) return seedFromRow(existing);
@@ -524,7 +618,11 @@ export class MeetDurableObject extends DurableObject<Env> {
       `INSERT INTO seeds (id, meet_id, event_id, heat, lane, athlete_id, seed_time_ms, exhibition)
        VALUES (?, ?, ?, ?, ?, '', NULL, 0)
        ON CONFLICT(event_id, heat, lane) DO NOTHING`,
-      id, input.meetId, input.eventId, input.heat, input.lane,
+      id,
+      input.meetId,
+      input.eventId,
+      input.heat,
+      input.lane,
     );
     // Re-read rather than trusting the insert: two timers on the same lane
     // can both arrive here, and the one that lost has to come away with the
@@ -532,7 +630,9 @@ export class MeetDurableObject extends DurableObject<Env> {
     const seed = this.ctx.storage.sql
       .exec<SeedRow>(
         "SELECT * FROM seeds WHERE event_id = ? AND heat = ? AND lane = ?",
-        input.eventId, input.heat, input.lane,
+        input.eventId,
+        input.heat,
+        input.lane,
       )
       .toArray()[0]!;
     return seedFromRow(seed);
@@ -542,7 +642,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     await this.ensureHydrated(input.meetId);
     this.ctx.storage.sql.exec(
       "UPDATE seeds SET exhibition = ? WHERE id = ?",
-      input.exhibition ? 1 : 0, input.seedId,
+      input.exhibition ? 1 : 0,
+      input.seedId,
     );
     this.broadcast({ kind: "exhibition", ...input });
   }
@@ -559,8 +660,15 @@ export class MeetDurableObject extends DurableObject<Env> {
          recorded_at = excluded.recorded_at,
          started_at = COALESCE(excluded.started_at, watches.started_at),
          stopped_at = COALESCE(excluded.stopped_at, watches.stopped_at)`,
-      input.seedId, input.meetId, input.timerId, input.userId ?? null, input.role,
-      input.timeMs ?? null, input.recordedAt, input.startedAt ?? null, input.stoppedAt ?? null,
+      input.seedId,
+      input.meetId,
+      input.timerId,
+      input.userId ?? null,
+      input.role,
+      input.timeMs ?? null,
+      input.recordedAt,
+      input.startedAt ?? null,
+      input.stoppedAt ?? null,
     );
     this.broadcast({ kind: "watch", ...input });
   }
@@ -569,7 +677,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     await this.ensureHydrated(input.meetId);
     this.ctx.storage.sql.exec(
       "DELETE FROM watches WHERE seed_id = ? AND timer_id = ?",
-      input.seedId, input.timerId,
+      input.seedId,
+      input.timerId,
     );
     this.broadcast({ kind: "drop-watch", ...input });
   }
@@ -580,7 +689,10 @@ export class MeetDurableObject extends DurableObject<Env> {
    * same way `api.meet.writes.ts` resolves it from the session today rather
    * than trusting it in the request body.
    */
-  async decideResult(input: WriteOf<"result">, decidedBy?: string): Promise<void> {
+  async decideResult(
+    input: WriteOf<"result">,
+    decidedBy?: string,
+  ): Promise<void> {
     await this.ensureHydrated(input.meetId);
     const seed = this.ctx.storage.sql
       .exec<SeedRow>("SELECT * FROM seeds WHERE id = ?", input.seedId)
@@ -595,15 +707,24 @@ export class MeetDurableObject extends DurableObject<Env> {
          time_ms = excluded.time_ms,
          decided_by = excluded.decided_by,
          decided_at = excluded.decided_at`,
-      input.seedId, input.meetId, seed.event_id, seed.athlete_id,
-      input.status, input.timeMs, input.auto ? "auto" : (decidedBy ?? null), Date.now(),
+      input.seedId,
+      input.meetId,
+      seed.event_id,
+      seed.athlete_id,
+      input.status,
+      input.timeMs,
+      input.auto ? "auto" : (decidedBy ?? null),
+      Date.now(),
     );
     this.broadcast({ kind: "result", ...input });
   }
 
   async undecideResult(input: WriteOf<"unresult">): Promise<void> {
     await this.ensureHydrated(input.meetId);
-    this.ctx.storage.sql.exec("DELETE FROM results WHERE seed_id = ?", input.seedId);
+    this.ctx.storage.sql.exec(
+      "DELETE FROM results WHERE seed_id = ?",
+      input.seedId,
+    );
     this.broadcast({ kind: "unresult", ...input });
   }
 
@@ -637,7 +758,11 @@ export class MeetDurableObject extends DurableObject<Env> {
         teamsOf: () => teamsOf,
       })
     ) {
-      return { ok: false, status: 403, error: "That swimmer isn't yours to enter." };
+      return {
+        ok: false,
+        status: 403,
+        error: "That swimmer isn't yours to enter.",
+      };
     }
 
     if (input.entering) {
@@ -659,12 +784,16 @@ export class MeetDurableObject extends DurableObject<Env> {
 
       this.ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO entries (meet_id, event_id, athlete_id, created_at) VALUES (?, ?, ?, ?)`,
-        input.meetId, input.eventId, input.athleteId, Date.now(),
+        input.meetId,
+        input.eventId,
+        input.athleteId,
+        Date.now(),
       );
     } else {
       this.ctx.storage.sql.exec(
         "DELETE FROM entries WHERE event_id = ? AND athlete_id = ?",
-        input.eventId, input.athleteId,
+        input.eventId,
+        input.athleteId,
       );
     }
     this.broadcast({ kind: "entry", ...input });
@@ -751,14 +880,21 @@ export class MeetDurableObject extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         `INSERT INTO seeds (id, meet_id, event_id, heat, lane, athlete_id, seed_time_ms, exhibition)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        seed.id, meetId, eventId, seed.heat, seed.lane, seed.athleteId,
-        seed.seedTimeMs ?? null, seed.exhibition ? 1 : 0,
+        seed.id,
+        meetId,
+        eventId,
+        seed.heat,
+        seed.lane,
+        seed.athleteId,
+        seed.seedTimeMs ?? null,
+        seed.exhibition ? 1 : 0,
       );
     }
 
     const after = new Set(nextSeeds.map((s) => s.id));
     for (const id of before.keys()) {
-      if (!after.has(id)) this.broadcast({ kind: "unseed", meetId, seedId: id });
+      if (!after.has(id))
+        this.broadcast({ kind: "unseed", meetId, seedId: id });
     }
     for (const seed of nextSeeds) {
       const prior = before.get(seed.id);
@@ -876,7 +1012,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     reason: string,
     wasClean: boolean,
   ): Promise<void> {
-    if (!wasClean) console.warn("meet-do: socket closed uncleanly", { code, reason });
+    if (!wasClean)
+      console.warn("meet-do: socket closed uncleanly", { code, reason });
     ws.close(code, reason);
   }
 

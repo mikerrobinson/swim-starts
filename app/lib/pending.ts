@@ -74,12 +74,16 @@ export function applyWrite<T extends MeetSnapshot>(
         lane: message.lane,
         athleteId: message.athleteId,
       };
-      seeds = at >= 0 ? seeds.map((s, i) => (i === at ? next : s)) : [...seeds, next];
+      seeds =
+        at >= 0 ? seeds.map((s, i) => (i === at ? next : s)) : [...seeds, next];
 
       // Swimming a race is being in it.
       const current = entries[message.eventId] ?? [];
       if (!current.includes(message.athleteId)) {
-        entries = { ...entries, [message.eventId]: [...current, message.athleteId] };
+        entries = {
+          ...entries,
+          [message.eventId]: [...current, message.athleteId],
+        };
       }
       break;
     }
@@ -136,7 +140,6 @@ export function applyWrite<T extends MeetSnapshot>(
         ...results.filter((r) => r.seedId !== message.seedId),
         {
           seedId: message.seedId,
-          meetId: message.meetId,
           eventId: seed.eventId,
           athleteId: seed.athleteId,
           status: message.status,

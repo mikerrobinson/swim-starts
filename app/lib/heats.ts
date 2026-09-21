@@ -59,7 +59,6 @@ export function buildSeeds(
     group.forEach((athleteId, i) => {
       seeds.push({
         id: generateId(),
-        meetId,
         eventId,
         heat: index + 1,
         lane: order[i],
@@ -141,7 +140,11 @@ export function seedEvent(
   // that no team's own swimmers claimed — earliest heat first, centre-out
   // within it.
   const open: Array<{ heat: number; lane: number }> = [];
-  for (let heat = 1; heat <= heatCount && open.length < overflow.length; heat++) {
+  for (
+    let heat = 1;
+    heat <= heatCount && open.length < overflow.length;
+    heat++
+  ) {
     for (const lane of globalOrder) {
       if (!claimed.has(`${heat}/${lane}`)) open.push({ heat, lane });
     }
@@ -149,7 +152,9 @@ export function seedEvent(
   overflow.forEach((athleteId, i) => seatOf.set(athleteId, open[i]));
 
   const existing = new Map(
-    seedsForEvent(rows, eventId).map((s) => [`${s.heat}/${s.lane}`, s] as const),
+    seedsForEvent(rows, eventId).map(
+      (s) => [`${s.heat}/${s.lane}`, s] as const,
+    ),
   );
 
   return entrants.map((athleteId) => {
@@ -157,7 +162,13 @@ export function seedEvent(
     const before = existing.get(`${seat.heat}/${seat.lane}`);
     return before && before.athleteId === athleteId
       ? { ...before }
-      : { id: generateId(), meetId, eventId, heat: seat.heat, lane: seat.lane, athleteId };
+      : {
+          id: generateId(),
+          eventId,
+          heat: seat.heat,
+          lane: seat.lane,
+          athleteId,
+        };
   });
 }
 
@@ -181,5 +192,13 @@ export function reseedEvent(
   laneCount: LaneCount,
 ): Seed[] | null {
   if (eventTouched(rows, eventId)) return null;
-  return seedEvent(rows, meetId, eventId, entrants, teamOf, laneAssignments, laneCount);
+  return seedEvent(
+    rows,
+    meetId,
+    eventId,
+    entrants,
+    teamOf,
+    laneAssignments,
+    laneCount,
+  );
 }
