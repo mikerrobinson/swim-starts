@@ -24,7 +24,6 @@ import { eventClosed, swimTime, type SwimTime } from "./timing";
 import { athleteName, eventName, isDiving } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
 import type {
-  Seed,
   Meet,
   MeetCourse,
   MeetDetail,

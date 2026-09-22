@@ -29,13 +29,16 @@ import type {
   Swim,
   Stroke,
   Watch,
+  SwimKey,
+  MeetManifest,
+  Entry,
+  EntryKey,
 } from "~/types/meet";
-import { athleteName } from "~/types/meet";
+import { athleteName, toEntryKey, toSwimKey } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS swims (
-     id TEXT PRIMARY KEY,
      meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
      heat INTEGER NOT NULL,
@@ -47,34 +50,56 @@ const SCHEMA = [
      status TEXT,
      official_time_ms INTEGER,
      decided_at INTEGER,
-     decided_by TEXT
+     decided_by TEXT,
+
+     PRIMARY KEY (meet_id, event_id, heat, lane)
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS swims_by_lane ON swims (event_id, heat, lane)`,
 
   `CREATE TABLE IF NOT EXISTS watches (
-     id TEXT PRIMARY KEY,
-     swim_id TEXT NOT NULL,
      meet_id TEXT NOT NULL,
-     submitted_by TEXT NOT NULL,
-     user_id TEXT,
-     role TEXT NOT NULL DEFAULT 'timer',
+     event_id TEXT NOT NULL,
+     heat INTEGER NOT NULL,
+     lane INTEGER NOT NULL,
+     device_id TEXT NOT NULL,
      slot INTEGER NOT NULL DEFAULT 1,
+     role TEXT NOT NULL DEFAULT 'timer',
+     user_id TEXT,
      time_ms INTEGER,
      started_at INTEGER,
      stopped_at INTEGER,
-     submitted_at INTEGER NOT NULL
+     recorded_at INTEGER NOT NULL,
+
+     PRIMARY KEY (meet_id, event_id, heat, lane, device_id, slot),
+     FOREIGN KEY (meet_id, event_id, heat, lane) 
+       REFERENCES swims(meet_id, event_id, heat, lane) 
+       ON DELETE CASCADE
    )`,
-  `CREATE INDEX IF NOT EXISTS watches_by_swim ON watches (swim_id, submitted_by, slot)`,
+  `CREATE INDEX IF NOT EXISTS watches_by_swim ON watches (event_id, heat, lane)`,
 
   `CREATE TABLE IF NOT EXISTS entries (
      meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
-     athlete_id TEXT NOT NULL,
+     athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
      seed_time_ms INTEGER,
      exhibition INTEGER NOT NULL DEFAULT 0,
      entered_at INTEGER NOT NULL DEFAULT 0,
      entered_by TEXT,
      PRIMARY KEY (event_id, athlete_id)
+   )`,
+  `CREATE TABLE IF NOT EXISTS teams (
+     id TEXT PRIMARY KEY,
+     name TEXT NOT NULL,
+     code TEXT NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS athletes (
+     id TEXT PRIMARY KEY,
+     first_name TEXT NOT NULL,
+     last_name TEXT NOT NULL,
+     gender TEXT NOT NULL,
+     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+     birth_date TEXT,
+     user_id TEXT
    )`,
 
   // Bookkeeping the three tables above don't need for themselves: which meet
@@ -100,29 +125,32 @@ interface SwimRow {
   decided_at: number | null;
   decided_by: string | null;
 }
+
 interface WatchRow {
   [key: string]: SqlStorageValue;
-  id: string;
-  swim_id: string;
   meet_id: string;
-  submitted_by: string;
+  event_id: string;
+  heat: number;
+  lane: number;
+  device_id: string;
   user_id: string | null;
-  role: string | null;
+  role: string;
   slot: number;
   time_ms: number | null;
   started_at: number | null;
   stopped_at: number | null;
-  submitted_at: number;
+  recorded_at: number;
 }
 interface EntryRow {
   [key: string]: SqlStorageValue;
+  id: string;
   meet_id: string;
   event_id: string;
   athlete_id: string;
   seed_time_ms: number | null;
   exhibition: number | null;
   entered_at: number;
-  entered_by: string | null;
+  entered_by: string;
 }
 
 /** D1's `events` row — read fresh for `declareEntry`'s checks, since the
@@ -130,6 +158,7 @@ interface EntryRow {
 interface EventRow {
   id: string;
   meet_id: string;
+  eventNumber: number;
   position: number;
   distance: number;
   stroke: string;
@@ -140,6 +169,7 @@ interface EventRow {
 function eventFromRow(row: EventRow): Event {
   return {
     id: row.id,
+    eventNumber: row.eventNumber,
     position: row.position,
     distance: row.distance,
     stroke: row.stroke as Stroke,
@@ -160,7 +190,7 @@ function swimFromRow(row: SwimRow): Swim {
     athleteId: row.athlete_id,
     athleteName: row.athlete_name,
     athleteTeam: row.athlete_team,
-    exhibition: row.exhibition === 1 ? true : undefined,
+    exhibition: row.exhibition === 1 ? true : false,
     status: asResultStatus(row.status),
     officialTimeMs: row.official_time_ms ?? undefined,
     decidedAt: row.decided_at ?? undefined,
@@ -169,19 +199,30 @@ function swimFromRow(row: SwimRow): Swim {
 }
 function watchFromRow(row: WatchRow): Watch {
   return {
-    id: row.id,
-    swimId: row.swim_id,
-    submittedBy: row.submitted_by,
-    userId: row.user_id ?? undefined,
-    role: row.role === "admin" || row.role === "coach" ? row.role : "timer",
+    eventId: row.event_id,
+    heat: row.heat,
+    lane: row.lane,
+    deviceId: row.device_id,
     slot: row.slot,
+    role: row.role === "admin" || row.role === "coach" ? row.role : "timer",
+    userId: row.user_id ?? undefined,
     timeMs: row.time_ms ?? undefined,
     startedAt: row.started_at ?? undefined,
     stoppedAt: row.stopped_at ?? undefined,
-    submittedAt: row.submitted_at,
+    recordedAt: row.recorded_at,
   };
 }
-
+function entryFromRow(row: EntryRow): Entry {
+  return {
+    id: row.id,
+    athleteId: row.athlete_id,
+    eventId: row.event_id,
+    seedTimeMs: row.seed_time_ms ?? undefined,
+    exhibition: row.exhibition === 1 ? true : false,
+    enteredAt: row.entered_at,
+    enteredBy: row.entered_by,
+  };
+}
 /** One RPC write method's input: the matching `Write` variant, kind dropped
  *  (the method name already says it). */
 type WriteOf<K extends Write["kind"]> = Omit<
@@ -303,14 +344,14 @@ export class MeetDurableObject extends DurableObject<Env> {
         w.id,
         w.swim_id,
         w.meet_id,
-        w.submitted_by,
+        w.timer_id,
         w.user_id,
         w.role,
         w.slot,
         w.time_ms,
         w.started_at,
         w.stopped_at,
-        w.submitted_at,
+        w.recorded_at,
       );
     }
     for (const e of entries.results) {
@@ -399,14 +440,14 @@ export class MeetDurableObject extends DurableObject<Env> {
             w.id,
             w.swim_id,
             w.meet_id,
-            w.submitted_by,
+            w.timer_id,
             w.user_id,
             w.role,
             w.slot,
             w.time_ms,
             w.started_at,
             w.stopped_at,
-            w.submitted_at,
+            w.recorded_at,
           ),
       ),
       ...entries.map((e) =>
@@ -474,6 +515,54 @@ export class MeetDurableObject extends DurableObject<Env> {
       .map((id) => this.roster.get(id))
       .filter((a): a is Athlete => !!a);
 
+    return { entries, swims, watches, athletes };
+  }
+
+  async getSnapshotNew(meetId: string): Promise<MeetManifest> {
+    await this.ensureHydrated(meetId);
+
+    const swims = this.ctx.storage.sql
+      .exec<SwimRow>("SELECT * FROM swims WHERE meet_id = ?", meetId)
+      .toArray()
+      .map(swimFromRow)
+      .reduce<Record<SwimKey, Swim>>((record, swim) => {
+        record[toSwimKey(swim)] = swim;
+        return record;
+      }, {});
+
+    const entries = this.ctx.storage.sql
+      .exec<EntryRow>("SELECT * FROM entries WHERE meet_id = ?", meetId)
+      .toArray()
+      .map(entryFromRow)
+      .reduce<Record<EntryKey, Entry>>((record, entry) => {
+        record[toEntryKey(entry)] = entry;
+        return record;
+      }, {});
+
+    const watches = this.ctx.storage.sql
+      .exec<WatchRow>("SELECT * FROM watches WHERE meet_id = ?", meetId)
+      .toArray()
+      .map(watchFromRow)
+      .reduce<Record<string, Watch>>((record, watch) => {
+        record[watch.id] = watch;
+        return record;
+      }, {});
+
+    //const entries = this.readEntries(meetId);
+
+    const wanted = new Set<string>();
+    for (const list of Object.values(entries))
+      for (const id of list) wanted.add(id);
+    for (const swim of Object.values(swims))
+      if (swim.athleteId) wanted.add(swim.athleteId);
+    const athletes: Record<string, Athlete> = {};
+
+    for (const id of wanted) {
+      const athlete = this.roster.get(id);
+      if (athlete) {
+        athletes[id] = athlete;
+      }
+    }
     return { entries, swims, watches, athletes };
   }
 

@@ -120,13 +120,14 @@ const SCHEMA = [
    * is an update to a column rather than a rewrite of a list.
    */
   `CREATE TABLE IF NOT EXISTS events (
-     id TEXT PRIMARY KEY,
      meet_id TEXT NOT NULL,
+     event_id TEXT NOT NULL,
      position INTEGER NOT NULL,
      distance INTEGER NOT NULL,
      stroke TEXT NOT NULL,
      gender TEXT NOT NULL,
-     name TEXT
+     name TEXT,
+     PRIMARY KEY (meet_id, event_id)
    )`,
   `CREATE INDEX IF NOT EXISTS events_by_meet ON events (meet_id, position)`,
 
@@ -146,7 +147,10 @@ const SCHEMA = [
      exhibition INTEGER NOT NULL DEFAULT 0,
      entered_at INTEGER NOT NULL DEFAULT 0,
      entered_by TEXT,
-     PRIMARY KEY (event_id, athlete_id)
+     PRIMARY KEY (event_id, athlete_id),
+     FOREIGN KEY (meet_id, event_id) 
+       REFERENCES events(meet_id, event_id) 
+       ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS entries_by_meet ON entries (meet_id)`,
   `CREATE INDEX IF NOT EXISTS entries_by_athlete ON entries (athlete_id)`,
@@ -166,7 +170,6 @@ const SCHEMA = [
    * results table; the decision lives on the swim it's about.
    */
   `CREATE TABLE IF NOT EXISTS swims (
-     id TEXT PRIMARY KEY,
      meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
      heat INTEGER NOT NULL,
@@ -178,7 +181,12 @@ const SCHEMA = [
      status TEXT,
      official_time_ms INTEGER,
      decided_at INTEGER,
-     decided_by TEXT
+     decided_by TEXT,
+
+     PRIMARY KEY (meet_id, event_id, heat, lane),
+     FOREIGN KEY (meet_id, event_id) 
+       REFERENCES events(meet_id, event_id) 
+       ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS swims_by_meet ON swims (meet_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS swims_by_lane ON swims (event_id, heat, lane)`,
@@ -197,20 +205,26 @@ const SCHEMA = [
    * purpose, as the audit trail.
    */
   `CREATE TABLE IF NOT EXISTS watches (
-     id TEXT PRIMARY KEY,
-     swim_id TEXT NOT NULL,
      meet_id TEXT NOT NULL,
-     submitted_by TEXT NOT NULL,
-     user_id TEXT,
-     role TEXT NOT NULL DEFAULT 'timer',
+     event_id TEXT NOT NULL,
+     heat INTEGER NOT NULL,
+     lane INTEGER NOT NULL,
+     device_id TEXT NOT NULL,
      slot INTEGER NOT NULL DEFAULT 1,
+     role TEXT NOT NULL DEFAULT 'timer',
+     user_id TEXT,
      time_ms INTEGER,
      started_at INTEGER,
      stopped_at INTEGER,
-     submitted_at INTEGER NOT NULL
+     recorded_at INTEGER NOT NULL,
+
+     PRIMARY KEY (meet_id, event_id, heat, lane, device_id, slot),
+     FOREIGN KEY (meet_id, event_id) 
+       REFERENCES events(meet_id, event_id) 
+       ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS watches_by_meet ON watches (meet_id)`,
-  `CREATE INDEX IF NOT EXISTS watches_by_swim ON watches (swim_id, submitted_by, slot)`,
+  `CREATE INDEX IF NOT EXISTS watches_by_swim ON watches (swim_id, timer_id, slot)`,
 ];
 
 let ready = false;

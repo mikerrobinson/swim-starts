@@ -12,25 +12,26 @@ import type {
   ClientActionFunctionArgs,
 } from "react-router";
 import { meetCache } from "~/lib/meetCache";
-import type { loader as rootLoader } from "~/routes/meets2";
+import type { LoaderData as RootLoaderData } from "~/routes/meets2";
+import { toSwimKey } from "~/types/meet";
 
 // Server action: executed on the Cloudflare Worker/DO
 export async function action({ request, params, context }: ActionFunctionArgs) {
   const { id: meetId, heat, lane } = params;
-  const formData = await request.formData();
+  // const formData = await request.formData();
 
-  const timeMs = Number(formData.get("timeMs"));
-  const deviceId = String(formData.get("deviceId"));
+  // const timeMs = Number(formData.get("timeMs"));
+  // const deviceId = String(formData.get("deviceId"));
 
-  const doId = context.env.MEET_DO.idFromName(meetId!);
-  const stub = context.env.MEET_DO.get(doId);
+  // const doId = context.env.MEET_DO.idFromName(meetId!);
+  // const stub = context.env.MEET_DO.get(doId);
 
-  await stub.recordTime({
-    heatNumber: Number(heat),
-    laneNumber: Number(lane),
-    timeMs,
-    deviceId,
-  });
+  // await stub.recordTime({
+  //   heatNumber: Number(heat),
+  //   laneNumber: Number(lane),
+  //   timeMs,
+  //   deviceId,
+  // });
 
   return new Response(JSON.stringify({ ok: true }), {
     headers: {
@@ -47,23 +48,23 @@ export async function clientAction({
   params,
   serverAction,
 }: ClientActionFunctionArgs) {
-  const { heat, lane } = params;
-  const formData = await request.clone().formData();
-  const timeMs = Number(formData.get("timeMs"));
-  const cacheKey = `heat:${heat}:lane:${lane}`;
+  // const { heat, lane } = params;
+  // const formData = await request.clone().formData();
+  // const timeMs = Number(formData.get("timeMs"));
+  // const cacheKey = `heat:${heat}:lane:${lane}`;
 
-  // 1. Optimistically commit to local cache
-  meetCache.setOptimisticLocal(cacheKey, { timeMs, status: "valid" });
+  // // 1. Optimistically commit to local cache
+  // meetCache.setOptimisticLocal(cacheKey, { timeMs, status: "valid" });
 
-  // 2. Stage backup cookie directly in document.cookie for webview crash protection
-  document.cookie = `pending_time_${lane}=${timeMs}; Path=/; SameSite=Strict; Secure`;
+  // // 2. Stage backup cookie directly in document.cookie for webview crash protection
+  // document.cookie = `pending_time_${lane}=${timeMs}; Path=/; SameSite=Strict; Secure`;
 
-  // 3. Fire-and-forget server sync in background
-  serverAction()
-    .then(() => meetCache.ackSync(cacheKey))
-    .catch(() =>
-      console.warn("Offline: time queued in local store and cookie."),
-    );
+  // // 3. Fire-and-forget server sync in background
+  // serverAction()
+  //   .then(() => meetCache.ackSync(cacheKey))
+  //   .catch(() =>
+  //     console.warn("Offline: time queued in local store and cookie."),
+  //   );
 
   return { success: true };
 }
@@ -73,23 +74,22 @@ export default function TimerLaneKiosk() {
   const navigate = useNavigate();
   const navigation = useNavigation();
 
-  // READ FROM ROOT LOADER DIRECTLY — No fetch waterfalls or separate loaders needed
-  const rootData = useRouteLoaderData<typeof rootLoader>("routes/meets2");
+  // Read directly from the parent shell loader
+  const rootData = useRouteLoaderData<RootLoaderData>("routes/meets2");
   const meet = rootData?.meet;
 
-  const currentHeatNumber = Number(params.heat);
-  const currentLaneNumber = Number(params.lane);
+  const currentEventNo = Number(params.event);
+  const currentHeat = Number(params.heat);
+  const currentLane = Number(params.lane);
 
-  // Find the active heat and lane metadata from cached manifest
-  const activeEvent = meet?.events?.find((e) =>
-    e.heats.some((h) => h.number === currentHeatNumber),
-  );
-  const activeHeat = activeEvent?.heats.find(
-    (h) => h.number === currentHeatNumber,
-  );
-  const activeLaneSlot = activeHeat?.lanes.find(
-    (l) => l.lane === currentLaneNumber,
-  );
+  // O(1) direct slot lookup
+  const swimKey = toSwimKey({
+    event: currentEventNo,
+    heat: currentHeat,
+    lane: currentLane,
+  });
+  const currentSwim = meet?.swims[swimKey];
+  const currentEvent = meet?.events[currentEventNo];
 
   // High-performance touch timing state
   const [stopwatchMs, setStopwatchMs] = useState<number | null>(null);
@@ -126,26 +126,25 @@ export default function TimerLaneKiosk() {
   );
 
   const handleNextHeat = () => {
-    const nextHeat = currentHeatNumber + 1;
-    navigate(
-      `/meets/${meet?.id}/timer/heats/${nextHeat}/lanes/${currentLaneNumber}`,
-    );
+    const nextHeat = currentHeat + 1;
+    navigate(`/meets/${meet?.id}/timer/${nextHeat}/${currentLane}`);
   };
+
   return (
     <div className="flex h-dvh flex-col select-none touch-none overscroll-none p-4">
       {/* Header Info Banner */}
       <header className="flex justify-between items-center pb-4">
         <div>
           <span className="text-xs font-semibold tracking-wider uppercase">
-            {activeEvent?.name ?? "Event"}
+            {currentEvent?.name ?? "Event"}
           </span>
           <h1 className="text-2xl font-bold">
-            Heat {currentHeatNumber} • Lane {currentLaneNumber}
+            Heat {currentHeat} • Lane {currentLane}
           </h1>
           <p className="text-sm">
             Swimmer:{" "}
             <span className="font-medium">
-              {activeLaneSlot?.swimmerName ?? "Open Lane"}
+              {currentSwim?.athleteId ?? "Open Lane"}
             </span>
           </p>
         </div>

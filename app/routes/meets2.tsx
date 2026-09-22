@@ -1,4 +1,3 @@
-// app/routes/meets.$id.tsx
 import type { Route } from "./+types/meets2";
 
 import {
@@ -8,15 +7,61 @@ import {
   useRevalidator,
 } from "react-router";
 import { useEffect } from "react";
-import { meetCache, type MeetManifest } from "~/lib/meetCache";
+import { meetCache } from "~/lib/meetCache";
+import type { MeetManifest } from "~/types/meet";
+import { toSwimKey } from "~/types/meet";
 
-export type LoaderData = { meet: MeetManifest };
+export type LoaderData = typeof loader;
 
 export async function loader({ params, context }: Route.LoaderArgs) {
   const meetId = params.meetId!;
-  // Fetch initial meet program from Cloudflare DO or database
-  const meet: MeetManifest | null = { isLive: false, id: meetId } as any; //
-  //context.env.db.getMeet(meetId);
+  const meet: MeetManifest = {
+    id: "123",
+    name: "Sample Meet",
+    isLive: false,
+    currentEventId: undefined,
+    currentHeatNumber: undefined,
+    events: {},
+    entries: {},
+    swims: {},
+    watches: {},
+    athletes: {},
+  };
+  meet.events["1"] = {
+    id: "1",
+    position: 1,
+    eventNumber: 1,
+    distance: 100,
+    stroke: "Free",
+    gender: "M",
+    totalHeats: 1,
+  };
+  meet.events["2"] = {
+    id: "2",
+    position: 2,
+    eventNumber: 2,
+    distance: 200,
+    stroke: "Back",
+    gender: "F",
+    totalHeats: 1,
+  };
+  // create dummy swims using toSwimKey
+  meet.swims[toSwimKey({ event: 1, heat: 1, lane: 1 })] = {
+    id: "s1",
+    eventId: "1",
+    heat: 1,
+    lane: 1,
+    athleteId: "a1",
+    exhibition: false,
+  };
+  meet.swims[toSwimKey({ event: 2, heat: 1, lane: 1 })] = {
+    id: "s2",
+    eventId: "2",
+    heat: 1,
+    lane: 1,
+    athleteId: "a2",
+    exhibition: false,
+  };
 
   if (!meet) {
     throw new Response("Meet Not Found", { status: 404 });
@@ -32,39 +77,35 @@ export async function clientLoader({
   serverLoader,
 }: Route.ClientLoaderArgs) {
   const meetId = params.meetId!;
-  //   const cached = meetCache.getManifest(meetId);
+  const cached = meetCache.getManifest(meetId);
 
-  //   if (cached) {
-  //     // Background stale-while-revalidate fetch
-  //     serverLoader()
-  //       .then((fresh) => {
-  //         if (fresh?.meet) meetCache.saveManifest(meetId, fresh.meet);
-  //       })
-  //       .catch(() => {});
+  // Stale-While-Revalidate if cached in memory/localStorage
+  if (cached) {
+    serverLoader()
+      .then((loaderData) => {
+        if (loaderData?.meet) meetCache.saveManifest(meetId, loaderData.meet);
+      })
+      .catch(() => {});
+    return { meet: cached };
+  }
 
-  //     return { meet: cached };
-  //   }
-
-  //   // Cold cache fallback: load from network and seed cache
-  //   const data = await serverLoader();
-  //   meetCache.saveManifest(meetId, data.meet);
-  const meet = { isLive: false, id: meetId } as any; //
-  console.log("clientLoader meet", meet);
-  return { meet };
+  const fresh = await serverLoader();
+  meetCache.saveManifest(meetId, fresh.meet);
+  return fresh;
 }
 
 export default function MeetRootLayout() {
   const { meet } = useLoaderData<typeof loader>();
-  const location = useLocation();
-
-  // Only open WebSockets for active meets on live deck routes
-  const isArchiveView = location.pathname.includes("/archive/");
-  const shouldConnectLive = meet.isLive && !isArchiveView;
 
   return (
-    <div className="min-h-screen bg-white text-black">
-      {shouldConnectLive && <LiveMeetSync meetId={meet.id} />}
-      <Outlet />
+    <div className="min-h-screen bg-slate-950 text-white flex flex-col">
+      {/* Headless socket listener living safely at the layout boundary */}
+      {meet.isLive && <LiveMeetSync meetId={meet.id} />}
+
+      {/* Child views render here */}
+      <main className="flex-1 flex flex-col">
+        <Outlet />
+      </main>
     </div>
   );
 }
@@ -76,27 +117,27 @@ export default function MeetRootLayout() {
 function LiveMeetSync({ meetId }: { meetId: string }) {
   const revalidator = useRevalidator();
 
-  useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(
-      `${protocol}//${window.location.host}/api/meets/${meetId}/live`,
-    );
+  // useEffect(() => {
+  //   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  //   const ws = new WebSocket(
+  //     `${protocol}//${window.location.host}/api/meets/${meetId}/live`,
+  //   );
 
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
+  //   ws.onmessage = (event) => {
+  //     // const msg = JSON.parse(event.data);
 
-      if (msg.type === "LANE_TIME_SUBMITTED") {
-        meetCache.setServerState(
-          `heat:${msg.heatId}:lane:${msg.lane}`,
-          msg.data,
-        );
-        // Nudge Remix: active loaders re-run cleanly
-        revalidator.revalidate();
-      }
-    };
+  //     // if (msg.type === "LANE_TIME_SUBMITTED") {
+  //     //   meetCache.setServerState(
+  //     //     `heat:${msg.heatId}:lane:${msg.lane}`,
+  //     //     msg.data,
+  //     //   );
+  //     //   // Nudge Remix: active loaders re-run cleanly
+  //     //   revalidator.revalidate();
+  //     // }
+  //   };
 
-    return () => ws.close();
-  }, [meetId, revalidator]);
+  //   return () => ws.close();
+  // }, [meetId, revalidator]);
 
   return null;
 }

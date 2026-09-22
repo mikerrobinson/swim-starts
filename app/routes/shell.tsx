@@ -13,7 +13,7 @@ import { useOutbox } from "~/state/outbox";
 import { useSession } from "~/state/session";
 import { meetSubtitle } from "~/types/meet";
 import type { loader as meetLoader } from "./meet-layout";
-import { LANE_LAYOUTS, type LaneLayout } from "~/lib/storage";
+import { LANE_LAYOUTS, type LaneLayout } from "~/types/meet";
 
 interface Tab {
   to: string;
