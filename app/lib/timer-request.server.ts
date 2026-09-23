@@ -7,15 +7,10 @@
  */
 
 import { requireDb } from "./api.server";
-import {
-  appBaseOf,
-  deviceCookie,
-  deviceId,
-  existingDeviceId,
-  grantFor,
-  grantToken,
-  type Grant,
-} from "./grants.server";
+import { deviceCookie, deviceId, existingDeviceId } from "./device.server";
+import { grantToken } from "~/lib/grants.server";
+import { grantFor } from "~/lib/grants.server";
+import { type Grant } from "~/lib/grants.server";
 import { meetDetail } from "./meets.server";
 import type { MeetDurableObject } from "./meet-do.server";
 import { withLiveTables, type MeetDetail } from "~/types/meet";
@@ -43,11 +38,17 @@ export async function resolveTimerRequest(
 
   const token = grantToken(request);
   if (!token) {
-    return { ok: false, error: "Scan the code your coach gave you to start timing." };
+    return {
+      ok: false,
+      error: "Scan the code your coach gave you to start timing.",
+    };
   }
   const grant = await grantFor(db, token);
   if (!grant || grant.meetId !== meetId) {
-    return { ok: false, error: "This timing link has expired. Scan the code again." };
+    return {
+      ok: false,
+      error: "This timing link has expired. Scan the code again.",
+    };
   }
 
   const loaded = await meetDetail(db, meetId);
@@ -70,16 +71,9 @@ export async function resolveTimerRequest(
       grant,
       timerId,
       detail,
-      deviceCookie: known
-        ? undefined
-        : deviceCookie(timerId, request, appBaseOf(request, "/meets/")),
+      deviceCookie: known ? undefined : deviceCookie(timerId, request),
     },
   };
-}
-
-/** Where every `seed-*` cookie for this meet is scoped — see `seed-cookie.ts`. */
-export function seedCookiePath(request: Request, meetId: string): string {
-  return `${appBaseOf(request, "/meets/")}meets/${encodeURIComponent(meetId)}/timer`;
 }
 
 /** Clears whichever cookies `applySeedCookies` reports as fully consumed. */
@@ -90,9 +84,12 @@ export function clearSeedCookies(
   names: string[],
 ): void {
   if (names.length === 0) return;
-  const path = seedCookiePath(request, meetId);
+  const path = `/meets/${meetId}/timer`;
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
   for (const name of names) {
-    headers.append("set-cookie", `${name}=; Path=${path}; SameSite=Lax; Max-Age=0${secure}`);
+    headers.append(
+      "set-cookie",
+      `${name}=; Path=${path}; SameSite=Lax; Max-Age=0${secure}`,
+    );
   }
 }

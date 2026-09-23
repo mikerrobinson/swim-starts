@@ -288,8 +288,8 @@ export interface Watch {
   lane: number;
   deviceId: string;
   slot: number;
-  userId?: string;
   role: WatchRole;
+  userId?: string;
   startedAt?: number;
   stoppedAt?: number;
   timeMs?: number;

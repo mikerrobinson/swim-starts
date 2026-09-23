@@ -23,7 +23,9 @@ import {
 } from "~/lib/api.server";
 import { addMeetAdmin, meetAdmins, removeMeetAdmin } from "~/lib/admins.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
-import { activeGrant, issueGrant, revokeGrants } from "~/lib/grants.server";
+import { issueGrant } from "~/lib/grants.server";
+import { revokeGrants } from "~/lib/grants.server";
+import { grantFor } from "~/lib/grants.server";
 import { createInvite, inviteUser, supersedeInvites } from "~/lib/auth.server";
 import { parseContact } from "~/lib/identity";
 import { revealsCodes, sendMeetInvite } from "~/lib/notify.server";
@@ -88,7 +90,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     meetAdmins(db, params.meetId),
     // Whether a sheet is live and when it dies — never the token itself.
     // That is handed over exactly once, by the action that mints it.
-    user ? activeGrant(db, params.meetId) : null,
+    user ? grantFor(db, params.meetId) : null,
   ]);
 
   return { detail, admins, grant };
@@ -115,7 +117,9 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const user = await currentUser(request, env);
   const access = await meetAccess(db, params.meetId, user);
   if (!mayEditMeet(access) || !access.userId) {
-    throw new Response("Whoever is running this meet decides that.", { status: 403 });
+    throw new Response("Whoever is running this meet decides that.", {
+      status: 403,
+    });
   }
   // Who is doing it, recorded against the rows that remember who let somebody
   // in. Pulled out here because `mayEditMeet` is `access.admin`, which nobody
@@ -228,7 +232,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       typeof addEventsToMeet
     >[2];
     const next = on
-      ? withDiving(params.meetId, events, form.get("leadGender") === "M" ? "M" : "F")
+      ? withDiving(
+          params.meetId,
+          events,
+          form.get("leadGender") === "M" ? "M" : "F",
+        )
       : withoutDiving(events);
     await updateMeet(db, params.meetId, { includeDiving: on });
     // Only the diving rows change; everything else keeps its id and position.
@@ -236,7 +244,10 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     const gone = events.filter((e) => !next.some((o) => o.id === e.id));
     for (const event of gone) await removeEvent(db, event.id);
     if (added.length) await addEventsToMeet(db, params.meetId, added);
-    await setEventOrder(db, renumber(next).map((e) => e.id));
+    await setEventOrder(
+      db,
+      renumber(next).map((e) => e.id),
+    );
     return { ok: true };
   }
 
@@ -343,7 +354,10 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const mayEdit = mayEditMeet(access);
 
-  const entryCount = Object.values(entries).reduce((n, ids) => n + ids.length, 0);
+  const entryCount = Object.values(entries).reduce(
+    (n, ids) => n + ids.length,
+    0,
+  );
   const times = recordedCount(detail);
   const stats = [
     { label: "Events", value: events.length },
@@ -424,7 +438,11 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
           <Button
             disabled={times === 0}
             onClick={() =>
-              downloadFile(`${slug}-results.csv`, resultsToCsv(detail), "text/csv")
+              downloadFile(
+                `${slug}-results.csv`,
+                resultsToCsv(detail),
+                "text/csv",
+              )
             }
           >
             Results CSV
@@ -459,11 +477,17 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
                       Delete meet
                     </Button>
                   </Form>
-                  <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
+                  <Button onClick={() => setConfirmDelete(false)}>
+                    Cancel
+                  </Button>
                 </div>
               </div>
             ) : (
-              <Button variant="ghost" full onClick={() => setConfirmDelete(true)}>
+              <Button
+                variant="ghost"
+                full
+                onClick={() => setConfirmDelete(true)}
+              >
                 Delete this meet
               </Button>
             )}
@@ -540,7 +564,9 @@ function SeedingScoringEditor() {
               <Field key={team.id} label={team.name}>
                 <TextInput
                   name={`lanes-${team.id}`}
-                  defaultValue={formatNumberList(meet.laneAssignments[team.id] ?? [])}
+                  defaultValue={formatNumberList(
+                    meet.laneAssignments[team.id] ?? [],
+                  )}
                   placeholder="1, 3, 5"
                   inputMode="numeric"
                 />
@@ -583,7 +609,9 @@ function SeedingScoringEditor() {
         </label>
 
         <Button type="submit" variant="primary" full>
-          {fetcher.state === "submitting" ? "Saving…" : "Save seeding & scoring"}
+          {fetcher.state === "submitting"
+            ? "Saving…"
+            : "Save seeding & scoring"}
         </Button>
       </fetcher.Form>
     </Card>
@@ -601,7 +629,11 @@ function DetailsEditor() {
       <fetcher.Form method="post" className="space-y-3">
         <input type="hidden" name="intent" value="details" />
         <Field label="Name">
-          <TextInput name="name" defaultValue={meet.name} autoCapitalize="words" />
+          <TextInput
+            name="name"
+            defaultValue={meet.name}
+            autoCapitalize="words"
+          />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Date">
@@ -706,7 +738,10 @@ function EventList({ editing }: { editing: boolean }) {
             const entered = (entries[event.id] ?? []).length;
             const official = eventClosed(detail, event.id);
             return (
-              <li key={event.id} className="flex items-center gap-2 py-2 text-sm">
+              <li
+                key={event.id}
+                className="flex items-center gap-2 py-2 text-sm"
+              >
                 <span className="w-6 text-right tabular-nums text-slate-400">
                   {index + 1}
                 </span>
@@ -723,10 +758,18 @@ function EventList({ editing }: { editing: boolean }) {
                 </span>
                 {editing && (
                   <span className="flex shrink-0 gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => move(index, -1)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => move(index, -1)}
+                    >
                       ↑
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => move(index, 1)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => move(index, 1)}
+                    >
                       ↓
                     </Button>
                     <fetcher.Form method="post">

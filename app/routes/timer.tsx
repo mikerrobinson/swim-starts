@@ -376,7 +376,7 @@ export default function Timer({ params }: Route.ComponentProps) {
    * to read back and no chance of building the next change off a copy the
    * server already cleared.
    */
-  const updateRecord = (patch: (record: SeedRecord) => SeedRecord) => {
+  const updateSwim = (patch: (record: SeedRecord) => SeedRecord) => {
     if (!where || !laneKey) return;
     const next = patch({
       ...(pending[laneKey] ?? baseRecord()),
@@ -410,7 +410,7 @@ export default function Timer({ params }: Route.ComponentProps) {
    */
   const claimLane = (athleteId: string, newcomer?: QueuedAthlete) => {
     if (!where) return;
-    updateRecord((record) =>
+    updateSwim((record) =>
       newcomer
         ? {
             ...record,
@@ -432,7 +432,7 @@ export default function Timer({ params }: Route.ComponentProps) {
    */
   const toggleExhibition = () => {
     if (!where) return;
-    updateRecord((record) => ({ ...record, exhibition: !exhibition }));
+    updateSwim((record) => ({ ...record, exhibition: !exhibition }));
   };
 
   /**
@@ -448,7 +448,7 @@ export default function Timer({ params }: Route.ComponentProps) {
     const at = Date.now();
     setStartedAt(at);
     setElapsed(0);
-    updateRecord((record) => ({
+    updateSwim((record) => ({
       ...record,
       watches: [{ startedAt: at, stoppedAt: null, timeMs: null }],
     }));
@@ -467,7 +467,7 @@ export default function Timer({ params }: Route.ComponentProps) {
   const submit = (times: Array<number | null>) => {
     if (!where || !times.some((ms) => ms !== null)) return;
 
-    updateRecord((record) => ({
+    updateSwim((record) => ({
       ...record,
       watches: times.map((timeMs, i) => ({
         startedAt: record.watches[i]?.startedAt ?? null,

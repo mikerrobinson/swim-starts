@@ -25,7 +25,6 @@ export function parseSwimKey(key: SwimKey): {
 export interface Watch {
   id: string;
   swimId: string;
-  submittedBy: string;
   userId?: string;
   role: "timer" | "chief_timer" | "admin";
   slot: number; // Watch 1, 2, or 3
@@ -33,6 +32,7 @@ export interface Watch {
   startedAt?: number;
   stoppedAt?: number;
   submittedAt: number;
+  submittedBy: string;
 }
 
 export interface Swim {

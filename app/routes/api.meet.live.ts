@@ -1,7 +1,8 @@
 import type { Route } from "./+types/api.meet.live";
 import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { meetAccess } from "~/lib/access.server";
-import { grantFor, grantToken } from "~/lib/grants.server";
+import { grantToken } from "~/lib/grants.server";
+import { grantFor } from "~/lib/grants.server";
 import type { MeetRole } from "~/lib/meet-do.server";
 
 /**

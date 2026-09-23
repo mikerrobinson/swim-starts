@@ -1,6 +1,5 @@
 import {
   isRouteErrorResponse,
-  type ShouldRevalidateFunctionArgs,
   Links,
   Meta,
   Outlet,
@@ -17,19 +16,6 @@ import { sessionPayload } from "./lib/auth.server";
 import { SIGNED_OUT } from "./state/session";
 import "./app.css";
 
-/**
- * Who is signed in, decided once for the whole app.
- *
- * The session cookie is `HttpOnly` and sent with every request, so the server
- * already knows this on the way in — there is nothing for the browser to ask
- * afterwards. It used to ask anyway: a provider fetched `/api/auth/session` on
- * every boot, cached the answer in localStorage against an offline load, and
- * carried a "stale" flag to say which of the two you were looking at. All of
- * that was paying for a round trip the server had already made.
- *
- * On the root route rather than the shell, because signing in and the timer's
- * screens live outside the shell and still need to know.
- */
 export async function loader({ request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
   if (!env.DB) return { session: SIGNED_OUT };
@@ -42,71 +28,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return { session: await sessionPayload(env.DB, user) };
 }
 
-/**
- * Don't ask again while somebody is timing.
- *
- * React Router revalidates every loader in the matched chain on every client
- * navigation, and this one is at the root of all of them — so moving from one
- * heat to the next fired a request for the session. Out of signal that request
- * fails, and a failed revalidation fails the *navigation*: a volunteer who had
- * just queued a time and tapped through to the next heat landed on the error
- * page instead, with the time safely in a cookie and no way back to the
- * stopwatch. It was the one screen in the app written to work with no wifi at
- * all, undone by the one loader it didn't know it had.
- *
- * With nothing left in the chain that needs calling, React Router makes no
- * request at all, and heat-to-heat navigation costs nothing and cannot fail.
- *
- * Safe because of what this loader answers: who is signed in. Nobody signs in
- * or out by walking down the pool — the timing screens have no account behind
- * them in the first place — and arriving at or leaving them is a fresh
- * document load, which reads the session again regardless.
- */
-export function shouldRevalidate({
-  currentUrl,
-  nextUrl,
-  defaultShouldRevalidate,
-}: ShouldRevalidateFunctionArgs) {
-  if (isTimingPath(currentUrl.pathname) && isTimingPath(nextUrl.pathname)) {
-    return false;
-  }
-  return defaultShouldRevalidate;
-}
-
-/**
- * Assets in `public/` are served under the router basename, so home-screen
- * icons and the manifest have to be addressed through it — a bare "/icon.png"
- * would 404 in production.
- */
-const base = import.meta.env.BASE_URL;
-
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
-        {/* viewport-fit=cover so the tab bar can sit under the iOS home bar. */}
         <meta
           name="viewport"
           content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
-
-        {/* Home-screen install. iOS reads the apple-* tags; everything else
-            reads the manifest. Without an apple-touch-icon iOS would use a
-            screenshot of the page as the icon. */}
-        <link rel="manifest" href={`${base}manifest.webmanifest`} />
-        <link rel="apple-touch-icon" href={`${base}icon-180.png`} />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="192x192"
-          href={`${base}icon-192.png`}
-        />
-        <link rel="icon" href={`${base}favicon.ico`} sizes="any" />
+        <link rel="manifest" href="manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="icon-180.png" />
+        <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+        <link rel="icon" href="favicon.ico" sizes="any" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-title" content="Swim Starts" />
-        {/* "default" keeps the web view below the status bar, so the layout
-            needs no special case; the status bar picks up theme-color. */}
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="application-name" content="Swim Starts" />
@@ -134,23 +70,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  /**
-   * Two providers, and both are about this device rather than the data.
-   * `ViewPrefsProvider` is how this person likes to look at things, and
-   * `OutboxProvider` is what this device has said and not yet been
-   * acknowledged for.
-   *
-   * Who is signed in used to be a third. It isn't device state — it's a fact
-   * the server established before this page was rendered — so it comes down
-   * with the page like everything else.
-   */
-  return (
-    <ViewPrefsProvider>
-      <OutboxProvider>
-        <Outlet />
-      </OutboxProvider>
-    </ViewPrefsProvider>
-  );
+  return <Outlet />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
@@ -173,9 +93,6 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     <main className="mx-auto max-w-3xl p-6">
       <h1 className="text-2xl font-bold">{message}</h1>
       <p className="mt-2 text-slate-600 dark:text-slate-300">{details}</p>
-      <p className="mt-4 text-sm text-slate-500">
-        Your meet is saved on this device — reloading won't lose it.
-      </p>
       {stack && (
         <pre className="mt-4 w-full overflow-x-auto rounded-xl bg-slate-100 p-4 text-xs dark:bg-slate-900">
           <code>{stack}</code>
