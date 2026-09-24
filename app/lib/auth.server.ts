@@ -30,6 +30,7 @@ import { addTeamCoach, coachedTeams, teamsCoachedBy } from "./coaches.server";
 import { ensureSchema } from "./schema.server";
 import { createSeason, createTeam } from "./teams.server";
 import type { Team } from "~/types/team";
+import type { User } from "~/types/user";
 
 /**
  * An account is an id and the contacts that open it — nothing more.
@@ -295,8 +296,6 @@ export async function verifyChallenge(
 
   const user: User = {
     id: newId(),
-    contact: contact.value,
-    contactKind: contact.kind,
     name: null,
     createdAt: now,
     lastSeenAt: now,
@@ -316,7 +315,7 @@ export async function verifyChallenge(
     .prepare(
       "INSERT INTO identities (contact, kind, user_id, added_at) VALUES (?, ?, ?, ?) ON CONFLICT(contact) DO NOTHING",
     )
-    .bind(user.contact, user.contactKind, user.id, now)
+    .bind(contact.value, contact.kind, user.id, now)
     .run();
 
   return { ok: true, user, isNew: true };
@@ -347,21 +346,8 @@ const SESSION_TTL_MS = 400 * 24 * 60 * 60 * 1000;
 /** Don't rewrite the row on every request — a day's resolution is plenty. */
 const SESSION_TOUCH_MS = 24 * 60 * 60 * 1000;
 
-export interface User {
-  id: string;
-  contact: string;
-  contactKind: string;
-  name: string | null;
-  createdAt: number;
-  lastSeenAt: number;
-  lastTeamId: string | null;
-  lastSeasonId: string | null;
-}
-
 interface UserRow {
   id: string;
-  contact: string;
-  contact_kind: string;
   name: string | null;
   created_at: number;
   last_seen_at: number;
@@ -372,8 +358,6 @@ interface UserRow {
 function toUser(row: UserRow): User {
   return {
     id: row.id,
-    contact: row.contact,
-    contactKind: row.contact_kind,
     name: row.name,
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at,
@@ -401,9 +385,7 @@ function primaryContact(column: "contact" | "kind"): string {
 }
 
 const USER_SELECT = `u.id, u.name, u.created_at, u.last_seen_at,
-     u.last_team_id, u.last_season_id,
-     ${primaryContact("contact")} AS contact,
-     ${primaryContact("kind")} AS contact_kind`;
+     u.last_team_id, u.last_season_id`;
 
 /**
  * The account a contact signs in to.
@@ -1041,17 +1023,25 @@ export async function sessionPayload(
   user: User,
   invitedTeamId?: string | null,
 ): Promise<SessionPayload> {
-  const teams = await coachedTeamsFor(db, user.id);
+  const [teams, identities] = await Promise.all([
+    coachedTeamsFor(db, user.id),
+    identitiesFor(db, user.id),
+  ]);
   const openTeamId = teamToOpen(
     teams.map((team) => team.teamId),
     { invitedTeamId, lastTeamId: user.lastTeamId },
   );
+  // The earliest-added identity is the one shown by — same rule
+  // `primaryContact()` answers in SQL, asked here in JS since this is the
+  // one place a `User` needs its contact for display rather than for a
+  // lookup.
+  const primary = identities[0];
 
   return {
     user: {
       id: user.id,
-      contact: user.contact,
-      contactKind: user.contactKind,
+      contact: primary?.contact ?? "",
+      contactKind: primary?.kind ?? "email",
       name: user.name,
       lastSeasonId: user.lastSeasonId,
     },
@@ -1090,8 +1080,6 @@ export async function inviteUser(
 
   const user: User = {
     id: newId(),
-    contact: contact.value,
-    contactKind: contact.kind,
     name: name?.trim() || null,
     createdAt: now,
     lastSeenAt: NEVER_SEEN,
@@ -1108,7 +1096,7 @@ export async function inviteUser(
     .prepare(
       "INSERT INTO identities (contact, kind, user_id, added_at) VALUES (?, ?, ?, ?) ON CONFLICT(contact) DO NOTHING",
     )
-    .bind(user.contact, user.contactKind, user.id, now)
+    .bind(contact.value, contact.kind, user.id, now)
     .run();
 
   return { user, created: true };

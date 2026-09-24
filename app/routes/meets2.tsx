@@ -71,31 +71,16 @@ clientLoader.hydrate = true;
 
 export default function MeetRootLayout() {
   const { meet } = useLoaderData<typeof loader>();
-  // Starts true rather than false: nothing has failed yet at first mount,
-  // and the socket usually opens within a beat — no reason to flash a
-  // "Reconnecting…" banner for a connection that was never actually lost.
   const [connected, setConnected] = useState(true);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col">
+    <>
       {/* Headless socket listener living safely at the layout boundary */}
       {meet.isLive && (
         <LiveMeetSync meetId={meet.id} onConnectedChange={setConnected} />
       )}
-
-      {/* Advisory only — the last-known snapshot from meetCache is still
-          right there under it. Nothing here blocks on reconnecting. */}
-      {meet.isLive && !connected && (
-        <div className="shrink-0 bg-amber-500/90 px-3 py-1.5 text-center text-xs font-semibold text-slate-950">
-          Reconnecting…
-        </div>
-      )}
-
-      {/* Child views render here */}
-      <main className="flex-1 flex flex-col">
-        <Outlet />
-      </main>
-    </div>
+      <Outlet />
+    </>
   );
 }
 

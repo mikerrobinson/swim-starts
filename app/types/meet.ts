@@ -327,7 +327,6 @@ export function meetDetailsFrom(meet: Meet): MeetDetails {
 
 export interface MeetManifest {
   id: string;
-  /** Always `details.name` — a convenience copy, not a second stored value. */
   name: string;
   details: MeetDetails;
   isLive: boolean;

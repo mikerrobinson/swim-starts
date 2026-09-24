@@ -248,7 +248,6 @@ export function meetResults(
         heat: row.seed.heat,
         timeMs: row.timeMs,
         status: row.status,
-        watchCount: row.watchCount,
         final: row.official,
         exhibition: row.seed.exhibition === true,
       };

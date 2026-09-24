@@ -1,28 +1,30 @@
 import { useRouteLoaderData } from "react-router";
 import type { loader as rootLoader } from "~/root";
-import { ANONYMOUS_USER, type UserIdentity } from "~/lib/access";
+import type { User } from "~/types/user";
 
-export type { UserIdentity };
+export type { User };
 
 /**
- * Who's asking — read once at the root from cookies (`root.tsx`'s loader,
- * via `resolveUser`), rather than every route re-deriving it.
+ * Who's signed in — read once at the root from the session cookie
+ * (`root.tsx`'s loader, via `currentUser`), rather than every route
+ * re-deriving it. `null` when signed out.
  *
- * Deliberately *not* a per-meet access decision: whether this person may
- * administer meet X still has to ask D1 about meet X specifically, via
- * `access.ts`'s `canEditMeet({ meet, user })` — this is only the
- * meet-agnostic half, who they are rather than what they may do on any one
- * meet. A screen passes this straight into that predicate alongside
- * whichever `meet` it already loaded.
+ * Deliberately just the account. Whether this person may administer meet X
+ * or coaches team Y is never carried here — that's a fact about meet X or
+ * team Y (`access.ts`'s predicates, given the `id` this returns and
+ * whatever the screen already loaded), not a standing property of a
+ * signed-in person.
  */
-export function useUser(): UserIdentity {
+export function useUser(): User | null {
   const data = useRouteLoaderData<typeof rootLoader>("root");
-  if (!data) return ANONYMOUS_USER;
-  return {
-    userId: data.userId,
-    athleteId: data.athleteId,
-    coachOf: data.coachOf,
-    deviceId: data.deviceId,
-    signedIn: data.signedIn,
-  };
+  return data?.user ?? null;
+}
+
+/**
+ * Which browser this is, independent of whether anyone is signed in — the
+ * identity a phone with nobody signed into it still has.
+ */
+export function useDeviceId(): string {
+  const data = useRouteLoaderData<typeof rootLoader>("root");
+  return data?.deviceId ?? "";
 }

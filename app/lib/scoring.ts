@@ -19,7 +19,7 @@ import {
 } from "~/types/meet";
 
 export interface RankedSwim {
-  seed: Swim;
+  swim: Swim;
   time: SwimTime;
 }
 
@@ -46,7 +46,7 @@ export function pointsTable(
 export function eventPoints(ranked: RankedSwim[], table: number[]): number[] {
   let place = 0;
   return ranked.map((row) => {
-    if (row.time.status !== "OK" || row.seed.exhibition) return 0;
+    if (row.time.status !== "OK" || row.swim.exhibition) return 0;
     return table[place++] ?? 0;
   });
 }
@@ -95,7 +95,7 @@ export function teamTotals(
 
     ranked.forEach((row, i) => {
       if (points[i] === 0) return;
-      const teamId = teamOf(row.seed.athleteId);
+      const teamId = teamOf(row.swim.athleteId);
       if (!teamId) return;
       groupTotals.set(teamId, (groupTotals.get(teamId) ?? 0) + points[i]);
     });

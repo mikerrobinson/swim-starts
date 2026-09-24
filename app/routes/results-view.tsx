@@ -3,7 +3,15 @@ import type { Route } from "./+types/results-view";
 import { Button, Card, EmptyState, SectionTitle } from "~/components/ui";
 import { downloadFile, resultsToCsv } from "~/lib/csv";
 import { formatTime } from "~/lib/time";
-import { enrollmentIndex } from "~/lib/roster";
+import { requireDb, type SyncEnv } from "~/lib/api.server";
+import { getMeet } from "~/lib/meets.server";
+import {
+  getTeam,
+  listSeasons,
+  roster as teamRoster,
+  seasonForDate,
+  type RosterEntry,
+} from "~/lib/teams.server";
 import { recordedCount, swimTime } from "~/lib/timing";
 import {
   eventPoints,
@@ -13,36 +21,52 @@ import {
   type RankedSwim,
   type ScoreGroup,
 } from "~/lib/scoring";
-import { useMeetLive } from "~/hooks/use-meet-live";
-import {
-  eventName,
-  athleteName,
-  withLiveTables,
-  type MeetDetail,
-} from "~/types/meet";
-import type { Athlete } from "~/types/athlete";
+import { useMeet } from "./meets2";
+import { eventName, getSortedEvents } from "~/types/meet";
+import type { Meet } from "~/types/meet";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Results · Swim Starts" }];
 }
 
+/** Every racing team's roster, for the season the meet's date falls in —
+ *  what the CSV export's "Gender" column and the scoring's team totals
+ *  read from. Same shape `entries.tsx`/`splits-heat.tsx` build. */
+async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
+  const perTeam = await Promise.all(
+    meet.teamIds.map(async (teamId) => {
+      const [team, seasons] = await Promise.all([
+        getTeam(db, teamId),
+        listSeasons(db, teamId),
+      ]);
+      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
+      return teamRoster(db, teamId, season?.id);
+    }),
+  );
+  return perTeam.flat();
+}
+
 /**
- * One results view, addressed by path segment rather than `?view=`.
- * `by-event` and `team-scores` are what this screen already did (as
- * `results.tsx`, under `?view=` and `?view=scores`); moved here verbatim
- * except for how the view is chosen. `by-swimmer` is a third view
- * `route-design.md`/`gemini-design.md` call for and isn't built yet, so it
- * renders a plain "not built yet" rather than fabricating one nobody has
- * designed.
+ * `roster`/`enrollments` — D1's, for the one thing `useMeet()`'s
+ * `MeetManifest` can't answer once a meet's `results` are archived:
+ * `readResultsManifest` empties `athletes`/`teams` on a completed meet on
+ * purpose (its own doc comment), so gender, year and squad have to come
+ * from D1's season roster instead — the same read regardless of whether
+ * the meet is still live or long since closed. Everything else this
+ * screen shows — events, swims, the meet's own scoring rules — comes from
+ * `useMeet()` in the component below.
  */
-export async function loader() {
-  // Used to assemble a `MeetDetail` from D1's events/entries/swims/watches
-  // tables (`meetDetail`) folded with the meet's Durable Object live tables.
-  // D1 no longer holds a meet's programme/entries/swims/watches at all —
-  // see `meets2.tsx` — and this old-model results view hasn't been ported
-  // to read the DO's `MeetManifest` shape instead, so `detail` stays `null`
-  // (the component's already-handled "no such meet" state) until it is.
-  return { detail: null as MeetDetail | null };
+export async function loader({ params, context }: Route.LoaderArgs) {
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const meetId = params.meetId!;
+  const meet = await getMeet(db, meetId);
+  const rosterEntries = meet ? await meetRoster(db, meet) : [];
+
+  return {
+    roster: rosterEntries.map((r) => r.athlete),
+    enrollments: rosterEntries.map((r) => r.enrollment),
+  };
 }
 
 /** Girls, then boys, then whatever an Open event's points fell under. */
@@ -59,70 +83,60 @@ const GROUP_ORDER: ScoreGroup[] = ["F", "M", "Open", "all"];
 function rankGroup(row: RankedSwim): 0 | 1 | 2 | 3 {
   if (row.time.status === "DQ") return 2;
   if (row.time.status !== "OK") return 3;
-  return row.seed.exhibition ? 1 : 0;
+  return row.swim.exhibition ? 1 : 0;
 }
 
-function compareSwims(
-  a: RankedSwim,
-  b: RankedSwim,
-  byId: Map<string, Athlete>,
-): number {
+/**
+ * `seed.athleteName` rather than a roster lookup — it's the name the swim
+ * itself was recorded under, which is what a results sheet must never
+ * disagree with itself about, and it's the only name a completed meet's
+ * archived swims carry at all.
+ */
+function compareSwims(a: RankedSwim, b: RankedSwim): number {
   const ga = rankGroup(a);
   const gb = rankGroup(b);
   if (ga !== gb) return ga - gb;
   if (ga <= 1) return a.time.timeMs - b.time.timeMs;
-
-  const nameOf = (row: RankedSwim) => {
-    const athlete = byId.get(row.seed.athleteId);
-    return athlete ? athleteName(athlete) : "";
-  };
-  return nameOf(a).localeCompare(nameOf(b));
+  return (a.swim.athleteName ?? "").localeCompare(b.swim.athleteName ?? "");
 }
 
 export default function ResultsView({
   loaderData,
   params,
 }: Route.ComponentProps) {
-  if (!loaderData.detail) {
-    return (
-      <EmptyState title="Not available for this meet">
-        Results for this meet haven't moved to the new data model yet.
-      </EmptyState>
-    );
-  }
-  const loaded = loaderData.detail;
-  // The screen a parent in the stands leaves open. Nothing here is written by
-  // this device, so everything on it shows up this way or not at all —
-  // the meet's live connection now, rather than a poll.
-  const live = useMeetLive(loaded.meet.id, loaded);
-  const detail = useMemo(
-    () => withLiveTables(loaded, live.snapshot),
-    [loaded, live.snapshot],
-  );
-  const meet = detail.meet;
+  const meet = useMeet();
   const [openEvent, setOpenEvent] = useState<string | null>(null);
   const view = params.view === "team-scores" ? "team-scores" : params.view;
 
-  // Names come from the roster, so a spelling fixed later shows up here too.
-  const byId = useMemo(
-    () => new Map(detail.athletes.map((a) => [a.id, a] as const)),
-    [detail.athletes],
-  );
+  const swims = useMemo(() => Object.values(meet.swims), [meet.swims]);
+  const watches = useMemo(() => Object.values(meet.watches), [meet.watches]);
+  const events = useMemo(() => getSortedEvents(meet), [meet]);
 
-  // Squad as it was that season, not as it is now.
+  // Squad and team-of-record as of this meet's season, not as of today.
   const enrollments = useMemo(
-    () => enrollmentIndex(detail.enrollments),
-    [detail.enrollments],
+    () => new Map(loaderData.enrollments.map((e) => [e.athleteId, e] as const)),
+    [loaderData.enrollments],
   );
 
-  // The racing teams, to turn a swimmer's enrollment into a name. Read from
-  // the enrollment rather than from the athlete, because a person belongs to
-  // no team — they were enrolled by one, for this meet's season. A swimmer who
-  // changes school in March still reads here as whoever they raced for.
-  const teamsById = useMemo(
-    () => new Map(detail.teams.map((team) => [team.id, team] as const)),
-    [detail.teams],
-  );
+  /**
+   * A team's display name, for `TeamScores` — grouped by team id, which
+   * needs a name from *somewhere* regardless of whether the meet is live
+   * (`meet.teams`, this DO's own copy) or long archived (derived from
+   * whichever swim last named that team — `Swim.athleteTeam` is exactly
+   * the display string a heat sheet already shows, and it's the one thing
+   * that survives into `results` forever). `meet.teams` wins when both
+   * exist — a full name over a heat-sheet code.
+   */
+  const teamNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const seed of swims) {
+      if (!seed.athleteId || !seed.athleteTeam) continue;
+      const teamId = enrollments.get(seed.athleteId)?.teamId;
+      if (teamId) map.set(teamId, seed.athleteTeam);
+    }
+    for (const team of Object.values(meet.teams)) map.set(team.id, team.name);
+    return map;
+  }, [swims, enrollments, meet.teams]);
 
   /**
    * Every swim that has a time, grouped by event and ranked across all heats.
@@ -134,59 +148,62 @@ export default function ResultsView({
    */
   const byEvent = useMemo(() => {
     const map = new Map<string, RankedSwim[]>();
-    for (const seed of detail.swims) {
-      const time = swimTime(detail, seed.id);
+    for (const seed of swims) {
+      const time = swimTime({ swims, watches }, seed);
       if (!time) continue;
       const list = map.get(seed.eventId) ?? [];
-      list.push({ seed, time });
+      list.push({ swim: seed, time });
       map.set(seed.eventId, list);
     }
     for (const list of map.values()) {
-      list.sort((a, b) => compareSwims(a, b, byId));
+      list.sort(compareSwims);
     }
     return map;
-  }, [detail, byId]);
+  }, [swims, watches]);
 
   // Points earned by each ranked swim, aligned index-for-index with `byEvent`
   // so a place and its points can never come from different orderings.
   const pointsByEvent = useMemo(() => {
     const map = new Map<string, number[]>();
-    for (const event of detail.events) {
+    for (const event of events) {
       const ranked = byEvent.get(event.id);
       if (!ranked) continue;
-      map.set(event.id, eventPoints(ranked, pointsTable(event, meet.scoring)));
+      map.set(
+        event.id,
+        eventPoints(ranked, pointsTable(event, meet.details.scoring)),
+      );
     }
     return map;
-  }, [detail.events, byEvent, meet.scoring]);
+  }, [events, byEvent, meet.details.scoring]);
 
   // Team running totals — grouped by gender only when the scoring rules say
   // the meet is two contests rather than one.
   const totals = useMemo(
     () =>
       teamTotals(
-        detail.events,
+        events,
         byEvent,
-        meet.scoring,
+        meet.details.scoring,
         (athleteId) => enrollments.get(athleteId)?.teamId,
       ),
-    [detail.events, byEvent, meet.scoring, enrollments],
+    [events, byEvent, meet.details.scoring, enrollments],
   );
 
-  const slug = `${meet.name.replace(/[^\w-]+/g, "-").toLowerCase()}-${meet.date}`;
+  const slug = `${meet.name.replace(/[^\w-]+/g, "-").toLowerCase()}-${meet.details.date}`;
 
   if (view !== "by-event" && view !== "team-scores") {
     return (
       <EmptyState title="Not built yet">
         This results view isn&rsquo;t ready. Try{" "}
         <a
-          href={`/meets/${meet.id}/results/by-event`}
+          href={`/meets2/${meet.id}/results/by-event`}
           className="font-semibold text-blue-600 underline"
         >
           by event
         </a>{" "}
         or{" "}
         <a
-          href={`/meets/${meet.id}/results/team-scores`}
+          href={`/meets2/${meet.id}/results/team-scores`}
           className="font-semibold text-blue-600 underline"
         >
           team scores
@@ -196,7 +213,7 @@ export default function ResultsView({
     );
   }
 
-  if (recordedCount(detail) === 0) {
+  if (recordedCount({ swims, watches }) === 0) {
     return (
       <EmptyState title="No times recorded yet">
         Times show up here as you run heats.
@@ -215,7 +232,7 @@ export default function ResultsView({
             onClick={() =>
               downloadFile(
                 `${slug}-results.csv`,
-                resultsToCsv(detail, enrollments),
+                resultsToCsv(meet, loaderData.roster, enrollments),
                 "text/csv",
               )
             }
@@ -236,15 +253,16 @@ export default function ResultsView({
           </Button>
         </div>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-          {recordedCount(detail)} time{recordedCount(detail) === 1 ? "" : "s"}{" "}
-          across {byEvent.size} event{byEvent.size === 1 ? "" : "s"}.
+          {recordedCount({ swims, watches })} time
+          {recordedCount({ swims, watches }) === 1 ? "" : "s"} across{" "}
+          {byEvent.size} event{byEvent.size === 1 ? "" : "s"}.
         </p>
       </Card>
 
       {view === "team-scores" ? (
-        <TeamScores detail={detail} totals={totals} />
+        <TeamScores totals={totals} teamNameById={teamNameById} />
       ) : (
-        detail.events.map((event, index) => {
+        events.map((event, index) => {
           const results = byEvent.get(event.id) ?? [];
           if (results.length === 0) return null;
           const points = pointsByEvent.get(event.id) ?? [];
@@ -279,18 +297,16 @@ export default function ResultsView({
                     // it earned, but it doesn't take a place from the swim
                     // behind it, the same rule `eventPoints` scores by.
                     let place = 0;
-                    return results.map(({ seed, time }, index) => {
-                      const athlete = byId.get(seed.athleteId);
-                      const enrollment = enrollments.get(seed.athleteId);
-                      const team = enrollment
-                        ? teamsById.get(enrollment.teamId)
+                    return results.map(({ swim: seed, time }, index) => {
+                      const enrollment = seed.athleteId
+                        ? enrollments.get(seed.athleteId)
                         : undefined;
                       const ranked = time.status === "OK" && !seed.exhibition;
                       const shownPlace = ranked ? ++place : null;
                       const pts = points[index] ?? 0;
                       return (
                         <li
-                          key={seed.id}
+                          key={`${seed.heat}:${seed.lane}`}
                           className="flex items-center gap-3 py-2"
                         >
                           <span className="w-6 text-center text-sm font-bold text-slate-400">
@@ -298,19 +314,16 @@ export default function ResultsView({
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className="block truncate font-semibold">
-                              {athlete
-                                ? athleteName(athlete)
-                                : seed.athleteId
+                              {seed.athleteName ||
+                                (seed.athleteId
                                   ? "(removed)"
-                                  : "(no name — lane " + seed.lane + ")"}
+                                  : "(no name — lane " + seed.lane + ")")}
                             </span>
                             {/* Team first: in a dual meet the question this
                                 screen answers is which school scored, and the lane
-                                is only how to find somebody on the deck. The code
-                                where there is one — "CACTUS" scans down a column
-                                in a way "Cactus Shadows" does not. */}
+                                is only how to find somebody on the deck. */}
                             <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
-                              {team && `${team.code || team.name} · `}
+                              {seed.athleteTeam && `${seed.athleteTeam} · `}
                               Lane {seed.lane}
                               {enrollment?.squad && ` · ${enrollment.squad}`}
                               {seed.exhibition && " · exhibition"}
@@ -347,15 +360,12 @@ export default function ResultsView({
  * contest, or girls and boys apart.
  */
 function TeamScores({
-  detail,
   totals,
+  teamNameById,
 }: {
-  detail: MeetDetail;
   totals: Map<ScoreGroup, Map<string, number>>;
+  teamNameById: Map<string, string>;
 }) {
-  const teamsById = new Map(
-    detail.teams.map((team) => [team.id, team] as const),
-  );
   const groups = GROUP_ORDER.filter(
     (group) => (totals.get(group)?.size ?? 0) > 0,
   );
@@ -377,22 +387,19 @@ function TeamScores({
           <Card key={group}>
             <SectionTitle>{scoreGroupLabel(group)}</SectionTitle>
             <ol className="mt-2 divide-y divide-slate-200 dark:divide-slate-800">
-              {ranked.map(([teamId, points], place) => {
-                const team = teamsById.get(teamId);
-                return (
-                  <li key={teamId} className="flex items-center gap-3 py-2">
-                    <span className="w-6 text-center text-sm font-bold text-slate-400">
-                      {place + 1}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-semibold">
-                      {team ? team.name : "(unknown team)"}
-                    </span>
-                    <span className="text-lg font-bold tabular-nums">
-                      {points}
-                    </span>
-                  </li>
-                );
-              })}
+              {ranked.map(([teamId, points], place) => (
+                <li key={teamId} className="flex items-center gap-3 py-2">
+                  <span className="w-6 text-center text-sm font-bold text-slate-400">
+                    {place + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-semibold">
+                    {teamNameById.get(teamId) ?? "(unknown team)"}
+                  </span>
+                  <span className="text-lg font-bold tabular-nums">
+                    {points}
+                  </span>
+                </li>
+              ))}
             </ol>
           </Card>
         );

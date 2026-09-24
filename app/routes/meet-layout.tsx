@@ -1,8 +1,7 @@
 import { Link, Outlet, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/meet-layout";
 import { EmptyState } from "~/components/ui";
-import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
-import type { UserIdentity } from "~/lib/access";
+import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { getMeet } from "~/lib/meets.server";
 import type { Meet } from "~/types/meet";
 
@@ -32,14 +31,13 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     currentUser(request, env),
     getMeet(db, params.meetId),
   ]);
-  const user = await resolveUser(db, rawUser, request);
 
-  return { meet, user };
+  return { meet, userId: rawUser?.id ?? null };
 }
 
 export interface MeetContext {
   meet: Meet;
-  user: UserIdentity;
+  userId: string | null;
 }
 
 /**
@@ -56,7 +54,7 @@ export interface MeetContext {
 export function useMeet(): MeetContext {
   const data = useRouteLoaderData<typeof loader>("routes/meet-layout");
   if (!data?.meet) throw new Error("useMeet used outside a meet route");
-  return { meet: data.meet, user: data.user };
+  return { meet: data.meet, userId: data.userId };
 }
 
 export default function MeetLayout({ loaderData }: Route.ComponentProps) {

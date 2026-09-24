@@ -9,7 +9,6 @@ import {
 } from "react-router";
 import { AccountMenu } from "~/components/AccountMenu";
 import { useViewPrefs } from "~/state/view-prefs";
-import { useOutbox } from "~/state/outbox";
 import { useSession } from "~/state/session";
 import { meetSubtitle } from "~/types/meet";
 import type { loader as meetLoader } from "./meet-layout";
@@ -35,14 +34,15 @@ const TOP_TABS: Tab[] = [
  * bar within thumb reach rather than moving to a tab across the top.
  */
 function meetTabs(meetId: string): Tab[] {
-  const base = `/meets/${meetId}`;
-  // Info and Entries moved under meets2.tsx's route tree — see meet-info.tsx/
-  // entries.tsx's own doc comments. Admin/Splits/Results haven't, yet.
-  const base2 = `/meets2/${meetId}`;
+  // Every tab now lives under meets2.tsx's route tree — see
+  // meet-info.tsx/entries.tsx/admin.tsx/splits-heat.tsx/results-view.tsx's
+  // own doc comments. `/meets/:meetId` itself (meet-layout.tsx) is nothing
+  // left but the redirect off it.
+  const base = `/meets2/${meetId}`;
   return [
     { to: "/meets", label: "Meets", icon: "‹" },
-    { to: `${base2}/info`, label: "Info", icon: "📄" },
-    { to: `${base2}/entries`, label: "Entries", icon: "📋" },
+    { to: `${base}/info`, label: "Info", icon: "📄" },
+    { to: `${base}/entries`, label: "Entries", icon: "📋" },
     { to: `${base}/admin`, label: "Admin", icon: "🖥️" },
     { to: `${base}/splits`, label: "Splits", icon: "⏱️" },
     { to: `${base}/results`, label: "Results", icon: "🏅" },
@@ -207,7 +207,6 @@ export default function Shell() {
   const location = useLocation();
   const navigation = useNavigation();
   const { laneLayout, setLaneLayout } = useViewPrefs();
-  const outbox = useOutbox();
   const params = useParams();
   const session = useSession();
   const meetData = useRouteLoaderData<typeof meetLoader>("routes/meet-layout");
@@ -217,32 +216,13 @@ export default function Shell() {
 
   const tabs = params.meetId ? meetTabs(params.meetId) : TOP_TABS;
 
-  /**
-   * The right-hand status: what this device still owes the server.
-   *
-   * A count of queued writes rather than a background engine's mood. It is
-   * zero almost always, says a number when the wifi is being difficult, and
-   * says so plainly when something was refused outright — which the engine
-   * this replaced could not, because it retried an unfixable 400 forever
-   * behind a chip that just said "Retrying…".
-   */
-  const waiting = outbox.pending.length;
-  const status: { text: string; tone: string } | null = outbox.error
-    ? {
-        text: "Not saved",
-        tone: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
-      }
-    : waiting > 0
+  const status: { text: string; tone: string } | null =
+    navigation.state !== "idle"
       ? {
-          text: `${waiting} to send`,
-          tone: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
+          text: "Loading…",
+          tone: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
         }
-      : navigation.state !== "idle"
-        ? {
-            text: "Loading…",
-            tone: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
-          }
-        : null;
+      : null;
 
   const onRegistration = location.pathname.endsWith("/entries");
   const onAdmin = location.pathname.endsWith("/admin");
@@ -320,14 +300,11 @@ export default function Shell() {
               person. */}
           <div className="flex items-center gap-2 justify-self-end">
             {status && (
-              <button
-                type="button"
-                onClick={outbox.error ? outbox.dismiss : undefined}
-                title={outbox.error ?? undefined}
+              <span
                 className={`rounded-full px-2 py-1 text-xs font-semibold ${status.tone}`}
               >
                 {status.text}
-              </button>
+              </span>
             )}
             <AccountMenu />
           </div>

@@ -1,7 +1,7 @@
 import { Outlet } from "react-router";
 
 /**
- * `/meets/:meetId/splits` and everything under it.
+ * `/meets2/:meetId/splits` and everything under it.
  *
  * No sidebar of its own to keep alive across heats — unlike admin's event
  * rail, splits has always been one heat at a time (see splits-heat.tsx), so

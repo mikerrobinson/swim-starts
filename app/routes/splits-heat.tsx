@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSubmit } from "react-router";
 import type { Route } from "./+types/splits-heat";
 import type { SwimTime } from "~/lib/timing";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
@@ -13,7 +13,6 @@ import {
   TextInput,
 } from "~/components/ui";
 import { useElapsed, useWakeLock } from "~/hooks/use-stopwatch";
-import { useMeetLive } from "~/hooks/use-meet-live";
 import {
   currentWatches,
   fromStopwatch,
@@ -23,23 +22,36 @@ import {
 } from "~/lib/timing";
 
 import { formatClock, formatTime, parseTime } from "~/lib/time";
-import { enrollmentIndex } from "~/lib/roster";
-import { applyPending } from "~/lib/pending";
-import { generateId } from "~/lib/id";
-import { usePending, useSend } from "~/state/outbox";
-import { useMeet } from "./meet-layout";
+import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { canEditMeet, canRecordTime, type MeetFacts } from "~/lib/access";
+import { teamsCoachedBy } from "~/lib/coaches.server";
+import { getMeet } from "~/lib/meets.server";
+import {
+  getTeam,
+  listSeasons,
+  roster as teamRoster,
+  seasonForDate,
+  type RosterEntry,
+} from "~/lib/teams.server";
+import { meetCache } from "~/lib/meetCache";
+import { useMeet } from "./meets2";
+import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
+  athleteName,
   byAthlete,
   displayName,
   eventName,
-  findAthlete,
+  getSortedEvents,
   isDiving,
-  withLiveTables,
-  type MeetDetail,
   type Event,
+  type LaneLayout,
+  type Swim,
+  type SwimSlot,
   type Watch,
+  type WatchSlotKey,
 } from "~/types/meet";
+import type { Meet } from "~/types/meet";
 import { type NameOrder } from "~/types/preferences";
 import type { Athlete } from "~/types/athlete";
 
@@ -47,24 +59,168 @@ export function meta({}: Route.MetaArgs) {
   return [{ title: "Splits · Swim Starts" }];
 }
 
-/** How an official time was arrived at, for the lane sheet. */
-const METHOD_LABEL: Record<string, string> = {
-  single: "one watch",
-  average: "average of 2",
-  median: "middle of 3",
-  official: "set by hand",
+/** What `canRecordTime` falls back to when the meet's own D1 row is somehow
+ *  missing — nobody may record a time for a meet that isn't there. */
+const EMPTY_MEET_FACTS: MeetFacts = {
+  adminIds: [],
+  teamIds: [],
+  athletesMayEnter: false,
 };
 
+/** Every racing team's roster, for the season the meet's date falls in —
+ *  what `LaneAssignSheet`'s picker draws from. Same shape `entries.tsx`
+ *  builds; `useMeet()`'s own roster (`meet.athletes`) is whoever a swim or
+ *  entry already names, not the whole season list a walk-up gets chosen
+ *  from. */
+async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
+  const perTeam = await Promise.all(
+    meet.teamIds.map(async (teamId) => {
+      const [team, seasons] = await Promise.all([
+        getTeam(db, teamId),
+        listSeasons(db, teamId),
+      ]);
+      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
+      return teamRoster(db, teamId, season?.id);
+    }),
+  );
+  return perTeam.flat();
+}
+
 /**
- * This screen's own read: meet setup used to come from D1, folded with the
- * four live tables from the meet's Durable Object — see admin.tsx's loader
- * doc comment. D1 no longer holds a meet's programme/entries/swims/watches
- * at all — see `meets2.tsx` — and this old-model splits screen hasn't been
- * ported to read the DO's `MeetManifest` shape instead, so `detail` stays
- * `null` until it is.
+ * `meet` (D1's facts, for `canRecordTime`) and the racing teams' season
+ * roster (for `LaneAssignSheet`'s picker) — everything else this screen
+ * shows comes from `useMeet()`'s `MeetManifest` in the component below.
  */
-export async function loader() {
-  return { detail: null as MeetDetail | null };
+export async function loader({ params, request, context }: Route.LoaderArgs) {
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const meetId = params.meetId!;
+  const meet = await getMeet(db, meetId);
+  const rosterEntries = meet ? await meetRoster(db, meet) : [];
+
+  return {
+    meet,
+    roster: rosterEntries.map((r) => r.athlete),
+    enrollments: rosterEntries.map((r) => r.enrollment),
+  };
+}
+
+/**
+ * Everything this screen writes is one of two shapes: upsert a swim (seat a
+ * lane, mark exhibition), or upsert a watch (a stopwatch's time) — and the
+ * two matching deletes (empty a lane, drop a watch). `canRecordTime` gates
+ * all four the same way `api.meet.writes.ts` gates the outbox's — a coach
+ * of a racing team, or the administrator.
+ */
+export async function action({ params, request, context }: Route.ActionArgs) {
+  const env = context.cloudflare.env;
+  const db = requireDb(env as SyncEnv);
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env as SyncEnv),
+    getMeet(db, meetId),
+  ]);
+  if (!meet) throw new Response("No such meet", { status: 404 });
+  const userId = rawUser?.id ?? null;
+  const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
+  if (!canRecordTime({ meet, userId, coachedTeamIds })) {
+    throw new Response("Only the teams racing can record times.", {
+      status: 403,
+    });
+  }
+
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "");
+  const stub = env.MEET_DO.getByName(meetId);
+
+  if (intent === "upsert-swim") {
+    const swim = JSON.parse(String(form.get("swim"))) as Swim;
+    await stub.upsertSwim(meetId, swim);
+    return { ok: true };
+  }
+  if (intent === "delete-swim") {
+    await stub.deleteSwim(meetId, {
+      eventId: String(form.get("eventId")),
+      heat: Number(form.get("heat")),
+      lane: Number(form.get("lane")),
+    });
+    return { ok: true };
+  }
+  if (intent === "upsert-watch") {
+    const watch = JSON.parse(String(form.get("watch"))) as Watch;
+    await stub.upsertWatch(meetId, watch);
+    return { ok: true };
+  }
+  if (intent === "delete-watch") {
+    await stub.deleteWatch(meetId, {
+      eventId: String(form.get("eventId")),
+      heat: Number(form.get("heat")),
+      lane: Number(form.get("lane")),
+      deviceId: String(form.get("deviceId")),
+      slot: Number(form.get("slot")),
+    });
+    return { ok: true };
+  }
+  return { ok: false };
+}
+
+/**
+ * The tick (or the empty lane, or the dropped watch) moves the instant it's
+ * tapped: patch `meetCache`'s cached manifest the same shape the matching
+ * broadcast would, then hand off to the real request — same pattern
+ * `entries.tsx` uses for its one write kind, extended to this screen's four.
+ */
+export async function clientAction({
+  params,
+  request,
+  serverAction,
+}: Route.ClientActionArgs) {
+  const meetId = params.meetId!;
+  const form = await request.clone().formData();
+  const intent = String(form.get("intent") ?? "");
+
+  if (intent === "upsert-swim") {
+    const swim = JSON.parse(String(form.get("swim"))) as Swim;
+    meetCache.applyPatch(meetId, { type: "SWIM", swim, isDelete: false }, () => {});
+  } else if (intent === "delete-swim") {
+    meetCache.applyPatch(
+      meetId,
+      {
+        type: "SWIM",
+        swim: {
+          eventId: String(form.get("eventId")),
+          heat: Number(form.get("heat")),
+          lane: Number(form.get("lane")),
+          exhibition: false,
+        },
+        isDelete: true,
+      },
+      () => {},
+    );
+  } else if (intent === "upsert-watch") {
+    const watch = JSON.parse(String(form.get("watch"))) as Watch;
+    meetCache.applyPatch(meetId, { type: "WATCH", watch, isDelete: false }, () => {});
+  } else if (intent === "delete-watch") {
+    meetCache.applyPatch(
+      meetId,
+      {
+        type: "WATCH",
+        watch: {
+          eventId: String(form.get("eventId")),
+          heat: Number(form.get("heat")),
+          lane: Number(form.get("lane")),
+          deviceId: String(form.get("deviceId")),
+          slot: Number(form.get("slot")),
+          role: "timer",
+          recordedAt: Date.now(),
+        },
+        isDelete: true,
+      },
+      () => {},
+    );
+  }
+
+  return serverAction();
 }
 
 /** Lane numbers in the order they should be drawn for a layout. */
@@ -75,55 +231,36 @@ function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
 
 /**
  * The multi-lane stopwatch a coach runs the deck from — one heat,
- * addressed as `/meets/:meetId/splits/:event/:heat` the same way the timer
- * already addresses a lane, replacing the `loadProgress`/`saveProgress`
- * local-storage position it used to track this with. Same screen, same
- * writes, same one-heat-at-a-time shape it always had — only where "which
- * heat" lives has moved.
- *
- * Kept live by `useMeetLive` instead of the polling this screen used to do
- * — the loader's read seeds it, the DO's broadcasts keep it current, and
- * this device's own pending writes are folded on top the same way they
- * always were.
+ * addressed as `/meets2/:meetId/splits/:event/:heat` the same way the timer
+ * already addresses a lane. Same screen, same writes, same one-heat-at-a-
+ * time shape it always had — only where the meet's own state lives has
+ * moved: `useMeet()` now, kept live by `meets2.tsx`'s one shared socket
+ * rather than a `useMeetLive` of this screen's own.
  */
 export default function SplitsHeat({
   loaderData,
   params,
 }: Route.ComponentProps) {
-  const live = useMeetLive(
-    loaderData.detail?.meet.id,
-    loaderData.detail ?? undefined,
-  );
-  const { access } = useMeet();
-  const pending = usePending();
-  const send = useSend();
-
-  if (!loaderData.detail) {
-    return (
-      <EmptyState title="Not available for this meet">
-        The multi-lane stopwatch for this meet hasn't moved to the new data
-        model yet.
-      </EmptyState>
-    );
-  }
-  const loaded = loaderData.detail;
-  const detail = useMemo(
-    () => applyPending(withLiveTables(loaded, live.snapshot), pending),
-    [loaded, live.snapshot, pending],
-  );
+  const meet = useMeet();
+  const user = useUser();
+  const deviceId = useDeviceId();
+  const submit = useSubmit();
   const navigate = useNavigate();
   const { laneLayout: layout, timerId, nameOrder } = useViewPrefs();
+
+  const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
+  const isAdmin = canEditMeet({ meet: meetFacts, userId: user?.id ?? null });
 
   /**
    * Who this screen's watches belong to.
    *
-   * A signed-in coach is the *person*, not the iPad — so the watch they take
-   * on lane 3 is theirs whichever device they pick up, and switching devices
-   * mid-meet doesn't leave two watches on one lane disagreeing. The device id
-   * is the fallback for anyone with no account, which on this screen means
-   * nobody today and is the honest default rather than a guess.
+   * A watch's whole identity is the device that took it (`event/heat/lane/
+   * device/slot` — see `meet-do.server.ts`), so this device's own watches
+   * are always found by `deviceId`, signed in or not. `userId` still rides
+   * along on the row for attribution — it's just no longer what a watch is
+   * keyed by, the way `submittedBy` used to conflate the two.
    */
-  const mine = access.userId ?? timerId;
+  const mine = deviceId || timerId;
 
   /**
    * What a watch taken on this screen is worth.
@@ -134,23 +271,53 @@ export default function SplitsHeat({
    * decides it again from the session; this keeps the optimistic overlay in
    * step until it answers.
    */
-  const myRole = access.admin ? "admin" : access.userId ? "coach" : "timer";
+  const myRole = isAdmin ? "admin" : user ? "coach" : "timer";
 
-  // Watching other people work: the desk for a lane reseated there, another
-  // coach's stopwatch for a time this device hasn't taken yet — now the
-  // meet's live connection (`live`, above) rather than a poll.
-  const meet = detail.meet;
-  const roster = detail.athletes;
+  /** Send a swim upsert/delete, or a watch upsert/delete — the four shapes
+   *  `action`/`clientAction` above understand. */
+  const sendSwim = (swim: Swim) => {
+    const form = new FormData();
+    form.set("intent", "upsert-swim");
+    form.set("swim", JSON.stringify(swim));
+    submit(form, { method: "post", navigate: false });
+  };
+  const removeSwim = (slot: SwimSlot) => {
+    const form = new FormData();
+    form.set("intent", "delete-swim");
+    form.set("eventId", slot.eventId);
+    form.set("heat", String(slot.heat));
+    form.set("lane", String(slot.lane));
+    submit(form, { method: "post", navigate: false });
+  };
+  const sendWatch = (watch: Watch) => {
+    const form = new FormData();
+    form.set("intent", "upsert-watch");
+    form.set("watch", JSON.stringify(watch));
+    submit(form, { method: "post", navigate: false });
+  };
+  const removeWatch = (key: WatchSlotKey) => {
+    const form = new FormData();
+    form.set("intent", "delete-watch");
+    form.set("eventId", key.eventId);
+    form.set("heat", String(key.heat));
+    form.set("lane", String(key.lane));
+    form.set("deviceId", key.deviceId);
+    form.set("slot", String(key.slot));
+    submit(form, { method: "post", navigate: false });
+  };
+
+  const roster = loaderData.roster;
+  const enrollments = useMemo(
+    () => new Map(loaderData.enrollments.map((e) => [e.athleteId, e] as const)),
+    [loaderData.enrollments],
+  );
 
   /**
    * The clock, and the one place it lives.
    *
    * Component state. A stopwatch is a fact about the device holding it —
    * three timers behind one lane each start their own on the strobe, and
-   * nobody's clock is anybody else's. It used to be a field on the meet, which
-   * meant one person tapping START reached into every other device's copy and,
-   * because starting a heat also cleared it, deleted times the phones had
-   * already sent.
+   * nobody's clock is anybody else's.
    */
   const [clock, setClock] = useState<{
     eventId: string;
@@ -164,17 +331,21 @@ export default function SplitsHeat({
   const [assigningLane, setAssigningLane] = useState<number | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
+  const events = useMemo(() => getSortedEvents(meet), [meet]);
+  const swims = useMemo(() => Object.values(meet.swims), [meet.swims]);
+  const watches = useMemo(() => Object.values(meet.watches), [meet.watches]);
+
   // Where the URL puts this device in the running order. An administrator
   // signing off event 4 while the deck swims event 6 is the normal case, not
   // a conflict — each tab's own address says where it is.
   const eventIndex = Math.min(
     Math.max(0, (Number(params.event) || 1) - 1),
-    Math.max(0, detail.events.length - 1),
+    Math.max(0, events.length - 1),
   );
-  const event = detail.events[eventIndex];
+  const event = events[eventIndex];
   const heats = useMemo(
-    () => (event ? heatsOf(detail, event.id) : []),
-    [detail, event],
+    () => (event ? heatsOf({ swims }, event.id) : []),
+    [swims, event],
   );
   const heatNo = Number(params.heat) || 1;
   const heatIndex = Math.max(0, heats.indexOf(heatNo));
@@ -183,8 +354,10 @@ export default function SplitsHeat({
   /** The swims in the heat on screen. A lane with nobody in it isn't one. */
   const seeds = useMemo(
     () =>
-      event && heat !== undefined ? swimsForHeat(detail, event.id, heat) : [],
-    [detail, event, heat],
+      event && heat !== undefined
+        ? swimsForHeat({ swims }, event.id, heat)
+        : [],
+    [swims, event, heat],
   );
   const seedByLane = useMemo(
     () => new Map(seeds.map((s) => [s.lane, s] as const)),
@@ -199,11 +372,11 @@ export default function SplitsHeat({
   const timeByLane = useMemo(() => {
     const map = new Map<number, NonNullable<ReturnType<typeof swimTime>>>();
     for (const seed of seeds) {
-      const time = swimTime(detail, seed.id);
+      const time = swimTime({ swims, watches }, seed);
       if (time) map.set(seed.lane, time);
     }
     return map;
-  }, [detail, seeds]);
+  }, [swims, watches, seeds]);
 
   /**
    * The lanes *this device* has stopped.
@@ -218,15 +391,15 @@ export default function SplitsHeat({
     const lanes = new Set<number>();
     for (const seed of seeds) {
       if (
-        currentWatches(detail, seed.id).some(
-          (w) => w.submittedBy === mine && w.timeMs !== undefined,
+        currentWatches({ watches }, seed).some(
+          (w) => w.deviceId === mine && w.timeMs !== undefined,
         )
       ) {
         lanes.add(seed.lane);
       }
     }
     return lanes;
-  }, [detail, seeds, mine]);
+  }, [watches, seeds, mine]);
 
   const occupiedLanes = seeds.map((s) => s.lane);
 
@@ -234,12 +407,7 @@ export default function SplitsHeat({
    * Nothing left on this screen that still wants a time *for this run*.
    *
    * Either this device took the lane, or a time arrived on it from somebody
-   * else since the clock started. All three parts were learned by running it:
-   * counting only this device's watches left a coach who times two lanes
-   * waiting forever on the four the phones cover; counting every time let a
-   * phone end the heat while swimmers were in the water; and counting times
-   * that predate the start made pressing START on a re-swim declare the heat
-   * over on the spot.
+   * else since the clock started.
    */
   const allStopped =
     occupiedLanes.length > 0 &&
@@ -249,16 +417,9 @@ export default function SplitsHeat({
         (timeByLane.has(lane) && !(clock?.alreadyTimed ?? []).includes(lane)),
     );
 
-  /**
-   * The three states of the action panel below the lanes: swimmers are still
-   * in the water, the heat is complete, or nothing has been started. Exactly
-   * one of these owns that space at any moment.
-   */
   const clockRunning = running && !allStopped;
   const heatComplete = running && allStopped;
 
-  // Anchored to the wall clock, and the frame loop stops as soon as the last
-  // lane is in — there's nothing left to animate.
   const elapsed = useElapsed(clockRunning ? clock!.startedAt : null);
   useWakeLock(running);
 
@@ -275,11 +436,11 @@ export default function SplitsHeat({
   const goToHeat = (nextEventIndex: number, nextHeatIndex: number) => {
     const clampedEventIndex = Math.min(
       Math.max(nextEventIndex, 0),
-      Math.max(0, detail.events.length - 1),
+      Math.max(0, events.length - 1),
     );
-    const nextEvent = detail.events[clampedEventIndex];
+    const nextEvent = events[clampedEventIndex];
     if (!nextEvent) return;
-    const nextHeats = heatsOf(detail, nextEvent.id);
+    const nextHeats = heatsOf({ swims }, nextEvent.id);
     const clampedHeatIndex = Math.min(
       Math.max(nextHeatIndex, 0),
       Math.max(0, nextHeats.length - 1),
@@ -291,14 +452,14 @@ export default function SplitsHeat({
     setEditingLane(null);
     setAssigningLane(null);
     navigate(
-      `/meets/${meet.id}/splits/${nextEvent.position + 1}/${targetHeat}`,
+      `/meets2/${meet.id}/splits/${nextEvent.position + 1}/${targetHeat}`,
     );
   };
 
   const nextHeat = () => {
     if (heatIndex + 1 < heats.length) {
       goToHeat(eventIndex, heatIndex + 1);
-    } else if (eventIndex + 1 < detail.events.length) {
+    } else if (eventIndex + 1 < events.length) {
       goToHeat(eventIndex + 1, 0);
     }
   };
@@ -312,7 +473,7 @@ export default function SplitsHeat({
     return (
       <EmptyState title="No events yet">
         <Link
-          to={`/meets/${meet.id}`}
+          to={`/meets2/${meet.id}/info`}
           className="font-semibold text-blue-600 underline"
         >
           Add events under Info
@@ -323,7 +484,7 @@ export default function SplitsHeat({
   }
 
   const isLastHeat =
-    heatIndex + 1 >= heats.length && eventIndex + 1 >= detail.events.length;
+    heatIndex + 1 >= heats.length && eventIndex + 1 >= events.length;
 
   return (
     <div className="space-y-3">
@@ -342,14 +503,14 @@ export default function SplitsHeat({
             {eventName(event)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Event {eventIndex + 1} of {detail.events.length}
+            Event {eventIndex + 1} of {events.length}
             {heats.length > 0 && ` · Heat ${heatIndex + 1} of ${heats.length}`}
           </p>
         </div>
         <Button
           size="md"
           aria-label="Next event"
-          disabled={clockRunning || eventIndex + 1 >= detail.events.length}
+          disabled={clockRunning || eventIndex + 1 >= events.length}
           onClick={() => goToHeat(eventIndex + 1, 0)}
         >
           ›
@@ -357,16 +518,11 @@ export default function SplitsHeat({
       </div>
 
       {isDiving(event) ? (
-        <DivingPanel
-          detail={detail}
-          event={event}
-          roster={roster}
-          nameOrder={nameOrder}
-        />
+        <DivingPanel event={event} nameOrder={nameOrder} />
       ) : heats.length === 0 || !heat ? (
         <EmptyState title="Nobody is entered in this event">
           <Link
-            to={`/meets/${detail.meet.id}/entries`}
+            to={`/meets2/${meet.id}/entries`}
             className="font-semibold text-blue-600 underline"
           >
             Enter swimmers
@@ -381,43 +537,45 @@ export default function SplitsHeat({
               layout === "grid" ? "grid-cols-2" : "grid-cols-1"
             }`}
           >
-            {orderedLanes(meet.laneCount, layout).map((lane) => (
-              <LaneTile
-                key={lane}
-                lane={lane}
-                athlete={findAthlete(
-                  roster,
-                  seedByLane.get(lane)?.athleteId ?? null,
-                )}
-                time={timeByLane.get(lane)}
-                exhibition={seedByLane.get(lane)?.exhibition ?? false}
-                stoppedHere={stoppedByMe.has(lane)}
-                running={running}
-                clockRunning={clockRunning}
-                layout={layout}
-                laneCount={meet.laneCount}
-                nameOrder={nameOrder}
-                onStop={() => {
-                  const seed = seedByLane.get(lane);
-                  if (!seed) return;
-                  const at = Date.now();
-                  send({
-                    kind: "watch",
-                    meetId: meet.id,
-                    swimId: seed.id,
-                    timerId: mine,
-                    userId: access.userId ?? undefined,
-                    role: myRole,
-                    timeMs: at - clock!.startedAt,
-                    submittedAt: at,
-                    startedAt: clock!.startedAt,
-                    stoppedAt: at,
-                  });
-                }}
-                onEdit={() => setEditingLane(lane)}
-                onAssign={() => setAssigningLane(lane)}
-              />
-            ))}
+            {orderedLanes(meet.details.laneCount, layout).map((lane) => {
+              const seed = seedByLane.get(lane);
+              return (
+                <LaneTile
+                  key={lane}
+                  lane={lane}
+                  athlete={
+                    seed?.athleteId ? meet.athletes[seed.athleteId] : undefined
+                  }
+                  time={timeByLane.get(lane)}
+                  exhibition={seed?.exhibition ?? false}
+                  stoppedHere={stoppedByMe.has(lane)}
+                  running={running}
+                  clockRunning={clockRunning}
+                  layout={layout}
+                  laneCount={meet.details.laneCount}
+                  nameOrder={nameOrder}
+                  onStop={() => {
+                    if (!seed) return;
+                    const at = Date.now();
+                    sendWatch({
+                      eventId: seed.eventId,
+                      heat: seed.heat,
+                      lane: seed.lane,
+                      deviceId: mine,
+                      slot: 1,
+                      role: myRole,
+                      userId: user?.id ?? undefined,
+                      timeMs: at - clock!.startedAt,
+                      startedAt: clock!.startedAt,
+                      stoppedAt: at,
+                      recordedAt: at,
+                    });
+                  }}
+                  onEdit={() => setEditingLane(lane)}
+                  onAssign={() => setAssigningLane(lane)}
+                />
+              );
+            })}
           </div>
 
           {/* Action panel. One fixed-height block in the easiest place to
@@ -449,11 +607,12 @@ export default function SplitsHeat({
                   // the far end of the pool doesn't lose their afternoon
                   // because somebody reset a heat here.
                   for (const seed of seeds) {
-                    send({
-                      kind: "drop-watch",
-                      meetId: meet.id,
-                      swimId: seed.id,
-                      timerId: mine,
+                    removeWatch({
+                      eventId: seed.eventId,
+                      heat: seed.heat,
+                      lane: seed.lane,
+                      deviceId: mine,
+                      slot: 1,
                     });
                   }
                   setClock(null);
@@ -493,11 +652,12 @@ export default function SplitsHeat({
                 // A false start's watches aren't times of the race about to
                 // be swum, so this device drops its own before starting.
                 for (const seed of seeds) {
-                  send({
-                    kind: "drop-watch",
-                    meetId: meet.id,
-                    swimId: seed.id,
-                    timerId: mine,
+                  removeWatch({
+                    eventId: seed.eventId,
+                    heat: seed.heat,
+                    lane: seed.lane,
+                    deviceId: mine,
+                    slot: 1,
                   });
                 }
                 // Whatever else is already on these lanes belongs to the
@@ -543,24 +703,28 @@ export default function SplitsHeat({
 
       {heat && assigningLane !== null && (
         <LaneAssignSheet
-          detail={detail}
+          meet={meet}
           eventId={event.id}
           roster={roster}
-          enrollments={enrollmentIndex(detail.enrollments)}
+          enrollments={enrollments}
           nameOrder={nameOrder}
           heat={heat}
           lane={assigningLane}
-          onAssign={(athleteId) =>
-            send({
-              kind: "swim",
-              meetId: meet.id,
+          onAssign={(athleteId) => {
+            const athlete = roster.find((a) => a.id === athleteId);
+            const teamId = enrollments.get(athleteId)?.teamId;
+            const team = teamId ? meet.teams[teamId] : undefined;
+            sendSwim({
               eventId: event.id,
-              heat: heat!,
+              heat,
               lane: assigningLane,
               athleteId,
-              swimId: generateId(),
-            })
-          }
+              athleteName: athlete ? athleteName(athlete) : "",
+              athleteTeam: team?.code ?? "",
+              exhibition: false,
+            });
+            setAssigningLane(null);
+          }}
           onClose={() => setAssigningLane(null)}
         />
       )}
@@ -569,7 +733,9 @@ export default function SplitsHeat({
         (() => {
           const seed = seedByLane.get(editingLane);
           if (!seed) return null;
-          const athlete = findAthlete(roster, seed.athleteId);
+          const athlete = seed.athleteId
+            ? meet.athletes[seed.athleteId]
+            : undefined;
           return (
             <LaneSheet
               lane={editingLane}
@@ -580,42 +746,39 @@ export default function SplitsHeat({
                   ? displayName(athlete, nameOrder)
                   : `Lane ${editingLane}`
               }
-              watches={currentWatches(detail, seed.id).filter(
+              watches={currentWatches({ watches }, seed).filter(
                 (w) => w.timeMs !== undefined,
               )}
-              timerId={mine}
+              deviceId={mine}
               exhibition={seed.exhibition ?? false}
               onToggleExhibition={() =>
-                send({
-                  kind: "exhibition",
-                  meetId: meet.id,
-                  swimId: seed.id,
-                  exhibition: !seed.exhibition,
-                })
+                sendSwim({ ...seed, exhibition: !seed.exhibition })
               }
               onSaveTime={(timeMs) => {
-                send({
-                  kind: "watch",
-                  meetId: meet.id,
-                  swimId: seed.id,
-                  timerId: mine,
-                  userId: access.userId ?? undefined,
+                sendWatch({
+                  eventId: seed.eventId,
+                  heat: seed.heat,
+                  lane: seed.lane,
+                  deviceId: mine,
+                  slot: 1,
                   role: myRole,
+                  userId: user?.id ?? undefined,
                   timeMs,
-                  submittedAt: Date.now(),
+                  recordedAt: Date.now(),
                 });
                 setEditingLane(null);
               }}
-              onRemoveWatch={(who) =>
-                send({
-                  kind: "drop-watch",
-                  meetId: meet.id,
-                  swimId: seed.id,
-                  timerId: who,
+              onRemoveWatch={(watch) =>
+                removeWatch({
+                  eventId: watch.eventId,
+                  heat: watch.heat,
+                  lane: watch.lane,
+                  deviceId: watch.deviceId,
+                  slot: watch.slot,
                 })
               }
               onRemoveFromLane={() => {
-                send({ kind: "unswim", meetId: meet.id, swimId: seed.id });
+                removeSwim(seed);
                 setEditingLane(null);
               }}
             />
@@ -631,19 +794,17 @@ export default function SplitsHeat({
  * own sheet. All this does is show who's on it and let you move past.
  */
 function DivingPanel({
-  detail,
   event,
-  roster,
   nameOrder,
 }: {
-  detail: MeetDetail;
   event: Event;
-  roster: Athlete[];
   nameOrder: NameOrder;
 }) {
-  const divers = (detail.entries[event.id] ?? [])
-    .map((id) => findAthlete(roster, id))
-    .filter((s): s is Athlete => s !== undefined)
+  const meet = useMeet();
+  const divers = Object.values(meet.entries)
+    .filter((e) => e.eventId === event.id)
+    .map((e) => meet.athletes[e.athleteId])
+    .filter((a): a is Athlete => !!a)
     .sort(byAthlete(nameOrder));
 
   return (
@@ -655,7 +816,7 @@ function DivingPanel({
         <p className="mt-2 text-sm text-sky-800 dark:text-sky-200">
           Nobody is on the board.{" "}
           <Link
-            to={`/meets/${detail.meet.id}/entries`}
+            to={`/meets2/${meet.id}/entries`}
             className="font-semibold underline"
           >
             Add divers
@@ -690,7 +851,7 @@ function LaneSheet({
   swimmerLabel,
   time,
   watches,
-  timerId,
+  deviceId,
   exhibition,
   onClose,
   onSaveTime,
@@ -703,18 +864,18 @@ function LaneSheet({
   time?: SwimTime;
   /** Every watch on this lane, so a coach can see what the time is made of. */
   watches: Watch[];
-  timerId: string;
+  deviceId: string;
   /** Whether this swim counts towards scoring and placing. */
   exhibition: boolean;
   onClose: () => void;
   onSaveTime: (timeMs: number) => void;
   onToggleExhibition: () => void;
-  onRemoveWatch: (watchId: string) => void;
+  onRemoveWatch: (watch: Watch) => void;
   onRemoveFromLane: () => void;
 }) {
   // Prefilled with this device's own watch, since typing a time replaces that
   // one — never somebody else's.
-  const own = watches.find((w) => w.submittedBy === timerId);
+  const own = watches.find((w) => w.deviceId === deviceId);
   const [value, setValue] = useState(own ? formatTime(own.timeMs!) : "");
 
   // Parsed on every keystroke so the sheet can show what will actually be
@@ -800,22 +961,20 @@ function LaneSheet({
               <ul className="divide-y divide-slate-200 dark:divide-slate-700">
                 {watches.map((watch) => (
                   <li
-                    key={watch.id}
+                    key={`${watch.deviceId}:${watch.slot}`}
                     className="flex items-center justify-between gap-2 py-1"
                   >
                     <span className="text-sm tabular-nums">
                       {formatTime(watch.timeMs!)}
                       <span className="ml-2 text-xs text-slate-500">
-                        {watch.submittedBy === timerId
-                          ? "you"
-                          : "another timer"}
+                        {watch.deviceId === deviceId ? "you" : "another timer"}
                         {!fromStopwatch(watch) && " · typed"}
                       </span>
                     </span>
                     <button
                       type="button"
                       aria-label={`Discard the ${formatTime(watch.timeMs!)} watch`}
-                      onClick={() => onRemoveWatch(watch.submittedBy)}
+                      onClick={() => onRemoveWatch(watch)}
                       className="h-8 w-8 shrink-0 touch-manipulation rounded-lg text-sm text-red-600"
                     >
                       ✕

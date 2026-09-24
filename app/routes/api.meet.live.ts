@@ -1,6 +1,7 @@
 import type { Route } from "./+types/api.meet.live";
-import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { canEditMeet } from "~/lib/access";
+import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
 import { grantToken } from "~/lib/grants.server";
 import { grantFor } from "~/lib/grants.server";
@@ -31,14 +32,16 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     currentUser(request, env as SyncEnv),
     getMeet(db, meetId),
   ]);
-  const user = await resolveUser(db, rawUser, request);
+  const userId = rawUser?.id ?? null;
 
   let role: MeetRole = "spectator";
-  if (meet && canEditMeet({ meet, user })) {
+  if (meet && canEditMeet({ meet, userId })) {
     role = "admin";
-  } else if (meet && meet.teamIds.some((id) => user.coachOf.includes(id))) {
-    role = "coach";
-  } else {
+  } else if (meet && userId) {
+    const coachedTeamIds = await teamsCoachedBy(db, userId);
+    if (meet.teamIds.some((id) => coachedTeamIds.includes(id))) role = "coach";
+  }
+  if (role === "spectator") {
     const grant = await grantFor(db, grantToken(request));
     if (grant && grant.meetId === meetId) role = "timer";
   }
@@ -46,7 +49,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const forwardUrl = new URL(request.url);
   forwardUrl.searchParams.set("meetId", meetId);
   forwardUrl.searchParams.set("role", role);
-  if (user.userId) forwardUrl.searchParams.set("userId", user.userId);
+  if (userId) forwardUrl.searchParams.set("userId", userId);
 
   const stub = env.MEET_DO.getByName(meetId);
   return stub.fetch(new Request(forwardUrl, request));

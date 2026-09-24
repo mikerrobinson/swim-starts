@@ -1,72 +1,95 @@
+import { useMemo } from "react";
 import type { Route } from "./+types/event-detail";
 import { Card, EmptyState, SectionTitle } from "~/components/ui";
-import { enrollmentIndex } from "~/lib/roster";
-import { useMeetLive } from "~/hooks/use-meet-live";
-import { heatsOf, swimsForHeat, swimTime } from "~/lib/timing";
+import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { canRecordTime, type MeetFacts } from "~/lib/access";
+import { teamsCoachedBy } from "~/lib/coaches.server";
+import { getMeet } from "~/lib/meets.server";
+import { heatsOf, swimsForHeat } from "~/lib/timing";
 import { formatTime } from "~/lib/time";
-import { useMeet } from "./meet-layout";
-import {
-  displayName,
-  eventName,
-  findAthlete,
-  withLiveTables,
-  type MeetDetail,
-} from "~/types/meet";
+import { useMeet } from "./meets2";
+import { useViewPrefs } from "~/state/view-prefs";
+import { displayName, eventName } from "~/types/meet";
 
-export function meta({ data }: Route.MetaArgs) {
-  const event = data?.detail?.events.find((e) => e.id === data.eventId);
-  return [{ title: `${event ? eventName(event) : "Event"} · Swim Starts` }];
+export function meta({}: Route.MetaArgs) {
+  return [{ title: "Event · Swim Starts" }];
+}
+
+/** What `canRecordTime` falls back to when the meet's own D1 row is
+ *  somehow missing — nobody may see a lineup for a meet that isn't there. */
+const EMPTY_MEET_FACTS: MeetFacts = {
+  adminIds: [],
+  teamIds: [],
+  athletesMayEnter: false,
+};
+
+/**
+ * `userId`/`coachedTeamIds` and the meet's own D1 facts — the same shape
+ * `entries.tsx` resolves, for the same reason: `canRecordTime` needs a
+ * `userId` plus every team this person coaches to decide whether a lineup
+ * that isn't public yet is theirs to see. Everything else this screen
+ * shows — events, entries, swims — comes from `useMeet()`'s `MeetManifest`
+ * in the component below, kept live by `meets2.tsx`'s one shared socket
+ * rather than this route's own `useMeetLive` the way it used to be.
+ */
+export async function loader({ params, request, context }: Route.LoaderArgs) {
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const meetId = params.meetId!;
+  const rawUser = await currentUser(request, env);
+  const userId = rawUser?.id ?? null;
+
+  const [meet, coachedTeamIds] = await Promise.all([
+    getMeet(db, meetId),
+    userId ? teamsCoachedBy(db, userId) : Promise.resolve([]),
+  ]);
+
+  return { meet, userId, coachedTeamIds, eventId: params.eventId! };
 }
 
 /**
- * One event, public and read-only — declared entries, heat seeds, and
- * current results. Doesn't replace `entries.tsx`'s whole-meet grid, which
- * keeps its own URL and scope.
+ * One event, public and read-only — declared entries, heat seeds, and the
+ * time each lane has been decided at. Doesn't replace `entries.tsx`'s
+ * whole-meet grid, which keeps its own URL and scope.
  *
- * Used to assemble a `MeetDetail` the same way `entries.tsx` did — see its
- * loader's doc comment. D1 no longer holds a meet's programme/entries/
- * swims/watches, and this old-model screen hasn't been ported to the DO's
- * `MeetManifest` shape, so `detail` stays `null` until it is.
+ * Only the decided time shows, never a proposed one still waiting on a
+ * watch to be accepted — `laneTime`/`currentWatches` (`timing.ts`) answer
+ * that question by a swim's old synthetic id, which doesn't exist any
+ * more, and a public results page showing a number nobody's signed off on
+ * yet would be the wrong thing to fix that towards anyway.
  */
-export async function loader({ params }: Route.LoaderArgs) {
-  return { detail: null as MeetDetail | null, eventId: params.eventId };
-}
-
 export default function EventDetail({ loaderData }: Route.ComponentProps) {
-  const { access } = useMeet();
+  const meet = useMeet();
+  const { nameOrder } = useViewPrefs();
+  const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
 
-  if (!loaderData.detail) {
-    return (
-      <EmptyState title="Not available for this meet">
-        Event detail for this meet hasn't moved to the new data model yet.
-      </EmptyState>
-    );
-  }
-  const loaded = loaderData.detail;
-  // Kept live the same way results-view.tsx is — see its doc comment.
-  const live = useMeetLive(loaded.meet.id, loaded);
-  const detail = withLiveTables(loaded, live.snapshot);
+  const event = meet.events[loaderData.eventId];
 
-  const event = detail.events.find((e) => e.id === loaderData.eventId);
+  const entered = useMemo(
+    () =>
+      Object.values(meet.entries)
+        .filter((e) => e.eventId === loaderData.eventId)
+        .map((e) => meet.athletes[e.athleteId])
+        .filter((a): a is NonNullable<typeof a> => !!a),
+    [meet.entries, meet.athletes, loaderData.eventId],
+  );
+
   if (!event) {
     return <EmptyState title="No such event">It may have been removed.</EmptyState>;
   }
 
-  const enrollments = enrollmentIndex(detail.enrollments);
-  const teamsById = new Map(detail.teams.map((t) => [t.id, t] as const));
-
   // Same rule as entries.tsx: a lineup is competitive information before the
   // racing, and results are public once they exist regardless of it.
   const mayLook =
-    detail.meet.entryVisibility === "everyone" ||
-    access.admin ||
-    access.coachOf.length > 0;
+    meet.details.entryVisibility === "everyone" ||
+    canRecordTime({
+      meet: meetFacts,
+      userId: loaderData.userId,
+      coachedTeamIds: loaderData.coachedTeamIds,
+    });
 
-  const entered = (detail.entries[event.id] ?? [])
-    .map((id) => findAthlete(detail.athletes, id))
-    .filter((a): a is NonNullable<typeof a> => !!a);
-
-  const heats = heatsOf(detail, event.id);
+  const swims = Object.values(meet.swims);
+  const heats = heatsOf({ swims }, event.id);
 
   return (
     <div className="space-y-4">
@@ -88,7 +111,7 @@ export default function EventDetail({ loaderData }: Route.ComponentProps) {
             <ul className="divide-y divide-slate-100 dark:divide-slate-800">
               {entered.map((athlete) => (
                 <li key={athlete.id} className="py-1.5 text-sm">
-                  {displayName(athlete)}
+                  {displayName(athlete, nameOrder)}
                 </li>
               ))}
             </ul>
@@ -107,23 +130,27 @@ export default function EventDetail({ loaderData }: Route.ComponentProps) {
                 </tr>
               </thead>
               <tbody>
-                {swimsForHeat(detail, event.id, heat).map((seed) => {
-                  const athlete = findAthlete(detail.athletes, seed.athleteId);
-                  const enrollment = enrollments.get(seed.athleteId);
-                  const team = enrollment ? teamsById.get(enrollment.teamId) : undefined;
-                  const time = swimTime(detail, seed.id);
+                {swimsForHeat({ swims }, event.id, heat).map((seed) => {
+                  const athlete = seed.athleteId
+                    ? meet.athletes[seed.athleteId]
+                    : undefined;
                   return (
-                    <tr key={seed.id} className="border-t border-slate-100 dark:border-slate-800">
-                      <td className="py-1.5 pr-2 font-bold tabular-nums">{seed.lane}</td>
+                    <tr
+                      key={`${seed.heat}:${seed.lane}`}
+                      className="border-t border-slate-100 dark:border-slate-800"
+                    >
+                      <td className="py-1.5 pr-2 font-bold tabular-nums">
+                        {seed.lane}
+                      </td>
                       <td className="py-1.5 pr-2">
                         {athlete ? (
                           <>
                             <span className="block font-medium">
-                              {displayName(athlete)}
+                              {displayName(athlete, nameOrder)}
                             </span>
-                            {team && (
+                            {seed.athleteTeam && (
                               <span className="block text-xs text-slate-500 dark:text-slate-400">
-                                {team.code || team.name}
+                                {seed.athleteTeam}
                               </span>
                             )}
                           </>
@@ -132,10 +159,10 @@ export default function EventDetail({ loaderData }: Route.ComponentProps) {
                         )}
                       </td>
                       <td className="py-1.5 pr-2 text-right font-mono tabular-nums">
-                        {time
-                          ? time.status === "OK"
-                            ? formatTime(time.timeMs)
-                            : time.status
+                        {seed.status
+                          ? seed.status === "OK"
+                            ? formatTime(seed.officialTimeMs ?? 0)
+                            : seed.status
                           : "—"}
                       </td>
                     </tr>

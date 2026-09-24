@@ -8,8 +8,9 @@ import {
 } from "./timing";
 import {
   eventName,
-  athleteName,
-  type MeetDetail,
+  getSortedEvents,
+  toSwimKey,
+  type MeetManifest,
   type Swim,
 } from "~/types/meet";
 import { type Enrollment } from "~/types/team";
@@ -284,11 +285,22 @@ export function toCsv(rows: Array<Array<string | number>>): string {
  * finish place.
  */
 export function resultsToCsv(
-  detail: MeetDetail,
+  meet: MeetManifest,
+  /**
+   * This meet's season roster, D1's — for `Gender` only. Every other
+   * column reads straight off the swim (`athleteName`/`athleteTeam` are
+   * already what it names), which works whether the meet's still live or
+   * long archived: `readResultsManifest` empties `meet.athletes`/
+   * `meet.teams` on purpose once a meet completes — see its own doc
+   * comment — so nothing here can lean on either.
+   */
+  roster: Athlete[] = [],
   /** Year and squad as of this meet, keyed by athlete. Empty is fine. */
   enrollments: Map<string, Enrollment> = new Map(),
 ): string {
-  const byId = new Map(detail.athletes.map((a) => [a.id, a] as const));
+  const byId = new Map(roster.map((a) => [a.id, a] as const));
+  const swims = Object.values(meet.swims);
+  const watches = Object.values(meet.watches);
 
   const rows: Array<Array<string | number>> = [
     [
@@ -311,20 +323,21 @@ export function resultsToCsv(
 
   // Every swim that has a time. A swim with nothing against it is somebody
   // whose time never arrived, which is a hole rather than a row to export.
-  const swims = detail.swims
-    .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
+  const timed = swims
+    .map((seed) => ({ seed, time: swimTime({ swims, watches }, seed) }))
     .filter((row): row is { seed: Swim; time: SwimTime } => row.time !== null);
 
-  detail.events.forEach((event, eventIndex) => {
-    const forEvent = swims.filter(({ seed }) => seed.eventId === event.id);
+  getSortedEvents(meet).forEach((event, eventIndex) => {
+    const forEvent = timed.filter(({ seed }) => seed.eventId === event.id);
 
     // Place is scored across the whole event, not within a heat, and an
-    // exhibition swim never has one.
+    // exhibition swim never has one. Keyed by lane (there's no swim id),
+    // which is unique enough within one event's rows.
     const place = new Map(
       forEvent
         .filter(({ seed, time }) => time.status === "OK" && !seed.exhibition)
         .sort((a, b) => a.time.timeMs - b.time.timeMs)
-        .map((row, i) => [row.seed.id, i + 1] as const),
+        .map((row, i) => [toSwimKey(row.seed), i + 1] as const),
     );
 
     // Listed as swum: heat by heat, fastest first within each.
@@ -333,14 +346,14 @@ export function resultsToCsv(
     );
 
     for (const { seed, time } of ordered) {
-      const athlete = byId.get(seed.athleteId);
-      const enrolled = enrollments.get(seed.athleteId);
+      const athlete = seed.athleteId ? byId.get(seed.athleteId) : undefined;
+      const enrolled = seed.athleteId ? enrollments.get(seed.athleteId) : undefined;
       rows.push([
         eventIndex + 1,
         eventName(event),
         seed.heat,
         seed.lane,
-        athlete ? athleteName(athlete) : "(unknown)",
+        seed.athleteName || (seed.athleteId ? "(unknown)" : ""),
         athlete?.gender ?? "",
         enrolled?.year ?? "",
         enrolled?.squad ?? "",
@@ -348,10 +361,10 @@ export function resultsToCsv(
         time.status === "OK" ? time.timeMs : "",
         time.status,
         seed.exhibition ? "Yes" : "",
-        place.get(seed.id) ?? "",
+        place.get(toSwimKey(seed)) ?? "",
         // Whether a stopwatch in this app ran the race, or the number was
         // typed in from a handheld or the board.
-        currentWatches(detail, seed.id).some(fromStopwatch)
+        currentWatches({ watches }, seed).some(fromStopwatch)
           ? "stopwatch"
           : "manual",
       ]);

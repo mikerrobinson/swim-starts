@@ -1,16 +1,12 @@
 /**
- * The vocabulary of a change, shared by everything that has to agree on it.
+ * The vocabulary of a change, for the old (not-yet-ported) timer/live-sync
+ * path: the meet Durable Object's RPC methods take a `Write` variant as
+ * their input (`WriteOf<K>`, `meet-do.server.ts`), and `pending.ts`'s
+ * `applyWrite` folds a broadcast `Write` over a cached `MeetDetail`
+ * (`meet-live.ts`). A write that grows a rule has to grow it in both places.
  *
- * One closed union rather than a free-form request, because three separate
- * pieces of the app have to mean the same thing by it: the outbox replays it
- * from storage a reload later, `applyPending` folds it over loader data to
- * show a tap before the server has heard of it, and the endpoint it is posted
- * to writes the row. A write that grows a rule has to grow it in all three,
- * and naming the shape once is what makes that a visible obligation rather
- * than a coincidence.
- *
- * Written down here rather than inside the queue because it is a wire
- * contract, not a detail of how the queue happens to work.
+ * Written down here rather than inside either module because it is a wire
+ * contract, not a detail of how either side happens to work.
  */
 
 import type { ResultStatus, WatchRole } from "~/types/meet";

@@ -17,14 +17,14 @@ import {
   appBaseUrl,
   currentUser,
   requireDb,
-  resolveUser,
   type SyncEnv,
 } from "~/lib/api.server";
-import { canEditTeam, type TeamAccess } from "~/lib/access";
+import type { TeamAccess } from "~/lib/access";
 import { publicTeamDetail } from "~/lib/public.server";
 import {
   addTeamCoach,
   claimTeam,
+  isTeamCoach,
   removeTeamCoach,
   teamCoaches,
 } from "~/lib/coaches.server";
@@ -80,11 +80,11 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       publicTeamDetail(env.DB, params.teamId),
       teamCoaches(env.DB, params.teamId),
     ]);
-    const user = await resolveUser(env.DB, rawUser, request);
+    const userId = rawUser?.id ?? null;
     const access: TeamAccess = {
-      signedIn: user.signedIn,
-      userId: user.userId,
-      coach: canEditTeam({ team: { id: params.teamId! }, user }),
+      signedIn: userId != null,
+      userId,
+      coach: await isTeamCoach(env.DB, userId, params.teamId!),
     };
 
     /**
@@ -149,12 +149,12 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
   const rawUser = await currentUser(request, env);
-  const user = await resolveUser(db, rawUser, request);
+  const userId = rawUser?.id ?? null;
 
   const access: TeamAccess = {
-    signedIn: user.signedIn,
-    userId: user.userId,
-    coach: canEditTeam({ team: { id: params.teamId! }, user }),
+    signedIn: userId != null,
+    userId,
+    coach: await isTeamCoach(db, userId, params.teamId!),
   };
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "roster");

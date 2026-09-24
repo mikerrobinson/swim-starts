@@ -4,11 +4,9 @@
  * lives in `sync.server.ts`, and accounts in `auth.server.ts`.
  */
 
-import { bearerToken, userForToken, type User } from "./auth.server";
+import { bearerToken, userForToken } from "./auth.server";
 import type { NotifyEnv } from "./notify.server";
-import { teamsCoachedBy } from "./coaches.server";
-import { deviceId } from "./device.server";
-import { ANONYMOUS_USER, type UserIdentity } from "./access";
+import type { User } from "~/types/user";
 
 export interface SyncEnv extends NotifyEnv {
   DB?: D1Database;
@@ -66,44 +64,6 @@ export async function requireUser(request: Request, env: SyncEnv): Promise<User>
   const user = await currentUser(request, env);
   if (!user) throw new SyncError("Sign in first", 401);
   return user;
-}
-
-/**
- * Who's asking, as `access.ts`'s pure predicates need it — the one place
- * `coachOf` (every team this person coaches, globally) and the athlete link
- * are resolved, so no route re-derives them its own way. `root.tsx`'s loader
- * calls this too; `useUser()` (`state/user.tsx`) is the client-side read of
- * what that call already resolved.
- *
- * Takes an already-resolved `user` rather than the request, so a caller
- * that already called `currentUser()` (nearly every one) doesn't look the
- * token up twice. `deviceId` is the one piece that needs the request
- * itself, and is resolved (though not cookied — that's the caller's, see
- * `root.tsx`) whether or not anyone is signed in.
- */
-export async function resolveUser(
-  db: D1Database | undefined,
-  user: User | null,
-  request: Request,
-): Promise<UserIdentity> {
-  const device = deviceId(request);
-  if (!user || !db) return { ...ANONYMOUS_USER, deviceId: device };
-
-  const [coachOf, linked] = await Promise.all([
-    teamsCoachedBy(db, user.id),
-    db
-      .prepare("SELECT id FROM athletes WHERE user_id = ?")
-      .bind(user.id)
-      .first<{ id: string }>(),
-  ]);
-
-  return {
-    userId: user.id,
-    athleteId: linked?.id ?? null,
-    coachOf,
-    deviceId: device,
-    signedIn: true,
-  };
 }
 
 export async function readJson<T>(request: Request): Promise<T> {

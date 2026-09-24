@@ -3,8 +3,9 @@ import { Link, useSearchParams, useSubmit } from "react-router";
 import type { Route } from "./+types/entries";
 import { Button, EmptyState, TextInput } from "~/components/ui";
 import { whyNotEnter } from "~/lib/events";
-import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { canEditMeet, canEnter, canRecordTime, type MeetFacts } from "~/lib/access";
+import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
 import {
   getTeam,
@@ -15,7 +16,6 @@ import {
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
 import { useMeet } from "./meets2";
-import { useUser } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
   byAthlete,
@@ -34,31 +34,34 @@ export function meta({}: Route.MetaArgs) {
 }
 
 /**
- * `user`, `meet`, and the racing teams' rosters — the things this screen
- * needs that aren't on `MeetManifest` (see `useMeet()` in the component
- * below). None of it ever came from the events/entries/swims/watches read
- * this screen used to also do: `user` is meet-agnostic identity
- * (`resolveUser`, same as `root.tsx`), `meet` is what `access.ts`'s
- * predicates need to decide anything about *this* meet (`adminIds`/
- * `teamIds`/`athletesMayEnter` — see `canEnter`/`canRecordTime` below), and
- * a roster is a `teams`/`enrollments` join — "who's racing" stays D1's, not
+ * `userId`, `coachedTeamIds`, `meet`, and the racing teams' rosters — the
+ * things this screen needs that aren't on `MeetManifest` (see `useMeet()`
+ * in the component below). `meet` is what `access.ts`'s predicates need to
+ * decide anything about *this* meet (`adminIds`/`teamIds`/
+ * `athletesMayEnter` — see `canEnter`/`canRecordTime` below).
+ * `coachedTeamIds` is every team `userId` coaches, resolved once here
+ * (`teamsCoachedBy`, `coaches.server.ts`) because the grid below needs it
+ * per cell, client-side — it's not a standing fact carried on `useUser()`.
+ * A roster is a `teams`/`enrollments` join — "who's racing" stays D1's, not
  * the Durable Object's, same reasoning as `meet-info.tsx`'s `teams` read.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
-  const rawUser = await currentUser(request, env);
   const meetId = params.meetId!;
 
   const [user, meet] = await Promise.all([
-    resolveUser(db, rawUser, request),
+    currentUser(request, env),
     getMeet(db, meetId),
   ]);
+  const userId = user?.id ?? null;
+  const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
 
   const rosterEntries = meet ? await meetRoster(db, meet) : [];
 
   return {
-    user,
+    userId,
+    coachedTeamIds,
     meet,
     athletes: rosterEntries.map((r) => r.athlete),
     enrollments: rosterEntries.map((r) => r.enrollment),
@@ -98,12 +101,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env;
   const db = requireDb(env as SyncEnv);
   const meetId = params.meetId!;
-  const [rawUser, meet] = await Promise.all([
+  const [user, meet] = await Promise.all([
     currentUser(request, env as SyncEnv),
     getMeet(db, meetId),
   ]);
   if (!meet) throw new Response("No such meet", { status: 404 });
-  const user = await resolveUser(db, rawUser, request);
 
   const form = await request.formData();
   const eventId = String(form.get("eventId") ?? "");
@@ -114,7 +116,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const result = await stub.declareEntry(
     { meetId, eventId, athleteId, entering },
     meet,
-    user,
+    user?.id ?? null,
   );
   if (!result.ok) {
     throw new Response(result.error, { status: result.status });
@@ -222,18 +224,17 @@ function eventFor(race: Race, athlete: Athlete): Event | undefined {
 }
 
 export default function Registration({ loaderData }: Route.ComponentProps) {
-  const { athletes, enrollments } = loaderData;
+  const { athletes, enrollments, userId, coachedTeamIds } = loaderData;
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const meet = useMeet();
-  const user = useUser();
   const submit = useSubmit();
   const { nameOrder } = useViewPrefs();
 
-  const isAdmin = canEditMeet({ meet: meetFacts, user });
-  // This person's own racing-team coaching, narrowed from the global list
-  // `useUser()` carries to just the teams actually in this meet.
+  const isAdmin = canEditMeet({ meet: meetFacts, userId });
+  // This meet's teams, narrowed to the ones the loader already found this
+  // person coaching.
   const myRacingTeams = meetFacts.teamIds.filter((id) =>
-    user.coachOf.includes(id),
+    coachedTeamIds.includes(id),
   );
 
   const [params] = useSearchParams();
@@ -353,7 +354,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   // no claim on it, and the results are public either way.
   const mayLook =
     meet.details.entryVisibility === "everyone" ||
-    canRecordTime({ meet: meetFacts, user });
+    canRecordTime({ meet: meetFacts, userId, coachedTeamIds });
   if (!mayLook) {
     return (
       <EmptyState title="Entries aren't public for this meet">
@@ -384,9 +385,11 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const mayEditFor = (athleteId: string): boolean =>
     canEnter({
       meet: meetFacts,
-      user,
+      userId,
+      coachedTeamIds,
       athlete: {
         id: athleteId,
+        userId: athletes.find((a) => a.id === athleteId)?.userId ?? null,
         teamIds: enrollments
           .filter((e) => e.athleteId === athleteId)
           .map((e) => e.teamId),
@@ -406,7 +409,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
     form.set("athleteId", athleteId);
     form.set("entering", String(entering));
     // For `clientAction`'s optimistic patch only — see its doc comment.
-    form.set("enteredBy", user.userId ?? "");
+    form.set("enteredBy", userId ?? "");
     submit(form, { method: "post", navigate: false });
   };
 

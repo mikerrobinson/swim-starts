@@ -1,10 +1,7 @@
 /**
- * What the screen shows while the outbox is still catching up — and what
- * folds a DO broadcast over a cached snapshot too. Both are "apply one
- * change to data that hasn't heard about it yet" — the only difference is
- * whether the change is this device's own unacknowledged write or somebody
- * else's, already-accepted one arriving over the wire. `applyWrite` is that one
- * operation; `applyPending` is just it, reduced over a queue.
+ * Folds a DO broadcast over a cached snapshot — the old timer workspace's
+ * live sync (`meet-live.ts`). `applyWrite` is "apply one accepted change to
+ * data that hasn't heard about it yet."
  *
  * Loader data (or a cached `MeetSnapshot`) is what the server has last said.
  * Folding a change over it is what makes a tap feel instant on good wifi and
@@ -24,7 +21,6 @@
 
 import type { MeetDetail, MeetSnapshot, Watch } from "~/types/meet";
 import type { MeetBroadcast } from "./writes";
-import type { Queued } from "./outbox";
 
 /**
  * Fold one change — this device's own pending write, or an incoming
@@ -186,11 +182,4 @@ export function applyWrite<T extends MeetSnapshot>(
   }
 
   return { ...detail, entries, swims, watches, athletes };
-}
-
-/** `applyWrite`, reduced over a queue of this device's own pending writes —
- *  the outbox's optimistic overlay. */
-export function applyPending(detail: MeetDetail, queue: Queued[]): MeetDetail {
-  const mine = queue.filter((q) => q.write.meetId === detail.meet.id);
-  return mine.reduce((acc, { write }) => applyWrite(acc, write), detail);
 }

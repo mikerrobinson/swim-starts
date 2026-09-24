@@ -10,39 +10,36 @@ import {
 
 import type { Route } from "./+types/root";
 import { ViewPrefsProvider } from "./state/view-prefs";
-import { OutboxProvider } from "./state/outbox";
-import { currentUser, resolveUser, type SyncEnv } from "./lib/api.server";
+import { currentUser, type SyncEnv } from "./lib/api.server";
 import { isTimingPath } from "./lib/timer-path";
 import { sessionPayload } from "./lib/auth.server";
 import { SIGNED_OUT } from "./state/session";
-import { deviceCookie, existingDeviceId } from "./lib/device.server";
+import { deviceCookie, deviceId, existingDeviceId } from "./lib/device.server";
 import "./app.css";
 
 /**
- * The identity facts read once here, from cookies, so no route below has to
- * re-derive them: who's signed in, the athlete their account is linked to,
- * every team they coach, and which device this is — the identity a phone
- * with nobody signed into it still has, same cookie the timer workspace
- * already used. `resolveUser` (`api.server.ts`) is the shared resolution;
- * `useUser()` (`state/user.tsx`) is the client-side read of what it
- * resolves here.
+ * The two facts read once here, from cookies, so no route below has to
+ * re-derive them: who's signed in (`User | null`, `auth.server.ts`) and
+ * which device this is — the identity a phone with nobody signed into it
+ * still has, same cookie the timer workspace already used. `useUser()`/
+ * `useDeviceId()` (`state/user.tsx`) are the client-side reads of what's
+ * resolved here.
  *
- * This is deliberately *not* a per-meet access decision — whether someone
- * may administer meet X still has to ask D1 about meet X specifically
- * (`access.ts`'s `canEditMeet`, given the meet each route already loaded).
- * What's here is meet-agnostic: facts about the person, not about what
- * they may do on any one meet.
+ * Deliberately just those two. Whether someone may administer meet X, or
+ * coaches team Y, is never resolved here — it's a fact about meet X or team
+ * Y (`access.ts`'s predicates, checked against whatever the route already
+ * loaded), not a standing property of the person to carry around.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const user = env.DB ? await currentUser(request, env) : null;
-  const identity = await resolveUser(env.DB, user, request);
+  const device = deviceId(request);
 
   // Minted once, on whatever request happens to be first — every timer, and
   // every first visit of any kind — and carried in a cookie from then on.
   const headers = new Headers();
   if (!existingDeviceId(request)) {
-    headers.append("set-cookie", deviceCookie(identity.deviceId, request));
+    headers.append("set-cookie", deviceCookie(device, request));
   }
 
   // A phone with no cookie — every timer, and every first visit — costs
@@ -50,7 +47,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const session =
     env.DB && user ? await sessionPayload(env.DB, user) : SIGNED_OUT;
 
-  return data({ session, ...identity }, { headers });
+  return data({ session, user, deviceId: device }, { headers });
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

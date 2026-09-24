@@ -46,6 +46,30 @@ export default [
     route("entries", "routes/entries.tsx"),
     route("timer", "routes/timer-lanes2.tsx"),
     route("timer/:event/:heat/:lane", "routes/timer2.tsx"),
+    route("admin", "routes/admin.tsx", [
+      index("routes/admin-index.tsx"),
+      // The heat desk: one heat's lane matrix, addressed the same way the
+      // timer already addresses a lane — event position, then heat number,
+      // both 1-based, neither a row id.
+      route(":event/:heat", "routes/admin-heat.tsx"),
+    ]),
+    route("splits", "routes/splits.tsx", [
+      index("routes/splits-index.tsx"),
+      // Same addressing as admin's heat desk.
+      route(":event/:heat", "routes/splits-heat.tsx"),
+    ]),
+    route("results", "routes/results.tsx", [
+      index("routes/results-index.tsx"),
+      // by-event / by-swimmer / team-scores, as a path segment rather than
+      // `?view=`. `by-swimmer` isn't built yet — see results-view.tsx.
+      route(":view", "routes/results-view.tsx"),
+    ]),
+    // Public, read-only: one event's declared entries, heat seeds and
+    // decided times. Ordered after the literal children above; React
+    // Router ranks a static segment over a dynamic one at the same depth
+    // regardless of declaration order, but the ordering still reads truer
+    // this way.
+    route(":eventId", "routes/event-detail.tsx"),
   ]),
 
   layout("routes/shell.tsx", [
@@ -76,30 +100,6 @@ export default [
     // arriving once at the top.
     route("meets/:meetId", "routes/meet-layout.tsx", [
       index("routes/meet-redirect.tsx"),
-      // Public, read-only: one event's declared entries, seeds and current
-      // results. Ordered after the literal children below; React Router
-      // ranks a static segment over a dynamic one at the same depth
-      // regardless of declaration order, but the ordering still reads truer
-      // this way.
-      route(":eventId", "routes/event-detail.tsx"),
-      route("results", "routes/results.tsx", [
-        index("routes/results-index.tsx"),
-        // by-event / by-swimmer / team-scores, as a path segment rather than
-        // `?view=`. `by-swimmer` isn't built yet — see results-view.tsx.
-        route(":view", "routes/results-view.tsx"),
-      ]),
-      route("admin", "routes/admin.tsx", [
-        index("routes/admin-index.tsx"),
-        // The heat desk: one heat's lane matrix, addressed the same way the
-        // timer already addresses a lane — event position, then heat number,
-        // both 1-based, neither a row id.
-        route(":event/:heat", "routes/admin-heat.tsx"),
-      ]),
-      route("splits", "routes/splits.tsx", [
-        index("routes/splits-index.tsx"),
-        // Same addressing as admin's heat desk.
-        route(":event/:heat", "routes/splits-heat.tsx"),
-      ]),
     ]),
   ]),
 
@@ -108,12 +108,6 @@ export default [
   // screens ask for as somebody types.
   route("api/teams", "routes/api.teams.ts"),
   route("api/users", "routes/api.users.ts"),
-
-  // What the deck writes. One row per write, so two people working at once
-  // never touch the same row — and one endpoint, because what arrives is the
-  // outbox's own `Write` rather than a shape invented for the URL. Forwards
-  // to the meet's Durable Object — see api.meet.writes.ts.
-  route("api/meets/:meetId/writes", "routes/api.meet.writes.ts"),
 
   // The meet's live connection: a WebSocket upgrade onto the meet's Durable
   // Object, which broadcasts every accepted write. See api.meet.live.ts.

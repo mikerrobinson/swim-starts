@@ -2,18 +2,22 @@
  * Working an official time out of the watches on a swim, and what an
  * administrator decided about it.
  *
- * Two concepts. **Watches** are evidence: several per swim, one per submitter
- * per slot, append-only — a correction is a new row, never an edit to an old
- * one. A **decision** is the administrator's own call, written directly onto
- * the swim it's about once, and taken back by clearing those same fields
- * rather than deleting a row elsewhere. Everything in between — the proposed
- * time, which swims are still outstanding, whether a heat or an event is
- * done — is derived, so it can never disagree with the rows underneath it.
+ * Two concepts. **Watches** are evidence: one row per device per slot, keyed
+ * by the lane it's evidence for (`event/heat/lane/device/slot` — there is no
+ * separate swim id, a swim's whole identity already is its lane) — a
+ * correction upserts that same row rather than appending a new one, so
+ * there's no history left to collapse to "current": the row already is.
+ * A **decision** is the administrator's own call, written directly onto the
+ * swim it's about once, and taken back by clearing those same fields rather
+ * than deleting a row elsewhere. Everything in between — the proposed time,
+ * which swims are still outstanding, whether a heat or an event is done — is
+ * derived, so it can never disagree with the rows underneath it.
  *
  * Everything here is pure and takes plain arrays. No document, no store.
  */
 
-import type { Event, Swim, Watch, WatchRole } from "~/types/meet";
+import type { Event, Swim, SwimSlot, Watch, WatchRole } from "~/types/meet";
+import { toSwimKey, type SwimKey } from "~/types/meet";
 
 /** The rows these functions read. Anything holding both will do. */
 export interface TimingRows {
@@ -39,38 +43,23 @@ function meanOf(times: number[]): number {
 /* ----------------------------------------------------------------- watches */
 
 /**
- * Every watch on a swim, history included — for a screen that wants the
- * whole audit trail. Everything that works out a *current* time or state
- * goes through `currentWatches` instead.
- */
-export function allWatches(
-  rows: Pick<TimingRows, "watches">,
-  swimId: string,
-): Watch[] {
-  return rows.watches.filter((w) => w.swimId === swimId);
-}
-
-/**
- * One swim's watches, collapsed to the latest row per `(submittedBy, slot)`.
- *
- * Watches are append-only, so a correction — a re-stop, a retimed sheet — is
- * a new row rather than an edit to the old one. Every reader that works out
- * a time, a lane's progress, or whether an event is touched wants only the
- * *current* state of each slot, not its history, which is exactly what this
- * collapses to. Clipboard mode's several concurrent slots from one submitter
- * are untouched by this — only re-submissions *within* a slot collapse.
+ * Every watch on a swim's lane — one row per device per slot already, since
+ * the storage layer keys watches by `event/heat/lane/device/slot` and
+ * upserts rather than appends, so there is nothing left for this to
+ * collapse: the current state of a slot and its whole history are the same
+ * row. Every reader that works out a time, a lane's progress, or whether an
+ * event is touched goes through here.
  */
 export function currentWatches(
   rows: Pick<TimingRows, "watches">,
-  swimId: string,
+  slot: SwimSlot,
 ): Watch[] {
-  const latest = new Map<string, Watch>();
-  for (const w of allWatches(rows, swimId)) {
-    const key = `${w.submittedBy}#${w.slot}`;
-    const seen = latest.get(key);
-    if (!seen || w.submittedAt > seen.submittedAt) latest.set(key, w);
-  }
-  return [...latest.values()];
+  return rows.watches.filter(
+    (w) =>
+      w.eventId === slot.eventId &&
+      w.heat === slot.heat &&
+      w.lane === slot.lane,
+  );
 }
 
 /**
@@ -83,9 +72,9 @@ export function currentWatches(
  */
 export function timedWatches(
   rows: Pick<TimingRows, "watches">,
-  swimId: string,
+  slot: SwimSlot,
 ): Watch[] {
-  return currentWatches(rows, swimId)
+  return currentWatches(rows, slot)
     .filter((w) => w.timeMs !== undefined)
     .sort((a, b) => a.timeMs! - b.timeMs!);
 }
@@ -229,9 +218,9 @@ export type LaneProgress = "none" | "waiting" | "complete";
  */
 export function laneProgress(
   rows: Pick<TimingRows, "watches">,
-  swimId: string,
+  slot: SwimSlot,
 ): LaneProgress {
-  const timers = currentWatches(rows, swimId).filter((w) => w.role === "timer");
+  const timers = currentWatches(rows, slot).filter((w) => w.role === "timer");
   if (timers.length === 0) return "none";
   return timers.every((w) => w.timeMs !== undefined) ? "complete" : "waiting";
 }
@@ -239,9 +228,9 @@ export function laneProgress(
 /** Stopwatches still running on a swim: started, not stopped, no time sent yet. */
 export function runningWatches(
   rows: Pick<TimingRows, "watches">,
-  swimId: string,
+  slot: SwimSlot,
 ): Watch[] {
-  return currentWatches(rows, swimId).filter(
+  return currentWatches(rows, slot).filter(
     (w) =>
       w.timeMs === undefined &&
       w.startedAt !== undefined &&
@@ -258,9 +247,9 @@ export function runningWatches(
  */
 export function stoppedWatches(
   rows: Pick<TimingRows, "watches">,
-  swimId: string,
+  slot: SwimSlot,
 ): Watch[] {
-  return currentWatches(rows, swimId).filter(
+  return currentWatches(rows, slot).filter(
     (w) => w.timeMs === undefined && w.stoppedAt !== undefined,
   );
 }
@@ -278,29 +267,33 @@ export function stoppedWatches(
 export interface SwimTime {
   timeMs: number;
   status: NonNullable<Swim["status"]>;
-  watchCount: number;
-  from: WatchRole;
-  discrepancyMs: number | null;
   /** True once an administrator has signed it off. */
   official: boolean;
 }
 
-export function swimTime(rows: TimingRows, swimId: string): SwimTime | null {
-  const swim = rows.swims.find((s) => s.id === swimId);
+export function swimTime(rows: TimingRows, slot: SwimSlot): SwimTime | null {
+  const swim = rows.swims.find(
+    (s) =>
+      s.eventId === slot.eventId &&
+      s.heat === slot.heat &&
+      s.lane === slot.lane,
+  );
   if (swim?.status) {
     return {
       timeMs: swim.officialTimeMs ?? 0,
       status: swim.status,
-      watchCount: 0,
-      from: "admin",
-      discrepancyMs: null,
       official: true,
     };
   }
 
-  const proposed = laneTime(timedWatches(rows, swimId));
+  const watches = timedWatches(rows, slot);
+  const proposed = laneTime(watches);
   if (!proposed) return null;
-  return { ...proposed, status: "OK", official: false };
+  return {
+    ...proposed,
+    status: "OK",
+    official: false,
+  };
 }
 
 /* ----------------------------------------------------------------- closing */
@@ -343,10 +336,9 @@ export function heatsOf(
  * means what it meant.
  */
 export function eventTouched(rows: TimingRows, eventId: string): boolean {
-  const ids = new Set(swimsForEvent(rows, eventId).map((s) => s.id));
   return (
-    rows.watches.some((w) => ids.has(w.swimId)) ||
-    rows.swims.some((s) => ids.has(s.id) && !!s.status)
+    rows.watches.some((w) => w.eventId === eventId) ||
+    rows.swims.some((s) => s.eventId === eventId && !!s.status)
   );
 }
 
@@ -388,10 +380,11 @@ export function heatProgress(
 export function recordedCount(
   rows: Pick<TimingRows, "swims" | "watches">,
 ): number {
-  const swims = new Set<string>();
-  for (const w of rows.watches) if (w.timeMs !== undefined) swims.add(w.swimId);
-  for (const s of rows.swims) if (s.status) swims.add(s.id);
-  return swims.size;
+  const keys = new Set<SwimKey>();
+  for (const w of rows.watches)
+    if (w.timeMs !== undefined) keys.add(toSwimKey(w));
+  for (const s of rows.swims) if (s.status) keys.add(toSwimKey(s));
+  return keys.size;
 }
 
 /** Events in the order they're swum. */

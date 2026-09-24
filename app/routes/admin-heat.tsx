@@ -5,7 +5,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { useFetcher, useNavigate } from "react-router";
+import { useFetcher, useNavigate, useSubmit } from "react-router";
 import type { Route } from "./+types/admin-heat";
 import {
   Button,
@@ -16,8 +16,6 @@ import {
 } from "~/components/ui";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
 import { formatClock, formatTime, parseTime } from "~/lib/time";
-import { enrollmentIndex } from "~/lib/roster";
-import { generateId } from "~/lib/id";
 import {
   currentWatches,
   fromStopwatch,
@@ -30,59 +28,284 @@ import {
   swimsForHeat,
   stoppedWatches,
   swimTime,
+  type LaneProgress,
+  type LaneTime,
 } from "~/lib/timing";
-import { useSend } from "~/state/outbox";
-import type { Write } from "~/lib/outbox";
-import type { LaneProgress, LaneTime } from "~/lib/timing";
-import { useAdmin } from "./admin";
+import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { canDecideMeet, canEditMeet, canRecordTime, type MeetFacts } from "~/lib/access";
+import { teamsCoachedBy } from "~/lib/coaches.server";
+import { getMeet } from "~/lib/meets.server";
+import {
+  getTeam,
+  listSeasons,
+  roster as teamRoster,
+  seasonForDate,
+  type RosterEntry,
+} from "~/lib/teams.server";
+import { meetCache } from "~/lib/meetCache";
+import { useMeet } from "./meets2";
+import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
+  athleteName,
   displayName,
   eventName,
-  findAthlete,
-  type MeetDetail,
+  getSortedEvents,
   type Event,
+  type Meet,
   type ResultStatus,
+  type Swim,
+  type Watch,
   type WatchRole,
+  type WatchSlotKey,
 } from "~/types/meet";
+import type { Athlete } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Admin · Swim Starts" }];
 }
 
+/** What `canRecordTime`/`canDecideMeet` fall back to when the meet's own D1
+ *  row is somehow missing — nobody may record or decide a time for a meet
+ *  that isn't there. */
+const EMPTY_MEET_FACTS: MeetFacts = {
+  adminIds: [],
+  teamIds: [],
+  athletesMayEnter: false,
+};
+
+/** Every racing team's roster, for the season the meet's date falls in —
+ *  what `LaneAssignSheet`'s picker draws from. Same helper `splits-heat.tsx`
+ *  builds; `useMeet()`'s own roster (`meet.athletes`) is whoever a swim or
+ *  entry already names, not the whole season list a walk-up gets chosen
+ *  from. */
+async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
+  const perTeam = await Promise.all(
+    meet.teamIds.map(async (teamId) => {
+      const [team, seasons] = await Promise.all([
+        getTeam(db, teamId),
+        listSeasons(db, teamId),
+      ]);
+      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
+      return teamRoster(db, teamId, season?.id);
+    }),
+  );
+  return perTeam.flat();
+}
+
 /**
- * One heat's desk — `/meets/:meetId/admin/:event/:heat`.
+ * `meet` (D1's facts, for `canRecordTime`/`canDecideMeet`) and the racing
+ * teams' season roster (for `LaneAssignSheet`'s picker) — everything else
+ * this screen shows comes from `useMeet()`'s `MeetManifest` in the
+ * component below.
+ */
+export async function loader({ params, request, context }: Route.LoaderArgs) {
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const meetId = params.meetId!;
+  const meet = await getMeet(db, meetId);
+  const rosterEntries = meet ? await meetRoster(db, meet) : [];
+
+  return {
+    meet,
+    roster: rosterEntries.map((r) => r.athlete),
+    enrollments: rosterEntries.map((r) => r.enrollment),
+  };
+}
+
+/**
+ * Everything this screen writes is one of two shapes: upsert a swim (seat a
+ * lane, mark exhibition, decide or un-decide its result), or upsert a watch
+ * (a time typed at the desk) — and the two matching deletes (empty a lane,
+ * drop a watch).
+ *
+ * `kind` says which permission a swim upsert needs, since the object shape
+ * alone can't: `"seat"` (seating, exhibition) is `canRecordTime` — any
+ * coach of a racing team, same as `splits-heat.tsx`'s writes — but
+ * `"decide"` (a status is being set or cleared) is `canDecideMeet`,
+ * administrators only, and this is also the one place `decidedBy`/
+ * `decidedAt` get stamped from the resolved session (or `"auto"` when the
+ * desk's own effect proposed it) rather than trusted from the client.
+ */
+export async function action({ params, request, context }: Route.ActionArgs) {
+  const env = context.cloudflare.env;
+  const db = requireDb(env as SyncEnv);
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env as SyncEnv),
+    getMeet(db, meetId),
+  ]);
+  if (!meet) throw new Response("No such meet", { status: 404 });
+  const userId = rawUser?.id ?? null;
+
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "");
+  const stub = env.MEET_DO.getByName(meetId);
+
+  if (intent === "upsert-swim") {
+    const kind = String(form.get("kind") ?? "seat");
+    const swim = JSON.parse(String(form.get("swim"))) as Swim;
+    if (kind === "decide") {
+      if (!canDecideMeet({ meet, userId })) {
+        throw new Response("Whoever is running this meet decides a lane.", {
+          status: 403,
+        });
+      }
+      if (swim.status) {
+        swim.decidedBy =
+          form.get("auto") === "true" ? "auto" : (userId ?? undefined);
+        swim.decidedAt = Date.now();
+      } else {
+        swim.decidedBy = undefined;
+        swim.decidedAt = undefined;
+      }
+    } else {
+      const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
+      if (!canRecordTime({ meet, userId, coachedTeamIds })) {
+        throw new Response("Only the teams racing can seed a lane.", {
+          status: 403,
+        });
+      }
+    }
+    await stub.upsertSwim(meetId, swim);
+    return { ok: true };
+  }
+
+  if (intent === "delete-swim") {
+    const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
+    if (!canRecordTime({ meet, userId, coachedTeamIds })) {
+      throw new Response("Only the teams racing can empty a lane.", {
+        status: 403,
+      });
+    }
+    await stub.deleteSwim(meetId, {
+      eventId: String(form.get("eventId")),
+      heat: Number(form.get("heat")),
+      lane: Number(form.get("lane")),
+    });
+    return { ok: true };
+  }
+
+  if (intent === "upsert-watch" || intent === "delete-watch") {
+    const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
+    if (!canRecordTime({ meet, userId, coachedTeamIds })) {
+      throw new Response("Only the teams racing can record times.", {
+        status: 403,
+      });
+    }
+    if (intent === "upsert-watch") {
+      const watch = JSON.parse(String(form.get("watch"))) as Watch;
+      await stub.upsertWatch(meetId, watch);
+    } else {
+      await stub.deleteWatch(meetId, {
+        eventId: String(form.get("eventId")),
+        heat: Number(form.get("heat")),
+        lane: Number(form.get("lane")),
+        deviceId: String(form.get("deviceId")),
+        slot: Number(form.get("slot")),
+      });
+    }
+    return { ok: true };
+  }
+
+  return { ok: false };
+}
+
+/**
+ * The tick (or the empty lane, or the dropped watch, or the decision) moves
+ * the instant it's tapped: patch `meetCache`'s cached manifest the same
+ * shape the matching broadcast would, then hand off to the real request —
+ * same pattern `splits-heat.tsx` uses for its four write shapes.
+ */
+export async function clientAction({
+  params,
+  request,
+  serverAction,
+}: Route.ClientActionArgs) {
+  const meetId = params.meetId!;
+  const form = await request.clone().formData();
+  const intent = String(form.get("intent") ?? "");
+
+  if (intent === "upsert-swim") {
+    const swim = JSON.parse(String(form.get("swim"))) as Swim;
+    meetCache.applyPatch(meetId, { type: "SWIM", swim, isDelete: false }, () => {});
+  } else if (intent === "delete-swim") {
+    meetCache.applyPatch(
+      meetId,
+      {
+        type: "SWIM",
+        swim: {
+          eventId: String(form.get("eventId")),
+          heat: Number(form.get("heat")),
+          lane: Number(form.get("lane")),
+          exhibition: false,
+        },
+        isDelete: true,
+      },
+      () => {},
+    );
+  } else if (intent === "upsert-watch") {
+    const watch = JSON.parse(String(form.get("watch"))) as Watch;
+    meetCache.applyPatch(meetId, { type: "WATCH", watch, isDelete: false }, () => {});
+  } else if (intent === "delete-watch") {
+    meetCache.applyPatch(
+      meetId,
+      {
+        type: "WATCH",
+        watch: {
+          eventId: String(form.get("eventId")),
+          heat: Number(form.get("heat")),
+          lane: Number(form.get("lane")),
+          deviceId: String(form.get("deviceId")),
+          slot: Number(form.get("slot")),
+          role: "timer",
+          recordedAt: Date.now(),
+        },
+        isDelete: true,
+      },
+      () => {},
+    );
+  }
+
+  return serverAction();
+}
+
+/**
+ * One heat's desk — `/meets2/:meetId/admin/:event/:heat`.
  *
  * Addressed the same way the timer already addresses a lane: the event's
  * place in the running order and the heat number, both 1-based, neither a
- * row id. This used to be every heat of the open event stacked and
- * scrolled; now it's one heat, with heat-to-heat navigation the same shape
- * `splits.tsx` uses.
- *
- * Everything shown is still derived: the watches are what the timers sent,
- * the proposed time is what those work out to, and "official" means every
- * lane that swam has been signed off.
+ * row id. Everything shown is derived from `useMeet()`: the watches are
+ * what the timers sent, the proposed time is what those work out to, and
+ * "official" means every lane that swam has been signed off.
  */
-export default function AdminHeat({ params }: Route.ComponentProps) {
-  // Already live-merged and pending-overlaid by the shell — see admin.tsx.
-  const { detail, user } = useAdmin();
-  const send = useSend();
-  const { nameOrder } = useViewPrefs();
+export default function AdminHeat({ params, loaderData }: Route.ComponentProps) {
+  const meet = useMeet();
+  const user = useUser();
+  const deviceId = useDeviceId();
+  const submit = useSubmit();
   const navigate = useNavigate();
+  const { nameOrder } = useViewPrefs();
   const addHeat = useFetcher<{ ok: boolean; heat: number }>();
+
+  const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
+  const userId = user?.id ?? null;
+  const isAdmin = canEditMeet({ meet: meetFacts, userId });
 
   const [assigning, setAssigning] = useState<{
     heat: number;
     lane: number;
   } | null>(null);
-  const roster = detail.athletes;
+
+  const events = useMemo(() => getSortedEvents(meet), [meet]);
+  const swims = useMemo(() => Object.values(meet.swims), [meet.swims]);
 
   const eventNo = Number(params.event);
   const heatNo = Number(params.heat);
-  const event = detail.events.find((e) => e.position === eventNo - 1);
+  const event = events.find((e) => e.position === eventNo - 1);
   const heats = useMemo(
-    () => (event ? heatsOf(detail, event.id) : []),
-    [detail, event],
+    () => (event ? heatsOf({ swims }, event.id) : []),
+    [swims, event],
   );
 
   // A heat just added lands here automatically rather than leaving the desk
@@ -90,41 +313,70 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
   const addedHeat = addHeat.data?.ok ? addHeat.data.heat : null;
   useEffect(() => {
     if (addedHeat != null && event) {
-      navigate(
-        `/meets/${detail.meet.id}/admin/${event.position + 1}/${addedHeat}`,
-      );
+      navigate(`/meets2/${meet.id}/admin/${event.position + 1}/${addedHeat}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addedHeat]);
 
   const goTo = (eventPos: number, heat: number) =>
-    navigate(`/meets/${detail.meet.id}/admin/${eventPos}/${heat}`);
+    navigate(`/meets2/${meet.id}/admin/${eventPos}/${heat}`);
 
   const heatIndex = heats.indexOf(heatNo);
 
   const prevHeat = () => {
     if (!event) return;
     if (heatIndex > 0) return goTo(eventNo, heats[heatIndex - 1]);
-    const prevEvent = detail.events[event.position - 1];
+    const prevEvent = events[event.position - 1];
     if (!prevEvent) return;
-    const prevHeats = heatsOf(detail, prevEvent.id);
+    const prevHeats = heatsOf({ swims }, prevEvent.id);
     goTo(prevEvent.position + 1, prevHeats[prevHeats.length - 1] ?? 1);
   };
 
   const nextHeat = () => {
     if (!event) return;
-    if (heatIndex + 1 < heats.length)
-      return goTo(eventNo, heats[heatIndex + 1]);
-    const nextEvent = detail.events[event.position + 1];
+    if (heatIndex + 1 < heats.length) return goTo(eventNo, heats[heatIndex + 1]);
+    const nextEvent = events[event.position + 1];
     if (!nextEvent) return;
-    const nextHeats = heatsOf(detail, nextEvent.id);
+    const nextHeats = heatsOf({ swims }, nextEvent.id);
     goTo(nextEvent.position + 1, nextHeats[0] ?? 1);
   };
 
   const hasPrev = !!event && (heatIndex > 0 || event.position > 0);
   const hasNext =
-    !!event &&
-    (heatIndex + 1 < heats.length || event.position + 1 < detail.events.length);
+    !!event && (heatIndex + 1 < heats.length || event.position + 1 < events.length);
+
+  /** Send a swim upsert/delete, or a watch upsert/delete — the shapes
+   *  `action`/`clientAction` above understand. */
+  const sendSwim = (swim: Swim, kind: "seat" | "decide" = "seat", auto = false) => {
+    const form = new FormData();
+    form.set("intent", "upsert-swim");
+    form.set("kind", kind);
+    form.set("auto", String(auto));
+    form.set("swim", JSON.stringify(swim));
+    submit(form, { method: "post", navigate: false });
+  };
+  const sendWatch = (watch: Watch) => {
+    const form = new FormData();
+    form.set("intent", "upsert-watch");
+    form.set("watch", JSON.stringify(watch));
+    submit(form, { method: "post", navigate: false });
+  };
+  const removeWatch = (key: WatchSlotKey) => {
+    const form = new FormData();
+    form.set("intent", "delete-watch");
+    form.set("eventId", key.eventId);
+    form.set("heat", String(key.heat));
+    form.set("lane", String(key.lane));
+    form.set("deviceId", key.deviceId);
+    form.set("slot", String(key.slot));
+    submit(form, { method: "post", navigate: false });
+  };
+
+  const roster = loaderData.roster;
+  const enrollments = useMemo(
+    () => new Map(loaderData.enrollments.map((e) => [e.athleteId, e] as const)),
+    [loaderData.enrollments],
+  );
 
   if (!event) {
     return (
@@ -139,18 +391,20 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
           ‹ Heat
         </Button>
         <p className="text-sm text-slate-500">
-          {(detail.entries[event.id] ?? []).length} entered
+          {Object.values(meet.entries).filter((e) => e.eventId === event.id).length}{" "}
+          entered
           {heats.length === 0 ? ", no heats yet" : ""}
         </p>
         <div className="flex gap-2">
           <Button
             size="sm"
+            disabled={!isAdmin}
             onClick={() =>
               addHeat.submit(
                 { eventId: event.id },
                 {
                   method: "post",
-                  action: `/meets/${detail.meet.id}/admin`,
+                  action: `/meets2/${meet.id}/admin`,
                   encType: "application/json",
                 },
               )
@@ -166,12 +420,17 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
 
       {heatNo > 0 && heats.includes(heatNo) ? (
         <HeatCard
-          detail={detail}
           event={event}
           heat={heatNo}
           nameOrder={nameOrder}
-          send={send}
-          me={user.userId}
+          swims={swims}
+          watches={Object.values(meet.watches)}
+          athletes={meet.athletes}
+          laneCount={meet.details.laneCount}
+          deviceId={deviceId}
+          sendSwim={sendSwim}
+          sendWatch={sendWatch}
+          removeWatch={removeWatch}
           onAssign={(lane) => setAssigning({ heat: heatNo, lane })}
         />
       ) : (
@@ -184,25 +443,25 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
 
       {assigning && (
         <LaneAssignSheet
-          detail={detail}
+          meet={meet}
           eventId={event.id}
           heat={assigning.heat}
           lane={assigning.lane}
           roster={roster}
-          enrollments={enrollmentIndex(detail.enrollments)}
+          enrollments={enrollments}
           nameOrder={nameOrder}
           onAssign={(athleteId) => {
-            send({
-              kind: "swim",
-              meetId: detail.meet.id,
+            const athlete = roster.find((a) => a.id === athleteId);
+            const teamId = enrollments.get(athleteId)?.teamId;
+            const team = teamId ? meet.teams[teamId] : undefined;
+            sendSwim({
               eventId: event.id,
               heat: assigning.heat,
               lane: assigning.lane,
               athleteId,
-              // The id the server will use if this lane is new. When it isn't,
-              // the server keeps the row that's there and this is ignored —
-              // the overlay agrees either way.
-              swimId: generateId(),
+              athleteName: athlete ? athleteName(athlete) : "",
+              athleteTeam: team?.code ?? "",
+              exhibition: false,
             });
             setAssigning(null);
           }}
@@ -214,41 +473,45 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
 }
 
 function HeatCard({
-  detail,
   event,
   heat,
   nameOrder,
-  send,
-  me,
+  swims,
+  watches,
+  athletes,
+  laneCount,
+  deviceId,
+  sendSwim,
+  sendWatch,
+  removeWatch,
   onAssign,
 }: {
-  detail: MeetDetail;
   event: Event;
   heat: number;
   nameOrder: "first" | "last";
-  send: (write: Write) => void;
-  /** Whoever is at the desk — the watch they type is filed under them. */
-  me: string | null;
+  swims: Swim[];
+  watches: Watch[];
+  athletes: Record<string, Athlete>;
+  laneCount: number;
+  deviceId: string;
+  sendSwim: (swim: Swim, kind?: "seat" | "decide", auto?: boolean) => void;
+  sendWatch: (watch: Watch) => void;
+  removeWatch: (key: WatchSlotKey) => void;
   onAssign: (lane: number) => void;
 }) {
-  const seeds = swimsForHeat(detail, event.id, heat);
-  const closed = heatClosed(detail, event.id, heat);
+  const seeds = swimsForHeat({ swims }, event.id, heat);
+  const closed = heatClosed({ swims, watches }, event.id, heat);
 
   // Only while a thumb is actually down somewhere in this heat — a watch
   // that's been stopped and is just waiting on its submit doesn't need
   // ticking, it needs to sit still.
   const now = useTicker(
-    seeds.some((s) => runningWatches(detail, s.id).length > 0),
+    seeds.some((s) => runningWatches({ watches }, s).length > 0),
   );
 
   /**
    * Where the keyboard goes next, without every `LaneRow` needing to know
    * about its neighbors.
-   *
-   * The fast path through a heat is down one column and then the other —
-   * every swimmer, then every time — so the desk never has to reach for the
-   * mouse to move between lanes. Kept as a plain ref rather than state: which
-   * DOM node sits in which slot never needs to trigger a render of its own.
    */
   const fields = useRef(
     new Map<
@@ -267,7 +530,7 @@ function HeatCard({
     fields.current.set(laneNumber, entry);
   };
   const focusField = (laneNumber: number, kind: "name" | "time") => {
-    if (laneNumber < 1 || laneNumber > detail.meet.laneCount) return;
+    if (laneNumber < 1 || laneNumber > laneCount) return;
     const entry = fields.current.get(laneNumber);
     (kind === "name" ? entry?.name : entry?.time)?.focus();
   };
@@ -283,13 +546,15 @@ function HeatCard({
    * a DQ, an NS or an OK a person actually clicked — those are calls, and
    * only a person undoes a call.
    *
-   * Marked `auto` on the way out so a later disagreement can tell its own
-   * earlier writing apart from somebody's decision and take back only that.
+   * Sent with `kind: "decide", auto: true` so the server stamps
+   * `decidedBy: "auto"` rather than this admin's own id — a later
+   * disagreement can then tell its own earlier writing apart from a real
+   * decision and take back only that.
    */
   useEffect(() => {
     if (closed) return;
     for (const seed of seeds) {
-      const derived = laneTime(currentWatches(detail, seed.id));
+      const derived = laneTime(currentWatches({ watches }, seed));
 
       if (!seed.status) {
         if (
@@ -297,14 +562,11 @@ function HeatCard({
           (derived.discrepancyMs === null ||
             derived.discrepancyMs <= OK_DISCREPANCY_MS)
         ) {
-          send({
-            kind: "result",
-            meetId: detail.meet.id,
-            swimId: seed.id,
-            status: "OK",
-            timeMs: derived.timeMs,
-            auto: true,
-          });
+          sendSwim(
+            { ...seed, status: "OK", officialTimeMs: derived.timeMs },
+            "decide",
+            true,
+          );
         }
         continue;
       }
@@ -316,28 +578,29 @@ function HeatCard({
         (derived.discrepancyMs !== null &&
           derived.discrepancyMs > OK_DISCREPANCY_MS)
       ) {
-        send({ kind: "unresult", meetId: detail.meet.id, swimId: seed.id });
+        sendSwim(
+          { ...seed, status: undefined, officialTimeMs: undefined },
+          "decide",
+        );
       } else if (derived.timeMs !== seed.officialTimeMs) {
-        send({
-          kind: "result",
-          meetId: detail.meet.id,
-          swimId: seed.id,
-          status: "OK",
-          timeMs: derived.timeMs,
-          auto: true,
-        });
+        sendSwim(
+          { ...seed, status: "OK", officialTimeMs: derived.timeMs },
+          "decide",
+          true,
+        );
       }
     }
-    // detail carries the pending overlay, so this settles itself as soon as a
-    // write above lands in it — no extra guard needed against re-firing.
+    // `swims`/`watches` carry the pending overlay via `meetCache`, so this
+    // settles itself as soon as a write above lands in it — no extra guard
+    // needed against re-firing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, seeds, closed, send]);
+  }, [swims, watches, seeds, closed]);
 
   // Once anybody's clock has moved, sitting on "not started" would be a lie —
   // and once a lane reads OK on its own, or there is nothing left to time,
   // there is nothing more the timing table can add.
   const anyActivity = seeds.some(
-    (seed) => currentWatches(detail, seed.id).length > 0,
+    (seed) => currentWatches({ watches }, seed).length > 0,
   );
   const anyOk = seeds.some((seed) => seed.status === "OK");
   const allNS = seeds.length > 0 && seeds.every((seed) => seed.status === "NS");
@@ -354,14 +617,15 @@ function HeatCard({
   const markComplete = () => {
     for (const seed of seeds) {
       if (seed.status) continue;
-      const derived = laneTime(currentWatches(detail, seed.id));
-      send({
-        kind: "result",
-        meetId: detail.meet.id,
-        swimId: seed.id,
-        status: derived ? "OK" : "NS",
-        timeMs: derived ? derived.timeMs : 0,
-      });
+      const derived = laneTime(currentWatches({ watches }, seed));
+      sendSwim(
+        {
+          ...seed,
+          status: derived ? "OK" : "NS",
+          officialTimeMs: derived ? derived.timeMs : 0,
+        },
+        "decide",
+      );
     }
   };
 
@@ -370,7 +634,10 @@ function HeatCard({
   const fixResults = () => {
     for (const seed of seeds) {
       if (!seed.status) continue;
-      send({ kind: "unresult", meetId: detail.meet.id, swimId: seed.id });
+      sendSwim(
+        { ...seed, status: undefined, officialTimeMs: undefined },
+        "decide",
+      );
     }
   };
 
@@ -445,25 +712,27 @@ function HeatCard({
             {/* Every lane of the pool, not only the seeded ones: an empty
                 lane is where somebody gets added, and a lane the desk can't
                 see is a lane it can't fill. */}
-            {Array.from({ length: detail.meet.laneCount }, (_, i) => i + 1).map(
-              (lane) => (
-                <LaneRow
-                  key={lane}
-                  detail={detail}
-                  event={event}
-                  heat={heat}
-                  lane={lane}
-                  nameOrder={nameOrder}
-                  send={send}
-                  me={me}
-                  now={now}
-                  closed={closed}
-                  onAssign={onAssign}
-                  registerField={registerField}
-                  focusField={focusField}
-                />
-              ),
-            )}
+            {Array.from({ length: laneCount }, (_, i) => i + 1).map((lane) => (
+              <LaneRow
+                key={lane}
+                event={event}
+                heat={heat}
+                lane={lane}
+                nameOrder={nameOrder}
+                swims={swims}
+                watches={watches}
+                athletes={athletes}
+                deviceId={deviceId}
+                now={now}
+                closed={closed}
+                sendSwim={sendSwim}
+                sendWatch={sendWatch}
+                removeWatch={removeWatch}
+                onAssign={onAssign}
+                registerField={registerField}
+                focusField={focusField}
+              />
+            ))}
           </tbody>
         </table>
       </div>
@@ -519,37 +788,42 @@ const ROLE_LABEL: Record<WatchRole, string> = {
 
 function describeTime(time: LaneTime): string {
   if (time.from === "admin") return "yours";
-  if (time.from === "coach") {
-    return time.watchCount === 1 ? "1 coach" : `${time.watchCount} coaches`;
-  }
-  return time.method === "single" ? "1 watch" : time.method;
+  return `${ROLE_LABEL[time.from]}`;
 }
 
 function LaneRow({
-  detail,
   event,
   heat,
   lane,
   nameOrder,
-  send,
-  me,
+  swims,
+  watches,
+  athletes,
+  deviceId,
   now,
   closed,
+  sendSwim,
+  sendWatch,
+  removeWatch,
   onAssign,
   registerField,
   focusField,
 }: {
-  detail: MeetDetail;
   event: Event;
   heat: number;
   lane: number;
   nameOrder: "first" | "last";
-  send: (write: Write) => void;
-  me: string | null;
+  swims: Swim[];
+  watches: Watch[];
+  athletes: Record<string, Athlete>;
+  deviceId: string;
   now: number;
   /** The heat this lane belongs to has been marked complete — nothing here
    *  may change until "Fix Results" reopens it. */
   closed: boolean;
+  sendSwim: (swim: Swim, kind?: "seat" | "decide", auto?: boolean) => void;
+  sendWatch: (watch: Watch) => void;
+  removeWatch: (key: WatchSlotKey) => void;
   onAssign: (lane: number) => void;
   registerField: (
     lane: number,
@@ -569,19 +843,19 @@ function LaneRow({
   const [draft, setDraft] = useState<string | null>(null);
 
   /** The swim in this lane, if anybody has said who is in it. */
-  const seed = detail.swims.find(
+  const seed = swims.find(
     (s) => s.eventId === event.id && s.heat === heat && s.lane === lane,
   );
-  const watches = seed ? currentWatches(detail, seed.id) : [];
-  const timed = watches.filter((w) => w.timeMs !== undefined);
-  const running = seed ? runningWatches(detail, seed.id) : [];
-  const stopped = seed ? stoppedWatches(detail, seed.id) : [];
+  const watchesHere = seed ? currentWatches({ watches }, seed) : [];
+  const timed = watchesHere.filter((w) => w.timeMs !== undefined);
+  const running = seed ? runningWatches({ watches }, seed) : [];
+  const stopped = seed ? stoppedWatches({ watches }, seed) : [];
   const result = seed?.status ? seed : undefined;
-  const accepted = seed ? swimTime(detail, seed.id) : null;
-  const derived = laneTime(watches);
-  const progress = seed ? laneProgress(detail, seed.id) : "none";
+  const accepted = seed ? swimTime({ swims, watches }, seed) : null;
+  const derived = laneTime(watchesHere);
+  const progress = seed ? laneProgress({ watches }, seed) : "none";
 
-  const athlete = findAthlete(detail.athletes, seed?.athleteId ?? null);
+  const athlete = seed?.athleteId ? athletes[seed.athleteId] : undefined;
   const signedOff = result !== undefined;
 
   // A lane with nobody in it and nothing against it is just an empty lane.
@@ -604,20 +878,18 @@ function LaneRow({
    */
   const typeTime = (timeMs: number) => {
     if (!seed) return;
-    send({
-      kind: "watch",
-      meetId: detail.meet.id,
-      swimId: seed.id,
-      // The server files it under the signed-in user regardless; this is what
-      // the optimistic overlay needs to agree with it about.
-      timerId: me ?? "desk",
-      userId: me ?? undefined,
+    sendWatch({
+      eventId: seed.eventId,
+      heat: seed.heat,
+      lane: seed.lane,
+      deviceId,
+      slot: 1,
       // Only an administrator reaches this screen, and the server checks it
       // again — this is what the overlay needs to rank the row correctly
       // before the server answers.
       role: "admin",
       timeMs,
-      submittedAt: Date.now(),
+      recordedAt: Date.now(),
     });
   };
 
@@ -646,16 +918,17 @@ function LaneRow({
     setDraft(null);
     if (text === null || !seed || closed) return;
 
-    const mine = watches.find(
-      (w) => w.role === "admin" && w.submittedBy === me,
+    const mine = watchesHere.find(
+      (w) => w.role === "admin" && w.deviceId === deviceId,
     );
     if (text.trim() === "") {
       if (mine) {
-        send({
-          kind: "drop-watch",
-          meetId: detail.meet.id,
-          swimId: seed.id,
-          timerId: mine.submittedBy,
+        removeWatch({
+          eventId: mine.eventId,
+          heat: mine.heat,
+          lane: mine.lane,
+          deviceId: mine.deviceId,
+          slot: mine.slot,
         });
       }
       return;
@@ -672,18 +945,20 @@ function LaneRow({
    * One act rather than two: the status is chosen *as* the lane is accepted,
    * and the number written down is the one that was on screen — so a watch
    * landing in the same second cannot sign off a time nobody looked at.
-   * Taking it back is deleting the row, which is what `unresult` does.
+   * Taking it back is un-deciding, which sends the same swim without a
+   * status.
    */
   const signOff = (status: ResultStatus) => {
     if (!seed || closed) return;
-    send({
-      kind: "result",
-      meetId: detail.meet.id,
-      swimId: seed.id,
-      status,
-      // A no-show or a disqualification needn't have a time behind it.
-      timeMs: accepted?.timeMs ?? 0,
-    });
+    sendSwim(
+      {
+        ...seed,
+        status,
+        // A no-show or a disqualification needn't have a time behind it.
+        officialTimeMs: accepted?.timeMs ?? 0,
+      },
+      "decide",
+    );
   };
 
   /**
@@ -696,19 +971,12 @@ function LaneRow({
    */
   const toggleExhibition = () => {
     if (!seed || closed) return;
-    send({
-      kind: "exhibition",
-      meetId: detail.meet.id,
-      swimId: seed.id,
-      exhibition: !seed.exhibition,
-    });
+    sendSwim({ ...seed, exhibition: !seed.exhibition });
   };
 
   /**
    * The keyboard's own map of the row: right off the name onto the time,
-   * left back, up and down onto the same field one lane over. Everything
-   * else on the row — a DQ, a discarded watch — stays mouse-and-thumb
-   * territory, so Tab never has to step over it to get to the next time.
+   * left back, up and down onto the same field one lane over.
    */
   const onNameKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === "ArrowRight") {
@@ -750,10 +1018,6 @@ function LaneRow({
         <button
           type="button"
           ref={(el) => registerField(lane, "name", el)}
-          // A lane already named is one Tab past, not one Tab through — the
-          // fast path down a heat is time, time, time, and a name nobody
-          // needs to change shouldn't cost a stop on the way there. Still
-          // reachable: the arrow keys and a click both go straight to it.
           tabIndex={athlete ? -1 : 0}
           onKeyDown={onNameKeyDown}
           onClick={() => onAssign(lane)}
@@ -762,9 +1026,6 @@ function LaneRow({
           <span className="block font-medium">
             {athlete ? displayName(athlete, nameOrder) : "— assign —"}
           </span>
-          {/* A lane somebody timed without saying who was in it. The row is
-              here because a watch is, so the time is safe — what's missing is
-              the name, and this is the desk where it gets put right. */}
           {seed && !athlete && (
             <span className="block text-xs text-amber-700 dark:text-amber-400">
               {timed.length > 0
@@ -787,23 +1048,11 @@ function LaneRow({
               <span className="text-xs text-slate-400">—</span>
             )}
 
-          {/* A stopwatch that is still going.
-
-              The desk can see the race it is watching, so the number itself is
-              not the point — what it answers is which lanes are actually being
-              timed, and, once a heat is long over, which timer is still
-              holding a clock they forgot to stop. That one is invisible
-              otherwise: the lane simply never completes and nobody knows why.
-
-              Counted from the server's clock, which is why the phone's start
-              was translated onto it on the way in. Seconds only, no
-              hundredths — a digit that only refreshes once a second doesn't
-              read as precision, it reads as a typo, so it's dropped while
-              this is still counting up. */}
+          {/* A stopwatch that is still going. */}
           {running.map((a) => (
             <span
-              key={a.id}
-              title={`Timer ${a.submittedBy} is still timing this lane`}
+              key={`${a.deviceId}:${a.slot}`}
+              title={`Timer ${a.deviceId} is still timing this lane`}
               className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-amber-900 dark:bg-amber-950 dark:text-amber-200"
             >
               <span aria-hidden className="text-[0.6rem]">
@@ -814,16 +1063,11 @@ function LaneRow({
               })}
             </span>
           ))}
-          {/* A stopwatch that's been stopped but hasn't submitted yet.
-              Frozen, not ticking — its `stoppedAt` already says the elapsed
-              time, to full precision, and nothing about it will change until
-              the submit lands and gives it a real `timeMs`. Distinct from a
-              counted watch below so the desk can see this isn't a time yet
-              (and can't sign the lane off OK on the strength of it). */}
+          {/* A stopwatch that's been stopped but hasn't submitted yet. */}
           {stopped.map((a) => (
             <span
-              key={a.id}
-              title={`Timer ${a.submittedBy} stopped their watch — waiting for it to submit`}
+              key={`${a.deviceId}:${a.slot}`}
+              title={`Timer ${a.deviceId} stopped their watch — waiting for it to submit`}
               className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-300"
             >
               <span aria-hidden className="text-[0.6rem]">
@@ -834,24 +1078,14 @@ function LaneRow({
               )}
             </span>
           ))}
-          {/* Each watch with a way to drop it.
-
-              This is the desk's real power over a time, and it replaced a
-              number typed onto the call that silently outranked everything.
-              Throwing out the reading you don't believe says which one you
-              didn't believe; overriding it said nothing at all. */}
+          {/* Each watch with a way to drop it. */}
           {timed.map((w) => {
-            // Which watches actually made the number. Everything is kept and
-            // everything is shown — a coach's stopwatch is still evidence —
-            // but a chip that fed the time has to look different from one
-            // that was outranked, or the desk is reading five numbers and
-            // guessing which three it is being asked to accept.
             const counted = derived !== null && w.role === derived.from;
             return (
               <span
-                key={w.id}
+                key={`${w.deviceId}:${w.slot}`}
                 title={
-                  `${ROLE_LABEL[w.role]}${w.userId ? "" : ` ${w.submittedBy}`}` +
+                  `${ROLE_LABEL[w.role]}` +
                   (fromStopwatch(w) ? " · off a stopwatch" : " · typed in") +
                   (counted ? "" : " · not counted, outranked")
                 }
@@ -872,13 +1106,13 @@ function LaneRow({
                   disabled={closed}
                   tabIndex={-1}
                   onClick={() =>
-                    seed &&
                     !closed &&
-                    send({
-                      kind: "drop-watch",
-                      meetId: detail.meet.id,
-                      swimId: seed.id,
-                      timerId: w.submittedBy,
+                    removeWatch({
+                      eventId: w.eventId,
+                      heat: w.heat,
+                      lane: w.lane,
+                      deviceId: w.deviceId,
+                      slot: w.slot,
                     })
                   }
                   className="text-red-600 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
@@ -891,16 +1125,6 @@ function LaneRow({
         </span>
       </td>
 
-      {/* Always a box, never a label that turns into one.
-
-          The desk's job on every row is the same — read the time, change it if
-          it's wrong — and an Edit button made the second of those a different
-          mode to enter. A box that already holds the number is one tap
-          shorter and reads the same whether or not you're about to touch it.
-
-          Its colour is the lane's timing, which the number alone can't say:
-          blank-and-grey is nobody covering this lane, amber is watches running
-          or some in, green is the timing table done. */}
       <td className="py-2 pr-2">
         <TextInput
           ref={(el) => registerField(lane, "time", el)}
@@ -928,17 +1152,11 @@ function LaneRow({
         )}
       </td>
 
-      {/* Status is how the lane is signed off, not a separate mark made
-          beforehand. Tapping one accepts the swim as that — which is the act
-          the desk came to the row to perform, in one tap rather than two. */}
       <td className="py-2 pr-2">
         <div className="flex flex-wrap items-center gap-1">
           {STATUSES.map((status) => {
             const current = result?.status ?? "OK";
             const chosen = signedOff && current === status;
-            // OK asserts a real time was recorded — a DQ or an NS doesn't
-            // need one, so only OK is gated on a watch (or a typed time)
-            // actually landing first.
             const needsTime = status === "OK" && !accepted;
             return (
               <button
@@ -968,9 +1186,6 @@ function LaneRow({
               </button>
             );
           })}
-          {/* Doesn't count towards scoring or placing, but the time still
-              stands — so this is separate from OK/DQ/NS rather than a fourth
-              one of them. */}
           <button
             type="button"
             disabled={idle || closed}

@@ -7,7 +7,7 @@ import {
   eventName,
   isEligible,
   athleteName,
-  type MeetDetail,
+  type MeetManifest,
 } from "~/types/meet";
 import { type NameOrder } from "~/types/preferences";
 import { type Enrollment } from "~/types/team";
@@ -27,7 +27,7 @@ interface Candidate {
  * swim while walking up behind the blocks.
  */
 export function LaneAssignSheet({
-  detail,
+  meet,
   roster,
   enrollments,
   nameOrder,
@@ -37,7 +37,7 @@ export function LaneAssignSheet({
   onAssign,
   onClose,
 }: {
-  detail: MeetDetail;
+  meet: MeetManifest;
   /** This meet's season roster — anyone off it can't be entered. */
   roster: Athlete[];
   /** Their year and squad this season, keyed by athlete id. */
@@ -53,36 +53,35 @@ export function LaneAssignSheet({
   const [search, setSearch] = useState("");
   const listRef = useRef<HTMLUListElement>(null);
 
-  const event = detail.events.find((e) => e.id === eventId);
-
-  const teamById = useMemo(
-    () => new Map(detail.teams.map((t) => [t.id, t] as const)),
-    [detail.teams],
-  );
+  const event = meet.events[eventId];
+  const swims = useMemo(() => Object.values(meet.swims), [meet.swims]);
+  const watches = useMemo(() => Object.values(meet.watches), [meet.watches]);
 
   /** Whichever team the meet's lane split says this lane belongs to, if any. */
   const laneTeamId = useMemo(() => {
     for (const [teamId, lanes] of Object.entries(
-      detail.meet.laneAssignments ?? {},
+      meet.details.laneAssignments ?? {},
     )) {
       if (lanes.includes(lane)) return teamId;
     }
     return undefined;
-  }, [detail.meet.laneAssignments, lane]);
+  }, [meet.details.laneAssignments, lane]);
 
   const candidates = useMemo<Candidate[]>(() => {
     // Where everybody in this event already sits, so the picker can say
     // "already in heat 2, lane 4" rather than silently moving them.
     const seats = new Map<string, { heatNumber: number; lane: number }>();
-    for (const seed of swimsForEvent(detail, eventId)) {
-      seats.set(seed.athleteId, { heatNumber: seed.heat, lane: seed.lane });
+    for (const seed of swimsForEvent({ swims }, eventId)) {
+      if (seed.athleteId) {
+        seats.set(seed.athleteId, { heatNumber: seed.heat, lane: seed.lane });
+      }
     }
 
     // Anyone whose swim in this event already has a time. Moving them would
     // move the time with them.
     const swum = new Set(
-      swimsForEvent(detail, eventId)
-        .filter((seed) => swimTime(detail, seed.id) !== null)
+      swimsForEvent({ swims }, eventId)
+        .filter((seed) => swimTime({ swims, watches }, seed) !== null)
         .map((seed) => seed.athleteId),
     );
 
@@ -119,7 +118,8 @@ export function LaneAssignSheet({
   }, [
     roster,
     nameOrder,
-    detail,
+    swims,
+    watches,
     eventId,
     event,
     search,
@@ -204,8 +204,8 @@ export function LaneAssignSheet({
                   </span>
                   <span className="block text-xs text-slate-500 dark:text-slate-400">
                     {athlete.gender}
-                    {teamById.get(enrollments.get(athlete.id)?.teamId ?? "") &&
-                      ` · ${teamById.get(enrollments.get(athlete.id)!.teamId)!.name}`}
+                    {meet.teams[enrollments.get(athlete.id)?.teamId ?? ""] &&
+                      ` · ${meet.teams[enrollments.get(athlete.id)!.teamId].name}`}
                     {enrollments.get(athlete.id)?.year &&
                       ` · ${enrollments.get(athlete.id)?.year}`}
                     {enrollments.get(athlete.id)?.squad &&

@@ -17,7 +17,6 @@ import {
   appBaseUrl,
   currentUser,
   requireDb,
-  resolveUser,
   type SyncEnv,
 } from "~/lib/api.server";
 import { addMeetAdmin, meetAdmins, removeMeetAdmin } from "~/lib/admins.server";
@@ -27,8 +26,14 @@ import { createInvite, inviteUser, supersedeInvites } from "~/lib/auth.server";
 import { parseContact } from "~/lib/identity";
 import { revealsCodes, sendMeetInvite } from "~/lib/notify.server";
 import { canEditMeet, type MeetFacts } from "~/lib/access";
+import { teamsCoachedBy } from "~/lib/coaches.server";
 import { deleteMeet, getMeet, updateMeet } from "~/lib/meets.server";
-import { getTeam } from "~/lib/teams.server";
+import {
+  getTeam,
+  listSeasons,
+  roster as teamRoster,
+  seasonForDate,
+} from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
 import { useMeet } from "./meets2";
 import {
@@ -65,10 +70,11 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
   const rawUser = await currentUser(request, env);
+  const userId = rawUser?.id ?? null;
   const meetId = params.meetId!;
 
-  const [user, admins, grant, meet] = await Promise.all([
-    resolveUser(db, rawUser, request),
+  const [coachedTeamIds, admins, grant, meet] = await Promise.all([
+    userId ? teamsCoachedBy(db, userId) : [],
     meetAdmins(db, meetId),
     // Whether a sheet is live and when it dies — never the token itself.
     // That is handed over exactly once, by the action that mints it.
@@ -83,7 +89,8 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     : [];
 
   return {
-    user,
+    userId,
+    coachedTeamIds,
     meet,
     admins,
     grant,
@@ -169,8 +176,8 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     currentUser(request, env),
     getMeet(db, meetId),
   ]);
-  const user = await resolveUser(db, rawUser, request);
-  if (!meet || !canEditMeet({ meet, user }) || !user.userId) {
+  const userId = rawUser?.id ?? null;
+  if (!meet || userId == null || !canEditMeet({ meet, userId })) {
     throw new Response("Whoever is running this meet decides that.", {
       status: 403,
     });
@@ -178,7 +185,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   // Who is doing it, recorded against the rows that remember who let somebody
   // in. Pulled out here because `canEditMeet` is admin-only, which nobody
   // signed out can be — so past this line there is always somebody to name.
-  const actor = user.userId;
+  const actor = userId;
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -191,15 +198,40 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   }
 
   /**
-   * Who's racing.
-   *
-   * The whole list every time, because that is what `updateMeet` writes: it
-   * replaces `meet_teams` rather than diffing it, so a patch describing only
-   * the change would need a second place that knew how to apply one.
+   * Who's racing, kept in step with the meet's own Durable Object — D1's
+   * `meet_teams` is still the record of *which* teams, but the DO needs
+   * each one's roster copied in the moment it joins (`addTeam`) and out
+   * the moment it leaves (`removeTeam`, which refuses once anything's
+   * been timed against one of that team's swimmers). Removals go first
+   * and have to all succeed before anything else changes: a team that
+   * can't be dropped means nothing here should be, not just that team.
+   * `updateMeet` still gets the whole list rather than a diff — that's
+   * what it writes either way, since it replaces `meet_teams` outright.
    */
   if (intent === "teams") {
     const teamIds = form.getAll("teamId").map(String).filter(Boolean);
     const host = String(form.get("hostTeamId") ?? "");
+    const added = teamIds.filter((id) => !meet.teamIds.includes(id));
+    const removed = meet.teamIds.filter((id) => !teamIds.includes(id));
+
+    const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
+
+    for (const teamId of removed) {
+      const result = await stub.removeTeam(teamId);
+      if (!result.ok) return { ok: false, error: result.reason };
+    }
+
+    for (const teamId of added) {
+      const [team, seasons] = await Promise.all([
+        getTeam(db, teamId),
+        listSeasons(db, teamId),
+      ]);
+      if (!team) continue;
+      const season = seasonForDate(seasons, team.currentSeasonId, meet.date);
+      const rosterEntries = await teamRoster(db, teamId, season?.id);
+      await stub.addTeam(team, rosterEntries.map((e) => e.athlete));
+    }
+
     await updateMeet(db, meetId, {
       teamIds,
       // A host that isn't racing isn't the host, whatever the form said.
@@ -344,11 +376,12 @@ export async function clientAction({
 }
 
 export default function MeetInfo({ loaderData }: Route.ComponentProps) {
-  const { user, meet, admins, grant, teams, hostTeamId } = loaderData;
+  const { userId, coachedTeamIds, meet, admins, grant, teams, hostTeamId } =
+    loaderData;
   const { details } = useMeet();
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const mayEdit = canEditMeet({ meet: meet ?? EMPTY_MEET_FACTS, user });
+  const mayEdit = canEditMeet({ meet: meet ?? EMPTY_MEET_FACTS, userId });
 
   return (
     <div className="space-y-4">
@@ -391,7 +424,7 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
         teams={teams}
         hostTeamId={hostTeamId}
         canEdit={mayEdit}
-        coachOf={user.coachOf}
+        coachOf={coachedTeamIds}
       />
 
       {editing && <SeedingScoringEditor details={details} teams={teams} />}
@@ -451,25 +484,29 @@ function TeamsCard({
   canEdit: boolean;
   coachOf: string[];
 }) {
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const error = fetcher.data?.ok === false ? fetcher.data.error : null;
 
   return (
-    <MeetTeams
-      teams={teams}
-      hostTeamId={hostTeamId}
-      canEdit={canEdit}
-      coachOf={coachOf}
-      saving={fetcher.state !== "idle"}
-      onChange={({ teamIds, hostTeamId }) => {
-        const form = new FormData();
-        form.set("intent", "teams");
-        form.set("hostTeamId", hostTeamId);
-        // Repeated rather than joined: `getAll` on the other side needs no
-        // separator nobody can put in a team id.
-        for (const id of teamIds) form.append("teamId", id);
-        fetcher.submit(form, { method: "post" });
-      }}
-    />
+    <div className="space-y-2">
+      {error && <Banner tone="error">{error}</Banner>}
+      <MeetTeams
+        teams={teams}
+        hostTeamId={hostTeamId}
+        canEdit={canEdit}
+        coachOf={coachOf}
+        saving={fetcher.state !== "idle"}
+        onChange={({ teamIds, hostTeamId }) => {
+          const form = new FormData();
+          form.set("intent", "teams");
+          form.set("hostTeamId", hostTeamId);
+          // Repeated rather than joined: `getAll` on the other side needs no
+          // separator nobody can put in a team id.
+          for (const id of teamIds) form.append("teamId", id);
+          fetcher.submit(form, { method: "post" });
+        }}
+      />
+    </div>
   );
 }
 
