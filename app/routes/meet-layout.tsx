@@ -84,6 +84,7 @@ export default function MeetRootLayout() {
     { to: `/meets/${meet.id}/splits`, label: "Splits", icon: "⏱️" },
     { to: `/meets/${meet.id}/results`, label: "Results", icon: "🏅" },
   ];
+  const isTimingRoute = location.pathname.includes("/timer");
 
   const status: { text: string; tone: string } | null =
     navigation.state !== "idle"
@@ -97,49 +98,51 @@ export default function MeetRootLayout() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <header className="sticky top-0 z-30 h-[var(--app-chrome-top)] border-b border-slate-200 bg-white/95 pt-[env(safe-area-inset-top)] backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
-        <div
-          className={`mx-auto grid h-full items-center gap-3 px-4 ${
-            toggleGroup
-              ? "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"
-              : "grid-cols-[minmax(0,1fr)_auto]"
-          } "max-w-none"`}
-        >
-          <div className="min-w-0">
-            <h1 className="truncate text-base font-bold leading-tight">
-              {meet.name}
-            </h1>
-            {subtitle && (
-              <p className="truncate text-xs text-slate-500 dark:text-slate-400">
-                {subtitle}
-              </p>
-            )}
-          </div>
-
-          {toggleGroup && (
-            <div className="justify-self-center">
-              <HeaderToggles
-                label={toggleGroup.label}
-                options={toggleGroup.options}
-              />
+      {!isTimingRoute && (
+        <header className="sticky top-0 z-30 h-[var(--app-chrome-top)] border-b border-slate-200 bg-white/95 pt-[env(safe-area-inset-top)] backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
+          <div
+            className={`mx-auto grid h-full items-center gap-3 px-4 ${
+              toggleGroup
+                ? "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"
+                : "grid-cols-[minmax(0,1fr)_auto]"
+            } "max-w-none"`}
+          >
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-bold leading-tight">
+                {meet.name}
+              </h1>
+              {subtitle && (
+                <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                  {subtitle}
+                </p>
+              )}
             </div>
-          )}
 
-          {/* Status and the account control share the right-hand cell. The
+            {toggleGroup && (
+              <div className="justify-self-center">
+                <HeaderToggles
+                  label={toggleGroup.label}
+                  options={toggleGroup.options}
+                />
+              </div>
+            )}
+
+            {/* Status and the account control share the right-hand cell. The
               chip is about what the app is doing; the circle is about the
               person. */}
-          <div className="flex items-center gap-2 justify-self-end">
-            {status && (
-              <span
-                className={`rounded-full px-2 py-1 text-xs font-semibold ${status.tone}`}
-              >
-                {status.text}
-              </span>
-            )}
-            <AccountMenu />
+            <div className="flex items-center gap-2 justify-self-end">
+              {status && (
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${status.tone}`}
+                >
+                  {status.text}
+                </span>
+              )}
+              <AccountMenu />
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       {/* Bottom padding clears the fixed tab bar, including the iOS home bar.
           The full-width screens opt out of the centered column so their own
@@ -152,33 +155,35 @@ export default function MeetRootLayout() {
         <Outlet />
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] dark:border-slate-800 dark:bg-slate-900">
-        <div className="mx-auto flex h-[var(--app-nav-h)] max-w-3xl">
-          {tabs.map((tab) => {
-            // The back arrow points at the meet list, which would otherwise
-            // light up as the active tab while you're inside a meet.
-            const isBackLink = tab.to === "/meets";
-            return (
-              <NavLink
-                key={tab.to}
-                to={tab.to}
-                className={({ isActive }) =>
-                  `flex flex-1 touch-manipulation flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-colors ${
-                    isActive && !isBackLink
-                      ? "text-blue-600 dark:text-blue-400"
-                      : "text-slate-500 dark:text-slate-400"
-                  }`
-                }
-              >
-                <span aria-hidden className="text-xl leading-none">
-                  {tab.icon}
-                </span>
-                {tab.label}
-              </NavLink>
-            );
-          })}
-        </div>
-      </nav>
+      {!isTimingRoute && (
+        <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] dark:border-slate-800 dark:bg-slate-900">
+          <div className="mx-auto flex h-[var(--app-nav-h)] max-w-3xl">
+            {tabs.map((tab) => {
+              // The back arrow points at the meet list, which would otherwise
+              // light up as the active tab while you're inside a meet.
+              const isBackLink = tab.to === "/meets";
+              return (
+                <NavLink
+                  key={tab.to}
+                  to={tab.to}
+                  className={({ isActive }) =>
+                    `flex flex-1 touch-manipulation flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-colors ${
+                      isActive && !isBackLink
+                        ? "text-blue-600 dark:text-blue-400"
+                        : "text-slate-500 dark:text-slate-400"
+                    }`
+                  }
+                >
+                  <span aria-hidden className="text-xl leading-none">
+                    {tab.icon}
+                  </span>
+                  {tab.label}
+                </NavLink>
+              );
+            })}
+          </div>
+        </nav>
+      )}
     </div>
   );
 }
