@@ -42,6 +42,7 @@ import type {
   WatchSlotKey,
   SwimKey,
   MeetManifest,
+  MeetAthlete,
   Entry,
   EntryKey,
 } from "~/types/meet";
@@ -227,7 +228,7 @@ interface LocalAthleteRow {
   is_walkup: number;
 }
 
-function athleteFromLocalRow(row: LocalAthleteRow): Athlete {
+function athleteFromLocalRow(row: LocalAthleteRow): MeetAthlete {
   return {
     id: row.id,
     firstName: row.first_name,
@@ -235,6 +236,7 @@ function athleteFromLocalRow(row: LocalAthleteRow): Athlete {
     gender: row.gender === "M" ? "M" : "F",
     birthDate: row.birth_date ?? undefined,
     userId: row.user_id ?? undefined,
+    teamId: row.team_id,
   };
 }
 
@@ -431,7 +433,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       .exec<LocalAthleteRow>("SELECT * FROM athletes")
       .toArray()
       .map(athleteFromLocalRow)
-      .reduce<Record<string, Athlete>>((record, athlete) => {
+      .reduce<Record<string, MeetAthlete>>((record, athlete) => {
         record[athlete.id] = athlete;
         return record;
       }, {});
@@ -596,7 +598,11 @@ export class MeetDurableObject extends DurableObject<Env> {
         athlete.birthDate ?? null,
         athlete.userId ?? null,
       );
-      this.broadcast({ type: "ATHLETE", athlete, isDelete: false });
+      this.broadcast({
+        type: "ATHLETE",
+        athlete: { ...athlete, teamId: team.id },
+        isDelete: false,
+      });
     }
   }
 
@@ -1338,7 +1344,7 @@ export class MeetDurableObject extends DurableObject<Env> {
      * duplicate (see the timer's seed cookie). Server-minted otherwise.
      */
     id?: string;
-  }): Promise<Athlete> {
+  }): Promise<MeetAthlete> {
     const id = input.id ?? generateId();
     const gender: Gender = input.gender ?? "F";
     this.ctx.storage.sql.exec(
@@ -1356,11 +1362,12 @@ export class MeetDurableObject extends DurableObject<Env> {
       input.teamId,
     );
 
-    const athlete: Athlete = {
+    const athlete: MeetAthlete = {
       id,
       firstName: input.firstName.trim().slice(0, 60),
       lastName: input.lastName.trim().slice(0, 60),
       gender,
+      teamId: input.teamId,
     };
     this.broadcast({ type: "ATHLETE", athlete, isDelete: false });
     return athlete;

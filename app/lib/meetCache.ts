@@ -1,10 +1,10 @@
-import type { Athlete } from "~/types/athlete";
 import {
   toEntryKey,
   toSwimKey,
   toWatchKey,
   type Entry,
   type Event,
+  type MeetAthlete,
   type MeetDetails,
   type MeetManifest,
   type Swim,
@@ -29,7 +29,7 @@ export type LiveSocketMessage =
     }
   | {
       type: "ATHLETE";
-      athlete: Athlete;
+      athlete: MeetAthlete;
       isDelete: boolean;
     }
   | {

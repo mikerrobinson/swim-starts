@@ -46,6 +46,7 @@ import {
   isDiving,
   type Event,
   type LaneLayout,
+  type MeetAthlete,
   type Swim,
   type SwimSlot,
   type Watch,
@@ -53,7 +54,6 @@ import {
 } from "~/types/meet";
 import type { Meet } from "~/types/meet";
 import { type NameOrder } from "~/types/preferences";
-import type { Athlete } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Splits · Swim Starts" }];
@@ -804,7 +804,7 @@ function DivingPanel({
   const divers = Object.values(meet.entries)
     .filter((e) => e.eventId === event.id)
     .map((e) => meet.athletes[e.athleteId])
-    .filter((a): a is Athlete => !!a)
+    .filter((a): a is MeetAthlete => !!a)
     .sort(byAthlete(nameOrder));
 
   return (

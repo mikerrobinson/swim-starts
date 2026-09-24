@@ -325,6 +325,18 @@ export function meetDetailsFrom(meet: Meet): MeetDetails {
   };
 }
 
+/**
+ * An athlete as this meet's Durable Object knows them: `Athlete` plus which
+ * team they're racing for *at this meet* — `team_id`, local to the DO's own
+ * `athletes` row (`addTeam`/`addWalkupAthlete` set it) and deliberately not
+ * part of `Athlete` itself, which carries no team of its own (see
+ * `types/athlete.ts`). `addTeam` copies a whole roster in, so this is every
+ * swimmer racing this meet, not only whoever a swim or entry already names.
+ */
+export interface MeetAthlete extends Athlete {
+  teamId: string;
+}
+
 export interface MeetManifest {
   id: string;
   name: string;
@@ -336,7 +348,7 @@ export interface MeetManifest {
   entries: Record<EntryKey, Entry>;
   swims: Record<SwimKey, Swim>;
   watches: Record<string, Watch>;
-  athletes: Record<string, Athlete>;
+  athletes: Record<string, MeetAthlete>;
   teams: Record<string, Team>;
 }
 
