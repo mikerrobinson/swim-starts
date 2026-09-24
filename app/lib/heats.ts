@@ -1,5 +1,5 @@
 import { generateId } from "./id";
-import { eventTouched, swimsForEvent, type TimingRows } from "./timing";
+import { eventStarted, swimsForEvent, type TimingRows } from "./timing";
 import type { LaneAssignments, LaneCount, Swim } from "~/types/meet";
 
 /** Name/team to stamp on a newly created swim — see `Swim.athleteName`. */
@@ -213,7 +213,7 @@ export function reseedEvent(
   displayOf: DisplayOf = blankDisplay,
   exhibitionOf: ExhibitionOf = noExhibition,
 ): Swim[] | null {
-  if (eventTouched(rows, eventId)) return null;
+  if (eventStarted(rows, eventId)) return null;
   return seedEvent(
     rows,
     meetId,

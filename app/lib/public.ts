@@ -20,8 +20,8 @@
  * depend on which route is asking.
  */
 
-import { eventClosed, swimTime, type SwimTime } from "./timing";
-import { athleteName, eventName, isDiving } from "~/types/meet";
+import { swimsComplete, swimTime, type SwimTime } from "./timing";
+import { athleteName, eventName, getEventSwims, isDiving } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
 import type {
   Meet,
@@ -260,7 +260,9 @@ export function meetResults(
       stroke: event.stroke,
       gender: event.gender,
       placings: isDiving(event) ? [] : placings,
-      official: isDiving(event) ? false : eventClosed(detail, event.id),
+      official: isDiving(event)
+        ? false
+        : swimsComplete(detail.swims.filter((s) => s.eventId === event.id)),
     };
   });
 }

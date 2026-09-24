@@ -4,33 +4,26 @@
  * say which cookies are now safe to clear.
  *
  * Safe to call from a `loader` or an `action` alike — every underlying RPC
- * (`seat`, `setExhibition`, `recordWatch`, `dropWatch`, `addWalkupAthlete`)
- * is an upsert (or, for `recordWatch`, an append the caller has already
- * deduplicated against current state), so applying the same cookie twice
- * converges rather than duplicates. Diffing against `detail`'s current state
- * isn't needed for that safety; it's here so a cookie that's already fully
- * reflected server-side doesn't re-fire a write and a broadcast on every
- * navigation that revisits this path.
+ * (`upsertSwim`, `upsertWatch`, `deleteWatch`, `addWalkupAthlete`) is an
+ * upsert, so applying the same cookie twice converges rather than
+ * duplicates. Diffing against the manifest's current state isn't needed for
+ * that safety; it's here so a cookie that's already fully reflected
+ * server-side doesn't re-fire a write and a broadcast on every navigation
+ * that revisits this path.
  */
 
 import { splitTypedName } from "./names";
-import { putAthlete } from "./athletes.server";
 import type { MeetDurableObject } from "./meet-do.server";
 import { currentWatches } from "./timing";
 import {
   decodeSeedRecord,
   parseSeedCookieName,
   seedCookieName,
+  type LaneRef,
   type SeedRecord,
   type WatchSlot,
 } from "./seed-cookie";
-import {
-  TIMERS_PER_LANE,
-  type LaneRef,
-  type MeetDetail,
-  type Swim,
-  type Watch,
-} from "~/types/meet";
+import { TIMERS_PER_LANE, toSwimKey, type MeetManifest, type Swim } from "~/types/meet";
 
 function readSeedCookies(
   request: Request,
@@ -61,10 +54,9 @@ export interface ApplySeedCookiesResult {
 }
 
 export async function applySeedCookies(
-  db: D1Database,
   stub: DurableObjectStub<MeetDurableObject>,
-  detail: MeetDetail,
-  timerId: string,
+  manifest: MeetManifest,
+  deviceId: string,
   request: Request,
   receivedAt = Date.now(),
 ): Promise<ApplySeedCookiesResult> {
@@ -73,54 +65,44 @@ export async function applySeedCookies(
   const cleared: string[] = [];
 
   for (const { at, record } of pending) {
-    const event = detail.events.find((e) => e.position === at.event - 1);
+    const event = Object.values(manifest.events).find(
+      (e) => e.position === at.event - 1,
+    );
     // A lane that no longer resolves — the meet was reconfigured while this
     // device was offline — is left pending rather than silently dropped;
     // there's nowhere honest to file its evidence yet.
-    if (!event || at.lane > detail.meet.laneCount) continue;
+    if (!event || at.lane > manifest.details.laneCount) continue;
 
-    const existing = detail.swims.find(
-      (s) => s.eventId === event.id && s.heat === at.heat && s.lane === at.lane,
-    );
-    const swim =
-      existing ??
-      (await stub.ensureLane({
-        meetId: detail.meet.id,
-        eventId: event.id,
-        heat: at.heat,
-        lane: at.lane,
-      }));
-
+    const slot = { eventId: event.id, heat: at.heat, lane: at.lane };
+    const existing: Swim | undefined = manifest.swims[toSwimKey(slot)];
+    let swim: Swim = existing ?? { ...slot, exhibition: false };
     let changed = false;
 
-    if (record.athleteId && record.athleteId !== swim.athleteId) {
-      if (record.team) await createWalkup(db, stub, detail, record);
-      await stub.seat({
-        meetId: detail.meet.id,
-        eventId: event.id,
-        heat: at.heat,
-        lane: at.lane,
+    if (record.athleteId && record.athleteId !== (swim.athleteId ?? "")) {
+      if (record.team) await createWalkup(stub, manifest, record);
+      const display = await stub.resolveAthleteDisplay(record.athleteId);
+      swim = {
+        ...swim,
         athleteId: record.athleteId,
-        swimId: swim.id,
-      });
+        athleteName: display.name,
+        athleteTeam: display.team,
+      };
       changed = true;
     }
 
     if (record.exhibition !== Boolean(swim.exhibition)) {
-      await stub.setExhibition({
-        meetId: detail.meet.id,
-        swimId: swim.id,
-        exhibition: record.exhibition,
-      });
+      swim = { ...swim, exhibition: record.exhibition };
       changed = true;
     }
+
+    if (changed) await stub.upsertSwim(manifest.id, swim);
 
     if (
       await applyWatches(
         stub,
-        detail,
-        swim,
-        timerId,
+        manifest,
+        slot,
+        deviceId,
         record.watches,
         receivedAt,
       )
@@ -141,29 +123,23 @@ export async function applySeedCookies(
  * `seed-cookie.ts`'s `SeedRecord.gender`.
  */
 async function createWalkup(
-  db: D1Database,
   stub: DurableObjectStub<MeetDurableObject>,
-  detail: MeetDetail,
+  manifest: MeetManifest,
   record: SeedRecord,
 ): Promise<void> {
   const { firstName, lastName } = splitTypedName(record.name);
   // A client running before the toggle existed sends none — fall back rather
   // than refuse the walk-up over a field it didn't know to send.
   const gender = record.gender ?? "F";
-  const team = detail.teams.find((t) => t.code === record.team);
-  if (team) {
-    await stub.addWalkupAthlete({
-      meetId: detail.meet.id,
-      teamId: team.id,
-      firstName,
-      lastName,
-      gender,
-      id: record.athleteId,
-    });
-  } else {
-    // No team to enrol into — mint the person anyway, unenrolled.
-    await putAthlete(db, { id: record.athleteId, firstName, lastName, gender });
-  }
+  const team = Object.values(manifest.teams).find((t) => t.code === record.team);
+  if (!team) return; // No team named — nothing to enrol this walk-up into.
+  await stub.addWalkupAthlete({
+    teamId: team.id,
+    firstName,
+    lastName,
+    gender,
+    id: record.athleteId,
+  });
 }
 
 /**
@@ -177,40 +153,32 @@ async function createWalkup(
  * is a re-time rather than a continuation — the previous reading belongs to
  * an attempt that's being redone, so it's retired before the new one lands,
  * rather than merged with it the way an in-progress start/stop update is.
- *
- * `slot` is a real field now (`Watch.slot`), not a suffix baked into an id —
- * so unlike the old `slotTimerId`/`watchSlot`/`fromDevice` trio this needs
- * only a plain equality check against `timerId`, and `recordWatch`/
- * `dropWatch` take the slot as its own argument.
  */
 async function applyWatches(
   stub: DurableObjectStub<MeetDurableObject>,
-  detail: MeetDetail,
-  swim: Swim,
-  timerId: string,
+  manifest: MeetManifest,
+  slot: { eventId: string; heat: number; lane: number },
+  deviceId: string,
   watches: WatchSlot[],
   receivedAt: number,
 ): Promise<boolean> {
-  const persisted = new Map<number, Watch>();
-  for (const w of currentWatches(detail, swim.id)) {
-    if (w.submittedBy === timerId) persisted.set(w.slot, w);
-  }
+  const persisted = new Map(
+    currentWatches({ watches: Object.values(manifest.watches) }, slot)
+      .filter((w) => w.deviceId === deviceId)
+      .map((w) => [w.slot, w] as const),
+  );
 
   let changed = false;
   const cap = Math.max(...TIMERS_PER_LANE);
 
-  for (let slot = 1; slot <= cap; slot++) {
-    const wanted = slot <= watches.length ? watches[slot - 1] : null;
-    const current = persisted.get(slot);
+  for (let s = 1; s <= cap; s++) {
+    const wanted = s <= watches.length ? watches[s - 1] : null;
+    const current = persisted.get(s);
+    const key = { ...slot, deviceId, slot: s };
 
     if (!wanted) {
       if (current) {
-        await stub.dropWatch({
-          meetId: detail.meet.id,
-          swimId: swim.id,
-          timerId,
-          slot,
-        });
+        await stub.deleteWatch(manifest.id, key);
         changed = true;
       }
       continue;
@@ -221,12 +189,7 @@ async function applyWatches(
       current?.stoppedAt != null &&
       wanted.startedAt > current.stoppedAt;
     if (retimed) {
-      await stub.dropWatch({
-        meetId: detail.meet.id,
-        swimId: swim.id,
-        timerId,
-        slot,
-      });
+      await stub.deleteWatch(manifest.id, key);
     }
 
     const against = retimed ? undefined : current;
@@ -236,16 +199,15 @@ async function applyWatches(
       wanted.timeMs === (against?.timeMs ?? null);
     if (unchanged) continue;
 
-    await stub.recordWatch({
-      meetId: detail.meet.id,
-      swimId: swim.id,
-      timerId,
+    await stub.upsertWatch(manifest.id, {
+      ...slot,
+      deviceId,
+      slot: s,
       role: "timer",
-      slot,
       timeMs: wanted.timeMs ?? undefined,
-      submittedAt: receivedAt,
       startedAt: wanted.startedAt ?? undefined,
       stoppedAt: wanted.stoppedAt ?? undefined,
+      recordedAt: receivedAt,
     });
     changed = true;
   }

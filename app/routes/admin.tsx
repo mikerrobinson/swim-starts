@@ -5,9 +5,15 @@ import { Card, SectionTitle } from "~/components/ui";
 import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { canEditMeet } from "~/lib/access";
 import { getMeet } from "~/lib/meets.server";
-import { eventClosed, heatsOf } from "~/lib/timing";
-import { useMeet } from "./meets2";
-import { eventName, getSortedEvents, type Event, type Swim } from "~/types/meet";
+import { heatsOf, swimsComplete } from "~/lib/timing";
+import { useMeet } from "./meet-layout";
+import {
+  eventName,
+  getEventSwims,
+  getSortedEvents,
+  type Event,
+  type Swim,
+} from "~/types/meet";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Admin · Swim Starts" }];
@@ -82,7 +88,7 @@ export default function AdminShell() {
 
   const goToEvent = (event: Event) => {
     const heats = heatsOf({ swims }, event.id);
-    navigate(`/meets2/${meet.id}/admin/${event.position + 1}/${heats[0] ?? 1}`);
+    navigate(`/meets/${meet.id}/admin/${event.position + 1}/${heats[0] ?? 1}`);
   };
 
   return (
@@ -128,8 +134,9 @@ function EventRail({
     return counts;
   }, [meet.entries]);
 
-  const watches = Object.values(meet.watches);
-  const done = events.filter((e) => eventClosed({ swims, watches }, e.id)).length;
+  const done = events.filter((e) =>
+    swimsComplete(getEventSwims(meet, e.id)),
+  ).length;
 
   return (
     <Card className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-var(--app-chrome-top)-var(--app-chrome-bottom)-2rem)] lg:overflow-y-auto">
@@ -139,7 +146,7 @@ function EventRail({
 
       <ol className="-mx-2">
         {events.map((event, index) => {
-          const official = eventClosed({ swims, watches }, event.id);
+          const official = swimsComplete(getEventSwims(meet, event.id));
           const open = event.position + 1 === openEventNo;
           const entered = entriesByEvent.get(event.id) ?? 0;
           return (

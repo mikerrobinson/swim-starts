@@ -14,12 +14,12 @@
  * for why that GET is allowed to mutate.
  */
 
-import type { LaneRef } from "~/types/meet";
 import { A_WEEK } from "./cookies";
 import {
   encodeSeedRecord,
   parseSeedCookieName,
   seedCookieName,
+  type LaneRef,
   type SeedRecord,
 } from "./seed-cookie";
 

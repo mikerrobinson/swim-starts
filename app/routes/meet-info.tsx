@@ -35,7 +35,7 @@ import {
   seasonForDate,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meets2";
+import { useMeet } from "./meet-layout";
 import {
   courseLabel,
   formatNumberList,

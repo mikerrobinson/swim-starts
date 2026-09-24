@@ -377,7 +377,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   }
 
   /**
-   * The full client-side `MeetManifest` — everything `meets2.tsx`'s loader
+   * The full client-side `MeetManifest` — everything `meet-layout.tsx`'s loader
    * needs for a meet that isn't `status: "complete"`. Plain `SELECT`s
    * against this DO's own tables plus the `meta` scalars — every one of
    * them, including `athletes`, is this DO's own durable storage now, so
@@ -1133,9 +1133,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     }
 
     // The `LiveSocketMessage` shape (`meetCache`'s), not the old `Write`
-    // one — nothing still listening for the old one cares about entries
-    // specifically (see `useMeetChanges`, which ignores message content
-    // entirely), so there's no reason to send both.
+    // one — nothing still listens for the old one at all, so there's no
+    // reason to send both.
     this.broadcast({
       type: "ENTRY",
       entry: {
@@ -1428,7 +1427,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    * itself.
    *
    * `LiveSocketMessage` only now — every write method broadcasts the same
-   * shape `meetCache.applyPatch` (`meets2.tsx`'s client) already knows how
+   * shape `meetCache.applyPatch` (`meet-layout.tsx`'s client) already knows how
    * to fold onto a cached manifest. The old `MeetBroadcast` (`Write`-shaped)
    * vocabulary this used to also send is gone with the granular RPCs that
    * used to construct it.

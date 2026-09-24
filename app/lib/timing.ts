@@ -335,7 +335,7 @@ export function heatsOf(
  * swims, rearranging it would leave those pointing at a swim that no longer
  * means what it meant.
  */
-export function eventTouched(rows: TimingRows, eventId: string): boolean {
+export function eventStarted(rows: TimingRows, eventId: string): boolean {
   return (
     rows.watches.some((w) => w.eventId === eventId) ||
     rows.swims.some((s) => s.eventId === eventId && !!s.status)
@@ -346,34 +346,9 @@ export function eventTouched(rows: TimingRows, eventId: string): boolean {
  * A heat is done once every swim in it has been signed off. Derived rather
  * than stored, so "done" can never disagree with the swims underneath it.
  */
-export function heatClosed(
-  rows: TimingRows,
-  eventId: string,
-  heat: number,
-): boolean {
-  const swims = swimsForHeat(rows, eventId, heat);
+export function swimsComplete(swims: Swim[]): boolean {
   if (swims.length === 0) return false;
   return swims.every((swim) => !!swim.status);
-}
-
-/** An event is done once all of its heats are. Its results are then official. */
-export function eventClosed(rows: TimingRows, eventId: string): boolean {
-  const heats = heatsOf(rows, eventId);
-  if (heats.length === 0) return false;
-  return heats.every((heat) => heatClosed(rows, eventId, heat));
-}
-
-/** How far along a heat is, for a screen that has to show progress. */
-export function heatProgress(
-  rows: TimingRows,
-  eventId: string,
-  heat: number,
-): { signedOff: number; swims: number } {
-  const swims = swimsForHeat(rows, eventId, heat);
-  return {
-    signedOff: swims.filter((s) => !!s.status).length,
-    swims: swims.length,
-  };
 }
 
 /** How many swims have anything recorded — the meet's "times" count. */

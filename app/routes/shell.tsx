@@ -34,11 +34,10 @@ const TOP_TABS: Tab[] = [
  * bar within thumb reach rather than moving to a tab across the top.
  */
 function meetTabs(meetId: string): Tab[] {
-  // Every tab now lives under meets2.tsx's route tree — see
+  // Every tab is a child of `meet-layout.tsx`'s route tree — see
   // meet-info.tsx/entries.tsx/admin.tsx/splits-heat.tsx/results-view.tsx's
-  // own doc comments. `/meets/:meetId` itself (meet-layout.tsx) is nothing
-  // left but the redirect off it.
-  const base = `/meets2/${meetId}`;
+  // own doc comments.
+  const base = `/meets/${meetId}`;
   return [
     { to: "/meets", label: "Meets", icon: "‹" },
     { to: `${base}/info`, label: "Info", icon: "📄" },
@@ -250,7 +249,11 @@ export default function Shell() {
   ) : onSplits && openMeet ? (
     <HeaderToggles
       label="Stopwatch button layout"
-      options={layoutOptions(openMeet.laneCount, laneLayout, setLaneLayout)}
+      options={layoutOptions(
+        openMeet.details.laneCount,
+        laneLayout,
+        setLaneLayout,
+      )}
     />
   ) : onResults ? (
     <HeaderToggles
@@ -263,7 +266,7 @@ export default function Shell() {
   const subtitle = onRegistration
     ? undefined
     : openMeet
-      ? meetSubtitle(openMeet)
+      ? meetSubtitle(openMeet.details)
       : undefined;
 
   return (

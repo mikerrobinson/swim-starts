@@ -15,7 +15,7 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meets2";
+import { useMeet } from "./meet-layout";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
   byAthlete,

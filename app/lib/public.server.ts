@@ -181,7 +181,7 @@ export async function publicTeamDetail(
         })),
     })),
     // Event/entry/timing counts used to come from `meetDetail`'s D1 read.
-    // That data is the meet's own Durable Object's now (see meets2.tsx) —
+    // That data is the meet's own Durable Object's now (see meet-layout.tsx) —
     // no D1-only path to it yet, so a public team page can't show it until
     // that's wired up.
     meets: meets.map((row) =>
@@ -296,7 +296,7 @@ export async function publicAthleteDetail(
     // Used to come from every meet's D1 `entries`/`swims` rows via
     // `meetDetail`. That data lives only in each meet's own Durable Object
     // now — no cross-meet D1 read to build this from until a meet
-    // completes and its swims land in `results`. See `meets2.tsx`.
+    // completes and its swims land in `results`. See `meet-layout.tsx`.
     swims: [],
   };
 }

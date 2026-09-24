@@ -641,6 +641,13 @@ export function getHeatSwims(
     .sort((a, b) => a.lane - b.lane);
 }
 
+export function getEventSwims(meet: MeetManifest, eventId: string): Swim[] {
+  return Object.values(meet.swims)
+    .filter((s) => s.eventId === eventId)
+    .sort((a, b) => a.heat - b.heat)
+    .sort((a, b) => a.lane - b.lane);
+}
+
 // 3. Find the total number of heats in an event
 export function getTotalHeatsForEvent(
   meet: MeetManifest,

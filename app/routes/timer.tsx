@@ -4,15 +4,20 @@ import {
   Link,
   useFetcher,
   useNavigate,
-  useRevalidator,
-  useRouteLoaderData,
   type LinkProps,
 } from "react-router";
 import type { Route } from "./+types/timer";
-import type { loader as shellLoader } from "./timer-shell";
 import { Button } from "~/components/ui";
 import { SwimmerPicker } from "~/components/SwimmerPicker";
 import { formatClock, formatTime, parseTime } from "~/lib/time";
+import { requireDb, type SyncEnv } from "~/lib/api.server";
+import { getMeet } from "~/lib/meets.server";
+import {
+  getTeam,
+  listSeasons,
+  roster as teamRoster,
+  seasonForDate,
+} from "~/lib/teams.server";
 import {
   earliestAllowed,
   loadFurthest,
@@ -25,20 +30,63 @@ import {
   type TimerAthlete,
 } from "~/lib/timer";
 import { stopPath, timerCookiePath } from "~/lib/timer-path";
-import { eventName, type LaneRef as SwimKey } from "~/types/meet";
+import { currentWatches } from "~/lib/timing";
+import { eventName } from "~/types/meet";
 import { queueState, saveSeedRecord } from "~/lib/seed-queue";
 import {
   decodeSeedRecord,
   emptySeedRecord,
   encodeSeedRecord,
   seedCookieName,
+  type LaneRef,
   type SeedRecord,
 } from "~/lib/seed-cookie";
 import { applySeedCookies } from "~/lib/seed-cookie.server";
 import {
   clearSeedCookies,
-  resolveTimerRequest,
+  resolveTimerAccess,
 } from "~/lib/timer-request.server";
+import { useMeet } from "./meet-layout";
+import { useDeviceId } from "~/state/user";
+
+/**
+ * The season roster for the racing teams, and what to call athletes with no
+ * team of their own at this meet — the two things `SwimmerPicker`'s teams
+ * grouping needs that `useMeet()`'s `MeetManifest` doesn't carry (it has
+ * whoever a swim already names, not the whole season list a walk-up gets
+ * chosen from). Same D1 join every other ported screen's `meetRoster` makes.
+ */
+export async function loader({ params, context }: Route.LoaderArgs) {
+  const db = requireDb(context.cloudflare.env as SyncEnv);
+  const meetId = params.meetId!;
+  const meet = await getMeet(db, meetId);
+  if (!meet) return { roster: [], enrollments: [], ownTeam: "Home" };
+
+  const perTeam = await Promise.all(
+    meet.teamIds.map(async (teamId) => {
+      const [team, seasons] = await Promise.all([
+        getTeam(db, teamId),
+        listSeasons(db, teamId),
+      ]);
+      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
+      return teamRoster(db, teamId, season?.id);
+    }),
+  );
+  const entries = perTeam.flat();
+
+  const label = new Map(
+    (await Promise.all(meet.teamIds.map((id) => getTeam(db, id)))).map(
+      (t) => [t?.id, t?.code || t?.name] as const,
+    ),
+  );
+  const host = meet.hostTeamId ? label.get(meet.hostTeamId) : undefined;
+
+  return {
+    roster: entries.map((e) => e.athlete),
+    enrollments: entries.map((e) => e.enrollment),
+    ownTeam: host || label.get(meet.teamIds[0]) || "Home",
+  };
+}
 
 /**
  * Every write in this workspace — a seat, an exhibition flag, an armed or
@@ -50,24 +98,22 @@ import {
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
   const meetId = params.meetId!;
+  const env = context.cloudflare.env;
   const headers = new Headers();
-  const resolved = await resolveTimerRequest(
-    request,
-    context.cloudflare.env,
-    meetId,
-  );
+
+  const resolved = await resolveTimerAccess(request, env, meetId);
   if (!resolved.ok) {
     return data({ error: resolved.error }, { status: 400, headers });
   }
-
-  const { db, stub, detail, timerId, deviceCookie } = resolved.value;
+  const { deviceId, deviceCookie } = resolved.value;
   if (deviceCookie) headers.append("set-cookie", deviceCookie);
 
+  const stub = env.MEET_DO.getByName(meetId);
+  const manifest = await stub.getMeetManifest(meetId);
   const { cleared } = await applySeedCookies(
-    db,
     stub,
-    detail,
-    timerId,
+    manifest,
+    deviceId,
     request,
   );
   clearSeedCookies(headers, request, meetId, cleared);
@@ -84,7 +130,7 @@ export async function clientAction({
   const raw = formData.get("record");
   const record = typeof raw === "string" ? decodeSeedRecord(raw) : null;
   if (record) {
-    const at: SwimKey = {
+    const at: LaneRef = {
       event: Number(params.event),
       heat: Number(params.heat),
       lane: Number(params.lane),
@@ -126,9 +172,9 @@ export async function clientAction({
  * does it, with the handheld watches doing the timing and this holding what
  * they read.
  */
-export default function Timer({ params }: Route.ComponentProps) {
+export default function Timer({ params, loaderData }: Route.ComponentProps) {
   const navigate = useNavigate();
-  const revalidator = useRevalidator();
+  const meet = useMeet();
   const fetcher = useFetcher<typeof action>();
 
   /**
@@ -138,14 +184,10 @@ export default function Timer({ params }: Route.ComponentProps) {
    * lane remembered on the device, and nothing to restore on reload. The page
    * *is* the position.
    */
-  const meetId = params.meetId;
+  const meetId = params.meetId!;
   const lane = Number(params.lane);
   const eventNo = Number(params.event);
   const heatNo = Number(params.heat);
-
-  // The shell has already confirmed this exists before rendering an Outlet.
-  const snapshot =
-    useRouteLoaderData<typeof shellLoader>("routes/timer-shell")!.snapshot!;
 
   const [furthest, setFurthest] = useState(-1);
   const [picking, setPicking] = useState(false);
@@ -174,14 +216,18 @@ export default function Timer({ params }: Route.ComponentProps) {
   const [queue, setQueue] = useState(() => queueState());
   const refreshQueue = () => setQueue(queueState());
 
-  // Whatever the last revalidation (however it was triggered) or submit
-  // settled to is what this screen should be showing as still outstanding.
-  useEffect(() => {
-    if (revalidator.state === "idle") refreshQueue();
-  }, [revalidator.state]);
   useEffect(() => {
     if (fetcher.state === "idle") refreshQueue();
   }, [fetcher.state]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshQueue();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
+  const deviceId = useDeviceId();
 
   /**
    * Whether this phone is a stopwatch or a sheet, as it answered at the lane
@@ -265,10 +311,11 @@ export default function Timer({ params }: Route.ComponentProps) {
 
   /* ----------------------------------------------------------------- state */
 
-  const order = useMemo(
-    () => runningOrder(snapshot.events, snapshot.swims),
-    [snapshot],
-  );
+  const events = useMemo(() => Object.values(meet.events), [meet.events]);
+  const swims = useMemo(() => Object.values(meet.swims), [meet.swims]);
+  const watches = useMemo(() => Object.values(meet.watches), [meet.watches]);
+
+  const order = useMemo(() => runningOrder(events, swims), [events, swims]);
   /**
    * The heat this page is about, found by the numbering in its own URL.
    *
@@ -283,20 +330,37 @@ export default function Timer({ params }: Route.ComponentProps) {
 
   const floor = earliestAllowed(furthest);
 
+  /** This meet's roster, by team label — what `SwimmerPicker` groups by. */
+  const teamLabel = (teamId: string) =>
+    meet.teams[teamId]?.code || meet.teams[teamId]?.name || "";
+  const teamOf = useMemo(() => {
+    const found = new Map<string, string>();
+    for (const enrolled of loaderData.enrollments) {
+      if (!found.has(enrolled.athleteId)) {
+        found.set(enrolled.athleteId, teamLabel(enrolled.teamId));
+      }
+    }
+    return found;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaderData.enrollments, meet.teams]);
+
   const athletes = useMemo(() => {
-    const seen = new Set(snapshot.athletes.map((a) => a.id));
-    return [
-      ...snapshot.athletes,
-      ...added.filter((a) => !seen.has(a.id)),
-    ] as TimerAthlete[];
-  }, [snapshot, added]);
+    const roster: TimerAthlete[] = loaderData.roster.map((a) => ({
+      id: a.id,
+      firstName: a.firstName,
+      lastName: a.lastName,
+      team: teamOf.get(a.id) || undefined,
+    }));
+    const seen = new Set(roster.map((a) => a.id));
+    return [...roster, ...added.filter((a) => !seen.has(a.id))] as TimerAthlete[];
+  }, [loaderData.roster, teamOf, added]);
 
   const byId = useMemo(
     () => new Map(athletes.map((a) => [a.id, a])),
     [athletes],
   );
 
-  const ownTeam = snapshot.ownTeam;
+  const ownTeam = loaderData.ownTeam;
 
   /**
    * How many columns this phone is filling in — one for a stopwatch, one per
@@ -306,18 +370,16 @@ export default function Timer({ params }: Route.ComponentProps) {
    * reads the number rather than the role, so a clipboard at a meet that has
    * gone back to one watch a lane is simply a stopwatch again.
    */
-  const watches = watchCount(snapshot.meet, role);
-  const clipboard = watches > 1;
+  const watchColumns = watchCount(meet.details, role);
+  const clipboard = watchColumns > 1;
 
   /**
    * Where this screen is, as the meet numbers it — event 7, heat 1, lane 3.
    * The same three integers the seed cookie's name is built from, so what the
    * phone queues and what the person is looking at cannot disagree.
    */
-  const where: SwimKey | null =
-    stop && lane
-      ? { event: stop.event.position + 1, heat: stop.heat, lane }
-      : null;
+  const where: LaneRef | null =
+    stop && lane ? { event: stop.event.position + 1, heat: stop.heat, lane } : null;
 
   /** The swim in this lane, if anybody has said who is in it. */
   const seed = stop?.swims.find((s) => s.lane === lane);
@@ -337,16 +399,19 @@ export default function Timer({ params }: Route.ComponentProps) {
    */
   const sent = useMemo(() => {
     const times: Array<number | null> = Array.from(
-      { length: watches },
+      { length: watchColumns },
       () => null,
     );
-    if (!seed) return times;
-    for (const watch of snapshot.mine) {
-      if (watch.swimId !== seed.id || watch.timeMs === undefined) continue;
-      if (watch.slot <= watches) times[watch.slot - 1] = watch.timeMs;
+    if (!stop || !lane) return times;
+    for (const watch of currentWatches(
+      { watches },
+      { eventId: stop.event.id, heat: stop.heat, lane },
+    )) {
+      if (watch.deviceId !== deviceId || watch.timeMs === undefined) continue;
+      if (watch.slot <= watchColumns) times[watch.slot - 1] = watch.timeMs;
     }
     return times;
-  }, [snapshot, seed, watches]);
+  }, [watches, stop, lane, watchColumns, deviceId]);
 
   const alreadyTimed = sent.some((ms) => ms !== null);
   const sentLabel = sent
@@ -387,18 +452,6 @@ export default function Timer({ params }: Route.ComponentProps) {
   };
 
   /**
-   * Move to another heat by going to its page.
-   *
-   * The clock is cleared on the way, by the effect above rather than here, so
-   * that every arrival at a heat behaves the same whether it came from these
-   * arrows, from Submit, or from the back button.
-   */
-  const move = (to: number) => {
-    const target = order[Math.max(floor, Math.min(order.length - 1, to))];
-    if (target) navigate(stopPath(meetId, target, lane));
-  };
-
-  /**
    * Say who's in this lane, straight away.
    *
    * A swimmer picked from the list travels as an id the server already
@@ -415,9 +468,7 @@ export default function Timer({ params }: Route.ComponentProps) {
         ? {
             ...record,
             athleteId,
-            team:
-              snapshot.meet.teams.find((t) => t.id === newcomer.teamId)?.code ??
-              null,
+            team: meet.teams[newcomer.teamId ?? ""]?.code ?? null,
             name: `${newcomer.firstName} ${newcomer.lastName}`.trim(),
             gender: newcomer.gender,
           }
@@ -526,14 +577,48 @@ export default function Timer({ params }: Route.ComponentProps) {
    * hands, and there is no stop button coming that would ever unlock it.
    */
   const locked = running && !clipboard;
-  const inEvent = new Set(snapshot.entries[stop.event.id] ?? []);
+  const inEvent = new Set(
+    Object.values(meet.entries)
+      .filter((e) => e.eventId === stop.event.id)
+      .map((e) => e.athleteId),
+  );
 
   const alarm = queue.overflow ? "not saving — find signal" : null;
+  const nextHeat = order[stopIndex + 1];
+  const previousHeat = stopIndex > floor ? order[stopIndex - 1] : undefined;
+  const previousHeatLink =
+    !locked && previousHeat ? stopPath(meetId, previousHeat, lane) : null;
+  const nextHeatLink =
+    !locked && nextHeat ? stopPath(meetId, nextHeat, lane) : null;
 
   return (
     <main className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950">
       {/* Where we are. Small: it's context, not the job. */}
-      <EventHeader />
+      <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] dark:border-slate-800 dark:bg-slate-900">
+        <SmartLink
+          className="text-2xl font-bold"
+          to={previousHeatLink ?? "#"}
+          aria-label="Previous heat"
+        >
+          ‹
+        </SmartLink>
+        <div className="min-w-0 flex-1 text-center">
+          <p className="truncate text-sm font-bold">{eventName(stop.event)}</p>
+          <p className="text-xs text-slate-500">
+            Heat {stop.number} of {stop.of}
+            {alarm
+              ? ` · ${alarm}`
+              : queue.pending.length > 0 && ` · ${queue.pending.length} to send`}
+          </p>
+        </div>
+        <SmartLink
+          className="text-2xl font-bold"
+          to={nextHeatLink ?? "#"}
+          aria-label="Next heat"
+        >
+          ›
+        </SmartLink>
+      </header>
 
       <div
         className={`flex flex-1 flex-col p-4 ${
@@ -599,7 +684,7 @@ export default function Timer({ params }: Route.ComponentProps) {
 
         {clipboard ? (
           <ClipboardView
-            watches={watches}
+            watches={watchColumns}
             values={sheet}
             onChange={(column, value) =>
               setSheet((current) => {
@@ -619,7 +704,86 @@ export default function Timer({ params }: Route.ComponentProps) {
             onSubmit={submit}
           />
         ) : (
-          <StopwatchView />
+          <div className="py-6 text-center">
+            <p className="font-mono text-6xl font-bold tabular-nums">
+              {stopped ? formatTime(stopped.ms) : formatClock(elapsed)}
+            </p>
+            {alreadyTimed && !stopped && startedAt === null && (
+              <p className="mt-2 text-sm text-slate-500">
+                Sent {sentLabel} for this heat.
+                {retiming && " Timing again replaces it."}
+              </p>
+            )}
+          </div>
+        )}
+
+        {!clipboard && (
+          <div className="space-y-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+            {stopped ? (
+              <div className="grid grid-cols-3 gap-2">
+                <Button
+                  size="xl"
+                  variant="success"
+                  className="col-span-2"
+                  onClick={() => submit([stopped.ms])}
+                >
+                  Submit
+                </Button>
+                <Button
+                  size="xl"
+                  onClick={() => {
+                    setStopped(null);
+                    setStartedAt(null);
+                    setElapsed(0);
+                  }}
+                >
+                  Redo
+                </Button>
+              </div>
+            ) : alreadyTimed && !retiming ? (
+              /* This heat is done, and says so where the button would be.
+                     A green START here invites re-timing a heat whose sheet has
+                     already gone to the desk — and reads identically to the heat in
+                     front of you, which is the one that matters. */
+              <>
+                <Button
+                  size="xl"
+                  variant="success"
+                  full
+                  disabled
+                  className="min-h-32 text-4xl"
+                >
+                  Submitted
+                </Button>
+                <Button variant="ghost" full onClick={() => setRetiming(true)}>
+                  Time it again
+                </Button>
+              </>
+            ) : running ? (
+              <Button
+                size="xl"
+                variant="danger"
+                full
+                className="min-h-32 text-4xl"
+                onClick={() => {
+                  const at = Date.now();
+                  setStopped({ ms: at - (startedAt ?? at), at });
+                }}
+              >
+                STOP
+              </Button>
+            ) : (
+              <Button
+                size="xl"
+                variant="success"
+                full
+                className="min-h-32 text-4xl"
+                onClick={arm}
+              >
+                START
+              </Button>
+            )}
+          </div>
         )}
       </div>
 
@@ -629,7 +793,7 @@ export default function Timer({ params }: Route.ComponentProps) {
           inEvent={inEvent}
           current={swimmer}
           ownTeam={ownTeam}
-          meetTeams={snapshot.meet.teams}
+          meetTeams={Object.values(meet.teams)}
           eventGender={stop.event.gender === "M" ? "M" : "F"}
           onPick={(athlete) => {
             claimLane(athlete.id);
@@ -651,8 +815,7 @@ interface SmartLinkProps extends Partial<LinkProps> {
   children: React.ReactNode;
 }
 
-export function SmartLink({ to, children, ...props }: SmartLinkProps) {
-  // Check if "to" is falsy, an empty string, or hash only
+function SmartLink({ to, children, ...props }: SmartLinkProps) {
   const isDisabled = !to || to === "" || to === "#";
 
   if (isDisabled) {
@@ -667,158 +830,10 @@ export function SmartLink({ to, children, ...props }: SmartLinkProps) {
     );
   }
 
-  // Typecast safely because we already verified "to" exists
   return (
     <Link to={to} {...props}>
       {children}
     </Link>
-  );
-}
-
-function EventHeader({
-  isStopwatchRunning,
-  previousHeat,
-  currentHeat,
-  nextHeat,
-}: {
-  isStopwatchRunning: boolean;
-  previousHeat?: SwimKey | null;
-  currentHeat?: SwimKey | null;
-  nextHeat?: SwimKey | null;
-}) {
-  const nextHeatLink = nextHeat
-    ? timerPath(nextHeat.meetId, nextHeat.event, nextHeat.heat, nextHeat.lane)
-    : null;
-  const previousHeatLink = previousHeat
-    ? timerPath(
-        previousHeat.meetId,
-        previousHeat.event,
-        previousHeat.heat,
-        previousHeat.lane,
-      )
-    : null;
-  return (
-    <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] dark:border-slate-800 dark:bg-slate-900">
-      <SmartLink
-        className="text-2xl font-bold"
-        to={!isStopwatchRunning && previousHeatLink ? previousHeatLink : "#"}
-        aria-label="Previous heat"
-      >
-        ‹
-      </SmartLink>
-      <div className="min-w-0 flex-1 text-center">
-        <p className="truncate text-sm font-bold">{eventName(stop.event)}</p>
-        <p className="text-xs text-slate-500">
-          Heat {stop.number} of {stop.of}
-          {alarm
-            ? ` · ${alarm}`
-            : queue.pending.length > 0 && ` · ${queue.pending.length} to send`}
-        </p>
-      </div>
-      <SmartLink
-        className="text-2xl font-bold"
-        to={!isStopwatchRunning && nextHeatLink ? nextHeatLink : "#"}
-        aria-label="Next heat"
-      >
-        ›
-      </SmartLink>
-    </header>
-  );
-}
-
-function StopwatchView({}: {}) {
-  return (
-    <>
-      <div className="py-6 text-center">
-        <p className="font-mono text-6xl font-bold tabular-nums">
-          {stopped ? formatTime(stopped.ms) : formatClock(elapsed)}
-        </p>
-        {alreadyTimed && !stopped && startedAt === null && (
-          <p className="mt-2 text-sm text-slate-500">
-            Sent {sentLabel} for this heat.
-            {retiming && " Timing again replaces it."}
-          </p>
-        )}
-      </div>
-
-      <div className="space-y-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        {stopped ? (
-          <div className="grid grid-cols-3 gap-2">
-            <Button
-              size="xl"
-              variant="success"
-              className="col-span-2"
-              onClick={() => submit([stopped.ms])}
-            >
-              Submit
-            </Button>
-            <Button
-              size="xl"
-              onClick={() => {
-                setStopped(null);
-                setStartedAt(null);
-                setElapsed(0);
-              }}
-            >
-              Redo
-            </Button>
-          </div>
-        ) : alreadyTimed && !retiming ? (
-          /* This heat is done, and says so where the button would be.
-                 A green START here invites re-timing a heat whose sheet has
-                 already gone to the desk — and reads identically to the heat in
-                 front of you, which is the one that matters. */
-          <>
-            <Button
-              size="xl"
-              variant="success"
-              full
-              disabled
-              className="min-h-32 text-4xl"
-            >
-              Submitted
-            </Button>
-            <Button variant="ghost" full onClick={() => setRetiming(true)}>
-              Time it again
-            </Button>
-          </>
-        ) : running ? (
-          <Button
-            size="xl"
-            variant="danger"
-            full
-            className="min-h-32 text-4xl"
-            onClick={() => {
-              const at = Date.now();
-              setStopped({ ms: at - (startedAt ?? at), at });
-              // Sent straight away, like the start: the desk should see
-              // this lane has stopped (and stop counting it as running)
-              // well before this thumb gets around to submitting a
-              // final sheet.
-              updateRecord((record) => ({
-                ...record,
-                watches: record.watches.map((w) => ({
-                  ...w,
-                  stoppedAt: at,
-                })),
-              }));
-            }}
-          >
-            STOP
-          </Button>
-        ) : (
-          <Button
-            size="xl"
-            variant="success"
-            full
-            className="min-h-32 text-4xl"
-            onClick={arm}
-          >
-            START
-          </Button>
-        )}
-      </div>
-    </>
   );
 }
 

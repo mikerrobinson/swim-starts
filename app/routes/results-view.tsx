@@ -21,7 +21,7 @@ import {
   type RankedSwim,
   type ScoreGroup,
 } from "~/lib/scoring";
-import { useMeet } from "./meets2";
+import { useMeet } from "./meet-layout";
 import { eventName, getSortedEvents } from "~/types/meet";
 import type { Meet } from "~/types/meet";
 
@@ -196,14 +196,14 @@ export default function ResultsView({
       <EmptyState title="Not built yet">
         This results view isn&rsquo;t ready. Try{" "}
         <a
-          href={`/meets2/${meet.id}/results/by-event`}
+          href={`/meets/${meet.id}/results/by-event`}
           className="font-semibold text-blue-600 underline"
         >
           by event
         </a>{" "}
         or{" "}
         <a
-          href={`/meets2/${meet.id}/results/team-scores`}
+          href={`/meets/${meet.id}/results/team-scores`}
           className="font-semibold text-blue-600 underline"
         >
           team scores

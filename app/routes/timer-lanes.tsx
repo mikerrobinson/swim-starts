@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useRouteLoaderData } from "react-router";
+import { Link } from "react-router";
 import type { Route } from "./+types/timer-lanes";
-import type { loader as shellLoader } from "./timer-shell";
 import { loadRole, saveRole, type TimerRole } from "~/lib/timer";
 import { firstStopPath } from "~/lib/timer-path";
+import { useMeet } from "./meet-layout";
 
 /**
  * Standing behind a lane is the first thing that happens.
@@ -26,9 +26,7 @@ import { firstStopPath } from "~/lib/timer-path";
  * device, so it is asked once and not again at every lane change.
  */
 export default function TimerLanes({ params }: Route.ComponentProps) {
-  const { snapshot } = useRouteLoaderData<typeof shellLoader>(
-    "routes/timer-shell",
-  )!;
+  const meet = useMeet();
 
   /**
    * What this phone is: its own stopwatch, or the clipboard for the lane.
@@ -49,16 +47,15 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
 
   const choose = (next: TimerRole) => {
     setRole(next);
-    saveRole(params.meetId, next);
+    saveRole(params.meetId!, next);
   };
 
-  if (!snapshot) return null;
+  const events = Object.values(meet.events);
+  const swims = Object.values(meet.swims);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center p-6">
-      <h1 className="mb-1 text-center text-xl font-bold">
-        {snapshot.meet.name}
-      </h1>
+      <h1 className="mb-1 text-center text-xl font-bold">{meet.name}</h1>
       <p className="mb-6 text-center text-slate-600 dark:text-slate-300">
         Which lane are you timing?
       </p>
@@ -66,14 +63,14 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
       {/* The other question a lane with several watches has to answer, and the
           only place it is asked. Absent at a meet whose lanes are one watch
           each, where there is nothing to choose between. */}
-      {snapshot.meet.timersPerLane > 1 && (
+      {meet.details.timersPerLane > 1 && (
         <div className="mb-6">
           <div className="grid grid-cols-2 gap-2">
             {(
               [
                 [
                   "clipboard",
-                  `I have the sheet for ${snapshot.meet.timersPerLane} watches`,
+                  `I have the sheet for ${meet.details.timersPerLane} watches`,
                 ],
                 ["own", "Just my own watch"],
               ] as Array<[TimerRole, string]>
@@ -96,17 +93,18 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
-        {Array.from({ length: snapshot.meet.laneCount }, (_, i) => i + 1).map(
-          (lane) => (
-            <Link
-              key={lane}
-              to={firstStopPath(snapshot, params.meetId, lane)}
-              className="flex min-h-24 touch-manipulation items-center justify-center rounded-2xl border-2 border-slate-300 text-4xl font-bold active:bg-blue-600 active:text-white dark:border-slate-700"
-            >
-              {lane}
-            </Link>
-          ),
-        )}
+        {Array.from(
+          { length: meet.details.laneCount },
+          (_, i) => i + 1,
+        ).map((lane) => (
+          <Link
+            key={lane}
+            to={firstStopPath({ events, swims }, params.meetId!, lane)}
+            className="flex min-h-24 touch-manipulation items-center justify-center rounded-2xl border-2 border-slate-300 text-4xl font-bold active:bg-blue-600 active:text-white dark:border-slate-700"
+          >
+            {lane}
+          </Link>
+        ))}
       </div>
     </main>
   );

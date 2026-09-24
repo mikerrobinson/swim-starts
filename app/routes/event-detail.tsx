@@ -7,7 +7,7 @@ import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
 import { heatsOf, swimsForHeat } from "~/lib/timing";
 import { formatTime } from "~/lib/time";
-import { useMeet } from "./meets2";
+import { useMeet } from "./meet-layout";
 import { useViewPrefs } from "~/state/view-prefs";
 import { displayName, eventName } from "~/types/meet";
 
@@ -29,7 +29,7 @@ const EMPTY_MEET_FACTS: MeetFacts = {
  * `userId` plus every team this person coaches to decide whether a lineup
  * that isn't public yet is theirs to see. Everything else this screen
  * shows — events, entries, swims — comes from `useMeet()`'s `MeetManifest`
- * in the component below, kept live by `meets2.tsx`'s one shared socket
+ * in the component below, kept live by `meet-layout.tsx`'s one shared socket
  * rather than this route's own `useMeetLive` the way it used to be.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {

@@ -135,7 +135,7 @@ export async function getMeet(
  * The one cheap read a route needs before it can decide where the rest of a
  * meet's data comes from: `status !== "complete"` means "ask the meet's
  * Durable Object", `"complete"` means "read D1's `results` table instead,
- * and don't wake the DO to do it." See `meets2.tsx`.
+ * and don't wake the DO to do it." See `meet-layout.tsx`.
  */
 export async function getMeetGate(
   db: D1Database,

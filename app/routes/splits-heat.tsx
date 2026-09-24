@@ -34,7 +34,7 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meets2";
+import { useMeet } from "./meet-layout";
 import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
@@ -231,10 +231,10 @@ function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
 
 /**
  * The multi-lane stopwatch a coach runs the deck from — one heat,
- * addressed as `/meets2/:meetId/splits/:event/:heat` the same way the timer
+ * addressed as `/meets/:meetId/splits/:event/:heat` the same way the timer
  * already addresses a lane. Same screen, same writes, same one-heat-at-a-
  * time shape it always had — only where the meet's own state lives has
- * moved: `useMeet()` now, kept live by `meets2.tsx`'s one shared socket
+ * moved: `useMeet()` now, kept live by `meet-layout.tsx`'s one shared socket
  * rather than a `useMeetLive` of this screen's own.
  */
 export default function SplitsHeat({
@@ -452,7 +452,7 @@ export default function SplitsHeat({
     setEditingLane(null);
     setAssigningLane(null);
     navigate(
-      `/meets2/${meet.id}/splits/${nextEvent.position + 1}/${targetHeat}`,
+      `/meets/${meet.id}/splits/${nextEvent.position + 1}/${targetHeat}`,
     );
   };
 
@@ -473,7 +473,7 @@ export default function SplitsHeat({
     return (
       <EmptyState title="No events yet">
         <Link
-          to={`/meets2/${meet.id}/info`}
+          to={`/meets/${meet.id}/info`}
           className="font-semibold text-blue-600 underline"
         >
           Add events under Info
@@ -522,7 +522,7 @@ export default function SplitsHeat({
       ) : heats.length === 0 || !heat ? (
         <EmptyState title="Nobody is entered in this event">
           <Link
-            to={`/meets2/${meet.id}/entries`}
+            to={`/meets/${meet.id}/entries`}
             className="font-semibold text-blue-600 underline"
           >
             Enter swimmers
@@ -816,7 +816,7 @@ function DivingPanel({
         <p className="mt-2 text-sm text-sky-800 dark:text-sky-200">
           Nobody is on the board.{" "}
           <Link
-            to={`/meets2/${meet.id}/entries`}
+            to={`/meets/${meet.id}/entries`}
             className="font-semibold underline"
           >
             Add divers

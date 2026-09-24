@@ -1,37 +1,34 @@
 /**
- * What every timer request needs before it can do anything: who's allowed in,
- * which phone this is, and the meet's own state merged with the DO's live
- * tables. Shared by the timer shell's `loader` and the per-lane `action`,
- * since both have to resolve exactly the same things before applying a
- * seed cookie against them.
+ * What every timer request needs before it can do anything: is this a valid,
+ * unexpired scan of this meet's code, and which device is this. Shared by
+ * the timer shell's `loader` and the per-lane `action`/`loader`, since both
+ * have to answer exactly the same question before touching anything.
+ *
+ * The meet's own live state — events, swims, watches, athletes — comes from
+ * `useMeet()` (`meet-layout.tsx`'s shared manifest) like every other screen under
+ * a meet now; this module is only about *who's asking*, not what they see.
  */
 
 import { requireDb } from "./api.server";
-import { grantToken } from "~/lib/grants.server";
-import { grantFor } from "~/lib/grants.server";
-import { type Grant } from "~/lib/grants.server";
-import type { MeetDurableObject } from "./meet-do.server";
-import type { MeetDetail } from "~/types/meet";
+import { grantToken, grantFor } from "~/lib/grants.server";
+import { deviceId, deviceCookie, existingDeviceId } from "./device.server";
 
-export interface TimerRequest {
+export interface TimerAccess {
   db: D1Database;
-  stub: DurableObjectStub<MeetDurableObject>;
-  grant: Grant;
-  timerId: string;
-  detail: MeetDetail;
+  deviceId: string;
   /** Set only when this request minted a device id nobody had yet. */
   deviceCookie?: string;
 }
 
-export type TimerRequestResult =
-  | { ok: true; value: TimerRequest }
+export type TimerAccessResult =
+  | { ok: true; value: TimerAccess }
   | { ok: false; error: string };
 
-export async function resolveTimerRequest(
+export async function resolveTimerAccess(
   request: Request,
   env: Env,
   meetId: string,
-): Promise<TimerRequestResult> {
+): Promise<TimerAccessResult> {
   const db = requireDb(env);
 
   const token = grantToken(request);
@@ -49,16 +46,16 @@ export async function resolveTimerRequest(
     };
   }
 
-  // This resolved to `withLiveTables(await meetDetail(db, meetId), await
-  // stub.getSnapshot(meetId))` — `meetDetail` assembled a `MeetDetail` from
-  // D1's events/entries/swims/watches tables. Those moved entirely into the
-  // meet's Durable Object (see `meets2.tsx`), and this old `MeetDetail`-
-  // shaped timer workspace (`timer-shell.tsx`/`timer.tsx`) hasn't been
-  // ported to read from it, so it refuses rather than assembling stale or
-  // wrong data.
+  const id = deviceId(request);
   return {
-    ok: false,
-    error: "This timer workspace isn't available for this meet.",
+    ok: true,
+    value: {
+      db,
+      deviceId: id,
+      deviceCookie: existingDeviceId(request)
+        ? undefined
+        : deviceCookie(id, request),
+    },
   };
 }
 

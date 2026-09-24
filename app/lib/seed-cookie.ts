@@ -21,10 +21,18 @@
  * `seed-queue.ts`'s job.
  */
 
-import type { LaneRef } from "~/types/meet";
 import type { Gender } from "~/types/athlete";
 
 const COOKIE_PREFIX = "seed-";
+
+/** A lane, addressed the way the timer's URL and cookie names do: 1-based
+ *  event position, not the event's real id — the same three integers
+ *  `/meets/:meetId/timer/:event/:heat/:lane` puts in the address bar. */
+export interface LaneRef {
+  event: number;
+  heat: number;
+  lane: number;
+}
 
 export function seedCookieName(at: LaneRef): string {
   return `${COOKIE_PREFIX}${at.event}-${at.heat}-${at.lane}`;

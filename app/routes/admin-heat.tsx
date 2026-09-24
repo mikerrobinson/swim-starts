@@ -19,7 +19,7 @@ import { formatClock, formatTime, parseTime } from "~/lib/time";
 import {
   currentWatches,
   fromStopwatch,
-  heatClosed,
+  swimsComplete,
   heatsOf,
   laneProgress,
   laneTime,
@@ -32,7 +32,12 @@ import {
   type LaneTime,
 } from "~/lib/timing";
 import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
-import { canDecideMeet, canEditMeet, canRecordTime, type MeetFacts } from "~/lib/access";
+import {
+  canDecideMeet,
+  canEditMeet,
+  canRecordTime,
+  type MeetFacts,
+} from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
 import {
@@ -43,13 +48,14 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meets2";
+import { useMeet } from "./meet-layout";
 import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
   athleteName,
   displayName,
   eventName,
+  getHeatSwims,
   getSortedEvents,
   type Event,
   type Meet,
@@ -228,7 +234,11 @@ export async function clientAction({
 
   if (intent === "upsert-swim") {
     const swim = JSON.parse(String(form.get("swim"))) as Swim;
-    meetCache.applyPatch(meetId, { type: "SWIM", swim, isDelete: false }, () => {});
+    meetCache.applyPatch(
+      meetId,
+      { type: "SWIM", swim, isDelete: false },
+      () => {},
+    );
   } else if (intent === "delete-swim") {
     meetCache.applyPatch(
       meetId,
@@ -246,7 +256,11 @@ export async function clientAction({
     );
   } else if (intent === "upsert-watch") {
     const watch = JSON.parse(String(form.get("watch"))) as Watch;
-    meetCache.applyPatch(meetId, { type: "WATCH", watch, isDelete: false }, () => {});
+    meetCache.applyPatch(
+      meetId,
+      { type: "WATCH", watch, isDelete: false },
+      () => {},
+    );
   } else if (intent === "delete-watch") {
     meetCache.applyPatch(
       meetId,
@@ -271,7 +285,7 @@ export async function clientAction({
 }
 
 /**
- * One heat's desk — `/meets2/:meetId/admin/:event/:heat`.
+ * One heat's desk — `/meets/:meetId/admin/:event/:heat`.
  *
  * Addressed the same way the timer already addresses a lane: the event's
  * place in the running order and the heat number, both 1-based, neither a
@@ -279,7 +293,10 @@ export async function clientAction({
  * what the timers sent, the proposed time is what those work out to, and
  * "official" means every lane that swam has been signed off.
  */
-export default function AdminHeat({ params, loaderData }: Route.ComponentProps) {
+export default function AdminHeat({
+  params,
+  loaderData,
+}: Route.ComponentProps) {
   const meet = useMeet();
   const user = useUser();
   const deviceId = useDeviceId();
@@ -302,7 +319,9 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
 
   const eventNo = Number(params.event);
   const heatNo = Number(params.heat);
-  const event = events.find((e) => e.position === eventNo - 1);
+  const event = meet.events[params.event]; // events.find((e) => e.position === eventNo - 1);
+  const swimsInHeat = getHeatSwims(meet, params.event, heatNo);
+
   const heats = useMemo(
     () => (event ? heatsOf({ swims }, event.id) : []),
     [swims, event],
@@ -313,13 +332,13 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
   const addedHeat = addHeat.data?.ok ? addHeat.data.heat : null;
   useEffect(() => {
     if (addedHeat != null && event) {
-      navigate(`/meets2/${meet.id}/admin/${event.position + 1}/${addedHeat}`);
+      navigate(`/meets/${meet.id}/admin/${event.position + 1}/${addedHeat}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addedHeat]);
 
   const goTo = (eventPos: number, heat: number) =>
-    navigate(`/meets2/${meet.id}/admin/${eventPos}/${heat}`);
+    navigate(`/meets/${meet.id}/admin/${eventPos}/${heat}`);
 
   const heatIndex = heats.indexOf(heatNo);
 
@@ -334,7 +353,8 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
 
   const nextHeat = () => {
     if (!event) return;
-    if (heatIndex + 1 < heats.length) return goTo(eventNo, heats[heatIndex + 1]);
+    if (heatIndex + 1 < heats.length)
+      return goTo(eventNo, heats[heatIndex + 1]);
     const nextEvent = events[event.position + 1];
     if (!nextEvent) return;
     const nextHeats = heatsOf({ swims }, nextEvent.id);
@@ -343,11 +363,16 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
 
   const hasPrev = !!event && (heatIndex > 0 || event.position > 0);
   const hasNext =
-    !!event && (heatIndex + 1 < heats.length || event.position + 1 < events.length);
+    !!event &&
+    (heatIndex + 1 < heats.length || event.position + 1 < events.length);
 
   /** Send a swim upsert/delete, or a watch upsert/delete — the shapes
    *  `action`/`clientAction` above understand. */
-  const sendSwim = (swim: Swim, kind: "seat" | "decide" = "seat", auto = false) => {
+  const sendSwim = (
+    swim: Swim,
+    kind: "seat" | "decide" = "seat",
+    auto = false,
+  ) => {
     const form = new FormData();
     form.set("intent", "upsert-swim");
     form.set("kind", kind);
@@ -391,7 +416,10 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
           ‹ Heat
         </Button>
         <p className="text-sm text-slate-500">
-          {Object.values(meet.entries).filter((e) => e.eventId === event.id).length}{" "}
+          {
+            Object.values(meet.entries).filter((e) => e.eventId === event.id)
+              .length
+          }{" "}
           entered
           {heats.length === 0 ? ", no heats yet" : ""}
         </p>
@@ -404,7 +432,7 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
                 { eventId: event.id },
                 {
                   method: "post",
-                  action: `/meets2/${meet.id}/admin`,
+                  action: `/meets/${meet.id}/admin`,
                   encType: "application/json",
                 },
               )
@@ -423,7 +451,7 @@ export default function AdminHeat({ params, loaderData }: Route.ComponentProps) 
           event={event}
           heat={heatNo}
           nameOrder={nameOrder}
-          swims={swims}
+          swims={swimsInHeat}
           watches={Object.values(meet.watches)}
           athletes={meet.athletes}
           laneCount={meet.details.laneCount}
@@ -499,14 +527,13 @@ function HeatCard({
   removeWatch: (key: WatchSlotKey) => void;
   onAssign: (lane: number) => void;
 }) {
-  const seeds = swimsForHeat({ swims }, event.id, heat);
-  const closed = heatClosed({ swims, watches }, event.id, heat);
+  const closed = swimsComplete(swims);
 
   // Only while a thumb is actually down somewhere in this heat — a watch
   // that's been stopped and is just waiting on its submit doesn't need
   // ticking, it needs to sit still.
   const now = useTicker(
-    seeds.some((s) => runningWatches({ watches }, s).length > 0),
+    swims.some((s) => runningWatches({ watches }, s).length > 0),
   );
 
   /**
@@ -553,17 +580,17 @@ function HeatCard({
    */
   useEffect(() => {
     if (closed) return;
-    for (const seed of seeds) {
-      const derived = laneTime(currentWatches({ watches }, seed));
+    for (const swim of swims) {
+      const derived = laneTime(currentWatches({ watches }, swim));
 
-      if (!seed.status) {
+      if (!swim.status) {
         if (
           derived &&
           (derived.discrepancyMs === null ||
             derived.discrepancyMs <= OK_DISCREPANCY_MS)
         ) {
           sendSwim(
-            { ...seed, status: "OK", officialTimeMs: derived.timeMs },
+            { ...swim, status: "OK", officialTimeMs: derived.timeMs },
             "decide",
             true,
           );
@@ -571,7 +598,7 @@ function HeatCard({
         continue;
       }
 
-      if (seed.decidedBy !== "auto") continue;
+      if (swim.decidedBy !== "auto") continue;
 
       if (
         !derived ||
@@ -579,12 +606,12 @@ function HeatCard({
           derived.discrepancyMs > OK_DISCREPANCY_MS)
       ) {
         sendSwim(
-          { ...seed, status: undefined, officialTimeMs: undefined },
+          { ...swim, status: undefined, officialTimeMs: undefined },
           "decide",
         );
-      } else if (derived.timeMs !== seed.officialTimeMs) {
+      } else if (derived.timeMs !== swim.officialTimeMs) {
         sendSwim(
-          { ...seed, status: "OK", officialTimeMs: derived.timeMs },
+          { ...swim, status: "OK", officialTimeMs: derived.timeMs },
           "decide",
           true,
         );
@@ -594,17 +621,17 @@ function HeatCard({
     // settles itself as soon as a write above lands in it — no extra guard
     // needed against re-firing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [swims, watches, seeds, closed]);
+  }, [swims, watches, closed]);
 
   // Once anybody's clock has moved, sitting on "not started" would be a lie —
   // and once a lane reads OK on its own, or there is nothing left to time,
   // there is nothing more the timing table can add.
-  const anyActivity = seeds.some(
-    (seed) => currentWatches({ watches }, seed).length > 0,
+  const anyActivity = swims.some(
+    (swim) => currentWatches({ watches }, swim).length > 0,
   );
-  const anyOk = seeds.some((seed) => seed.status === "OK");
-  const allNS = seeds.length > 0 && seeds.every((seed) => seed.status === "NS");
-  const readyToComplete = anyOk || seeds.length === 0 || allNS;
+  const anyOk = swims.some((swim) => swim.status === "OK");
+  const allNS = swims.length > 0 && swims.every((swim) => swim.status === "NS");
+  const readyToComplete = anyOk || swims.length === 0 || allNS;
 
   /**
    * The one press that closes a heat out.
@@ -615,12 +642,12 @@ function HeatCard({
    * as a no-show rather than left to sit open forever.
    */
   const markComplete = () => {
-    for (const seed of seeds) {
-      if (seed.status) continue;
-      const derived = laneTime(currentWatches({ watches }, seed));
+    for (const swim of swims) {
+      if (swim.status) continue;
+      const derived = laneTime(currentWatches({ watches }, swim));
       sendSwim(
         {
-          ...seed,
+          ...swim,
           status: derived ? "OK" : "NS",
           officialTimeMs: derived ? derived.timeMs : 0,
         },
@@ -632,10 +659,10 @@ function HeatCard({
   /** Reopen every lane in the heat, so a correction can be made and the
    *  automatic status can pick the swims back up on its own. */
   const fixResults = () => {
-    for (const seed of seeds) {
-      if (!seed.status) continue;
+    for (const swim of swims) {
+      if (!swim.status) continue;
       sendSwim(
-        { ...seed, status: undefined, officialTimeMs: undefined },
+        { ...swim, status: undefined, officialTimeMs: undefined },
         "decide",
       );
     }
@@ -691,7 +718,7 @@ function HeatCard({
         )}
       </SectionTitle>
 
-      {seeds.length === 0 && (
+      {swims.length === 0 && (
         <p className="mb-2 text-sm text-slate-500">
           Nobody is in this heat yet.
         </p>
