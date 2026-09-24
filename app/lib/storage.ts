@@ -36,6 +36,27 @@ export function loadLaneLayout(): LaneLayout {
 
 export function saveLaneLayout(layout: LaneLayout): void {
   local.set(LANE_LAYOUT_KEY, layout);
+  bumpDevicePrefs();
+}
+
+/**
+ * A device preference changed outside React state (`saveLaneLayout` and
+ * friends write straight to `localStorage`). `meet-layout.tsx`'s header
+ * calls a route's `handle.headerToggle` fresh on every render of its own,
+ * but nothing makes it render again just because a *different* component
+ * flipped a preference — so a toggle backed by one of these notifies every
+ * subscriber, and the layout re-renders in step without needing to know
+ * which preference moved.
+ */
+const devicePrefsListeners = new Set<() => void>();
+
+export function subscribeDevicePrefs(listener: () => void): () => void {
+  devicePrefsListeners.add(listener);
+  return () => devicePrefsListeners.delete(listener);
+}
+
+function bumpDevicePrefs(): void {
+  for (const listener of devicePrefsListeners) listener();
 }
 
 const NAME_ORDER_KEY = "swim-starts:name-order";

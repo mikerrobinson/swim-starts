@@ -1,3 +1,4 @@
+import type { MouseEvent, PointerEvent, RefObject } from "react";
 import { formatTime } from "~/lib/time";
 import type { SwimTime } from "~/lib/timing";
 import { displayName, type LaneLayout } from "~/types/meet";
@@ -53,9 +54,13 @@ export function LaneTile({
   layout,
   laneCount,
   nameOrder,
+  dragging,
+  dropTarget,
+  suppressClickRef,
   onStop,
   onEdit,
   onAssign,
+  onDragStart,
 }: {
   lane: number;
   athlete?: Athlete;
@@ -78,20 +83,48 @@ export function LaneTile({
   layout: LaneLayout;
   laneCount: number;
   nameOrder: NameOrder;
+  /** This tile is the one a long-press has lifted. */
+  dragging?: boolean;
+  /** A lifted tile is currently held over this one. */
+  dropTarget?: boolean;
+  /**
+   * Shared with every tile on the heat: a long-press that turned into a drag
+   * sets this so the tap it would otherwise also fire (mouseup lands on a
+   * button same as any other click) gets swallowed once, here.
+   */
+  suppressClickRef: RefObject<boolean>;
   onStop: () => void;
   onEdit: () => void;
   onAssign: () => void;
+  /** Undefined for a tile nothing can be dragged off of (empty, or frozen). */
+  onDragStart?: (e: PointerEvent<HTMLButtonElement>) => void;
 }) {
   const height = laneTileHeight(laneCount, layout);
   const isList = layout !== "grid";
+
+  const dragClasses = `${dragging ? "scale-95 opacity-60" : ""} ${
+    dropTarget ? "ring-4 ring-blue-500 ring-inset" : ""
+  }`;
+
+  const guardClick =
+    (action: () => void) =>
+    (e: MouseEvent<HTMLButtonElement>): void => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        e.preventDefault();
+        return;
+      }
+      action();
+    };
 
   if (!athlete) {
     return (
       <button
         type="button"
+        data-lane={lane}
         disabled={clockRunning}
-        onClick={onAssign}
-        className={`${height} flex touch-manipulation items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 text-slate-400 disabled:opacity-60 dark:border-slate-700 ${
+        onClick={guardClick(onAssign)}
+        className={`${height} flex touch-manipulation select-none items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 text-slate-400 transition-transform disabled:opacity-60 dark:border-slate-700 ${dragClasses} ${
           isList ? "flex-row px-4" : "flex-col"
         }`}
       >
@@ -118,8 +151,10 @@ export function LaneTile({
     return (
       <button
         type="button"
-        onClick={handle}
-        className={`${height} flex w-full touch-manipulation items-center gap-3 rounded-2xl px-3 text-left transition-colors ${tone(result, running)}`}
+        data-lane={lane}
+        onClick={guardClick(handle)}
+        onPointerDown={onDragStart}
+        className={`${height} flex w-full touch-manipulation select-none items-center gap-3 rounded-2xl px-3 text-left transition-colors transition-transform ${tone(result, running)} ${dragClasses}`}
       >
         <span className="w-16 shrink-0 text-center text-sm font-bold opacity-80">
           Lane {lane}
@@ -145,8 +180,10 @@ export function LaneTile({
   return (
     <button
       type="button"
-      onClick={handle}
-      className={`${height} relative flex touch-manipulation flex-col items-center justify-center rounded-2xl px-2 text-center transition-colors ${tone(result, running)}`}
+      data-lane={lane}
+      onClick={guardClick(handle)}
+      onPointerDown={onDragStart}
+      className={`${height} relative flex touch-manipulation select-none flex-col items-center justify-center rounded-2xl px-2 text-center transition-colors transition-transform ${tone(result, running)} ${dragClasses}`}
     >
       {exhibition && (
         <span

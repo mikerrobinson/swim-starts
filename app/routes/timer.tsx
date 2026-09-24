@@ -17,12 +17,10 @@ import {
   runningOrder,
   saveFurthest,
   watchCount,
-  type QueuedAthlete,
-  type TimerAthlete,
 } from "~/lib/timer";
 import { lanesPath, stopPath, timerCookiePath } from "~/lib/timer-path";
 import { currentWatches } from "~/lib/timing";
-import { eventName } from "~/types/meet";
+import { eventName, type MeetAthlete } from "~/types/meet";
 import { queueState, saveSeedRecord } from "~/lib/seed-queue";
 import {
   decodeSeedRecord,
@@ -62,12 +60,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
   const stub = env.MEET_DO.getByName(meetId);
   const manifest = await stub.getMeetManifest(meetId);
-  const { cleared } = await applySeedCookies(
-    stub,
-    manifest,
-    deviceId,
-    request,
-  );
+  const { cleared } = await applySeedCookies(stub, manifest, deviceId, request);
   clearSeedCookies(headers, request, meetId, cleared);
 
   return data({ ok: true }, { headers });
@@ -214,7 +207,7 @@ export default function Timer({ params }: Route.ComponentProps) {
    */
   const [pending, setPending] = useState<Record<string, SeedRecord>>({});
   // Swimmers typed in on this device; they may not have reached the server yet.
-  const [added, setAdded] = useState<QueuedAthlete[]>([]);
+  const [added, setAdded] = useState<MeetAthlete[]>([]);
 
   /* ------------------------------------------------------------- stopwatch */
 
@@ -293,14 +286,17 @@ export default function Timer({ params }: Route.ComponentProps) {
     meet.teams[teamId]?.code || meet.teams[teamId]?.name || "";
 
   const athletes = useMemo(() => {
-    const roster: TimerAthlete[] = Object.values(meet.athletes).map((a) => ({
+    const roster: MeetAthlete[] = Object.values(meet.athletes).map((a) => ({
       id: a.id,
       firstName: a.firstName,
       lastName: a.lastName,
       team: teamLabel(a.teamId) || undefined,
     }));
     const seen = new Set(roster.map((a) => a.id));
-    return [...roster, ...added.filter((a) => !seen.has(a.id))] as TimerAthlete[];
+    return [
+      ...roster,
+      ...added.filter((a) => !seen.has(a.id)),
+    ] as MeetAthlete[];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meet.athletes, meet.teams, added]);
 
@@ -339,7 +335,9 @@ export default function Timer({ params }: Route.ComponentProps) {
    * phone queues and what the person is looking at cannot disagree.
    */
   const where: LaneRef | null =
-    stop && lane ? { event: stop.event.position + 1, heat: stop.heat, lane } : null;
+    stop && lane
+      ? { event: stop.event.position + 1, heat: stop.heat, lane }
+      : null;
 
   /** The swim in this lane, if anybody has said who is in it. */
   const seed = stop?.swims.find((s) => s.lane === lane);
@@ -421,7 +419,7 @@ export default function Timer({ params }: Route.ComponentProps) {
    * has is the one holding the whole roster, but the id has to be settled now
    * so re-applying this same cookie later converges rather than duplicates.
    */
-  const claimLane = (athleteId: string, newcomer?: QueuedAthlete) => {
+  const claimLane = (athleteId: string, newcomer?: MeetAthlete) => {
     if (!where) return;
     updateSwim((record) =>
       newcomer
@@ -568,7 +566,8 @@ export default function Timer({ params }: Route.ComponentProps) {
             Heat {stop.number} of {stop.of}
             {alarm
               ? ` · ${alarm}`
-              : queue.pending.length > 0 && ` · ${queue.pending.length} to send`}
+              : queue.pending.length > 0 &&
+                ` · ${queue.pending.length} to send`}
           </p>
         </div>
         <SmartLink

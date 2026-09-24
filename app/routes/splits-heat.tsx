@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { Link, useNavigate, useSubmit } from "react-router";
 import type { Route } from "./+types/splits-heat";
 import type { SwimTime } from "~/lib/timing";
@@ -34,6 +41,12 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
+import {
+  loadLaneLayout,
+  saveLaneLayout,
+  subscribeDevicePrefs,
+} from "~/lib/storage";
+import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
 import { useMeet } from "./meet-layout";
 import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
@@ -238,6 +251,36 @@ function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
 }
 
 /**
+ * Grid vs. top-to-bottom vs. bottom-to-top — a property of the device, not
+ * the URL (which lane is which doesn't change meet to meet, but which end of
+ * the deck someone stands at does), so this reads and writes `storage.ts`
+ * directly rather than routing through a search param the way `entries.tsx`'s
+ * gender filter does.
+ */
+function laneLayoutOptions(laneCount: number): ToggleOption[] {
+  const current = loadLaneLayout();
+  return (
+    [
+      { value: "grid", label: "Grid" },
+      { value: "list-asc", label: `1→${laneCount}` },
+      { value: "list-desc", label: `${laneCount}→1` },
+    ] satisfies { value: LaneLayout; label: string }[]
+  ).map(({ value, label }) => ({
+    value,
+    label,
+    active: current === value,
+    onSelect: () => saveLaneLayout(value),
+  }));
+}
+
+export const handle: MeetRouteHandle = {
+  headerToggle: ({ meet }) => ({
+    label: "Lane layout",
+    options: laneLayoutOptions(meet.details.laneCount),
+  }),
+};
+
+/**
  * The multi-lane stopwatch a coach runs the deck from — one heat,
  * addressed as `/meets/:meetId/splits/:event/:heat` the same way the timer
  * already addresses a lane. Same screen, same writes, same one-heat-at-a-
@@ -254,7 +297,16 @@ export default function SplitsHeat({
   const deviceId = useDeviceId();
   const submit = useSubmit();
   const navigate = useNavigate();
-  const { laneLayout: layout, timerId, nameOrder } = useViewPrefs();
+  const { timerId, nameOrder } = useViewPrefs();
+  // Not `useViewPrefs()` — that context's lane-layout slice is currently a
+  // dead stub (always "grid", no setter; see `state/view-prefs.tsx`). This
+  // reads `storage.ts` directly and re-renders when the header's toggle (see
+  // `handle` above) writes a new value, the same way the layout itself does.
+  const layout = useSyncExternalStore(
+    subscribeDevicePrefs,
+    loadLaneLayout,
+    () => "grid" as LaneLayout,
+  );
 
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const isAdmin = canEditMeet({ meet: meetFacts, userId: user?.id ?? null });
@@ -385,6 +437,98 @@ export default function SplitsHeat({
     }
     return map;
   }, [swims, watches, seeds]);
+
+  /**
+   * Fix a seeding mistake by long-pressing a lane and dragging it onto
+   * another — a swap if the target's occupied, a plain move if it's empty.
+   * Frozen once this heat's clock has been touched (`running`): a watch is
+   * still keyed by lane rather than by swimmer, so moving somebody around
+   * once times exist for the heat would silently detach a time from the
+   * person who actually swam it.
+   */
+  const dragAllowed = !running;
+  const suppressClickRef = useRef(false);
+  const [dragState, setDragState] = useState<{
+    from: number;
+    over: number | null;
+  } | null>(null);
+
+  const canDragLane = (lane: number) =>
+    dragAllowed && !!seedByLane.get(lane) && !timeByLane.get(lane)?.official;
+
+  const canDropOnLane = (lane: number) =>
+    dragAllowed && !timeByLane.get(lane)?.official;
+
+  /** Same upsert-swim/delete-swim writes the assign sheet already sends,
+   *  addressed by lane instead of chosen from a picker. */
+  const moveSwim = (fromLane: number, toLane: number) => {
+    const dragged = seedByLane.get(fromLane);
+    if (!dragged || fromLane === toLane) return;
+    const occupant = seedByLane.get(toLane);
+    sendSwim({ ...dragged, lane: toLane });
+    if (occupant) {
+      sendSwim({ ...occupant, lane: fromLane });
+    } else {
+      removeSwim({
+        eventId: dragged.eventId,
+        heat: dragged.heat,
+        lane: fromLane,
+      });
+    }
+  };
+
+  /**
+   * A small movement arms the drag; this screen doesn't scroll, so there's
+   * no gesture to disambiguate from and no reason to make somebody hold
+   * still first the way a scrollable list would need.
+   */
+  const startDrag = (lane: number, e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (!canDragLane(lane)) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let armed = false;
+    let over: number | null = null;
+
+    const onMove = (ev: PointerEvent) => {
+      if (!armed) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 6) return;
+        armed = true;
+        suppressClickRef.current = true;
+      }
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const laneEl = el?.closest<HTMLElement>("[data-lane]");
+      over = laneEl ? Number(laneEl.dataset.lane) : null;
+      setDragState({ from: lane, over });
+    };
+
+    const onUp = () => {
+      if (armed && over !== null && canDropOnLane(over)) {
+        moveSwim(lane, over);
+      }
+      finish();
+    };
+
+    function finish() {
+      // A real drag's touchend never fires a click at all (the browser
+      // suppresses it once a touch has moved), so nothing would otherwise
+      // clear this. Deferred past the current task so a click that *is*
+      // coming (a plain tap's, or a mouse's, which always fires) still sees
+      // `true` and clears it itself first.
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", finish);
+      setDragState(null);
+    }
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", finish);
+  };
 
   /**
    * The lanes *this device* has stopped.
@@ -562,6 +706,18 @@ export default function SplitsHeat({
                   layout={layout}
                   laneCount={meet.details.laneCount}
                   nameOrder={nameOrder}
+                  dragging={dragState?.from === lane}
+                  dropTarget={
+                    dragState !== null &&
+                    dragState.over === lane &&
+                    dragState.from !== lane
+                  }
+                  suppressClickRef={suppressClickRef}
+                  onDragStart={
+                    canDragLane(lane)
+                      ? (e) => startDrag(lane, e)
+                      : undefined
+                  }
                   onStop={() => {
                     if (!seed) return;
                     const at = Date.now();
@@ -789,6 +945,10 @@ export default function SplitsHeat({
                 removeSwim(seed);
                 setEditingLane(null);
               }}
+              onChangeSwimmer={() => {
+                setEditingLane(null);
+                setAssigningLane(editingLane);
+              }}
             />
           );
         })()}
@@ -866,6 +1026,7 @@ function LaneSheet({
   onToggleExhibition,
   onRemoveWatch,
   onRemoveFromLane,
+  onChangeSwimmer,
 }: {
   lane: number;
   swimmerLabel: string;
@@ -880,6 +1041,7 @@ function LaneSheet({
   onToggleExhibition: () => void;
   onRemoveWatch: (watch: Watch) => void;
   onRemoveFromLane: () => void;
+  onChangeSwimmer: () => void;
 }) {
   // Prefilled with this device's own watch, since typing a time replaces that
   // one — never somebody else's.
@@ -997,11 +1159,16 @@ function LaneSheet({
               making it can see every watch on the lane. The deck's job is
               evidence: take a time, fix your own, say who's in the lane. */}
           {!time?.official && (
-            /* Undo for a wrong pick. Only offered while the lane has no time
-               on it — otherwise clear the time first. */
-            <Button variant="ghost" full onClick={onRemoveFromLane}>
-              Remove from lane
-            </Button>
+            /* Who's in the lane is only ever open to change while there's no
+               official time on it — otherwise clear the time first. */
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="ghost" full onClick={onChangeSwimmer}>
+                Change swimmer
+              </Button>
+              <Button variant="ghost" full onClick={onRemoveFromLane}>
+                Remove from lane
+              </Button>
+            </div>
           )}
         </div>
       }

@@ -1,12 +1,9 @@
 import { useMemo, useState } from "react";
 import { Button, TextInput } from "./ui";
-import type { Athlete, Gender } from "~/types/athlete";
-import {
-  newVisitingAthlete,
-  type QueuedAthlete,
-  type TimerAthlete,
-  type TimerTeam,
-} from "~/lib/timer";
+import type { Gender } from "~/types/athlete";
+import { newVisitingAthlete } from "~/lib/timer";
+import type { MeetAthlete } from "~/types/meet";
+import type { Team } from "~/types/team";
 
 /**
  * "Who's actually in this lane?", answered by someone who is cold, distracted,
@@ -28,14 +25,14 @@ import {
 
 interface Group {
   label: string;
-  athletes: TimerAthlete[];
+  athletes: MeetAthlete[];
 }
 
-function fullName(athlete: TimerAthlete): string {
+function fullName(athlete: MeetAthlete): string {
   return `${athlete.firstName} ${athlete.lastName}`.trim();
 }
 
-function byName(a: TimerAthlete, b: TimerAthlete): number {
+function byName(a: MeetAthlete, b: MeetAthlete): number {
   return (
     a.lastName.localeCompare(b.lastName) ||
     a.firstName.localeCompare(b.firstName)
@@ -55,15 +52,15 @@ export function SwimmerPicker({
   onAdd,
   onClose,
 }: {
-  athletes: TimerAthlete[];
+  athletes: MeetAthlete[];
   inEvent: Set<string>;
-  current?: TimerAthlete;
+  current?: MeetAthlete;
   /** Label used for athletes with no team of their own. */
   ownTeam: string;
-  meetTeams: TimerTeam[];
+  meetTeams: Team[];
   eventGender: Gender;
-  onPick: (athlete: TimerAthlete) => void;
-  onAdd: (athlete: QueuedAthlete) => void;
+  onPick: (athlete: MeetAthlete) => void;
+  onAdd: (athlete: MeetAthlete) => void;
   onClose: () => void;
 }) {
   const [filter, setFilter] = useState("");
@@ -78,12 +75,12 @@ export function SwimmerPicker({
    */
   const [newGender, setNewGender] = useState<Gender>(eventGender);
 
-  const teamOf = (athlete: TimerAthlete) => athlete.team ?? ownTeam;
+  const teamOf = (athlete: MeetAthlete) => athlete.teamId ?? ownTeam;
   const homeTeam = current ? teamOf(current) : ownTeam;
 
   const groups = useMemo<Group[]>(() => {
     const needle = filter.trim().toLowerCase();
-    const matches = (athlete: TimerAthlete) =>
+    const matches = (athlete: MeetAthlete) =>
       !needle || fullName(athlete).toLowerCase().includes(needle);
 
     const sameTeam = athletes.filter(
@@ -92,7 +89,7 @@ export function SwimmerPicker({
     const here = sameTeam.filter((a) => inEvent.has(a.id)).sort(byName);
     const rest = sameTeam.filter((a) => !inEvent.has(a.id)).sort(byName);
 
-    const others = new Map<string, TimerAthlete[]>();
+    const others = new Map<string, MeetAthlete[]>();
     for (const athlete of athletes) {
       const team = teamOf(athlete);
       if (team === homeTeam || !matches(athlete)) continue;

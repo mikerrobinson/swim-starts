@@ -11,8 +11,8 @@ import { appBasePath } from "./http";
 import { A_WEEK, readCookie } from "./cookies";
 import { splitTypedName } from "./names";
 import { generateId } from "./id";
-import type { Event, Swim } from "~/types/meet";
-import type { Athlete } from "~/types/athlete";
+import type { Event, MeetAthlete, Swim } from "~/types/meet";
+import type { Gender } from "~/types/athlete";
 
 /**
  * How far this phone has got, and nothing else.
@@ -165,33 +165,6 @@ export function earliestAllowed(furthest: number): number {
   return Math.max(0, furthest - 1);
 }
 
-/* -------------------------------------------------------------- athletes */
-
-export interface TimerAthlete {
-  id: string;
-  firstName: string;
-  lastName: string;
-  /** Display label for whichever team enrolled them. */
-  team?: string;
-}
-
-export interface TimerTeam {
-  id: string;
-  name: string;
-  /** What a walk-up's seed cookie names this team by — see `SeedRecord.team`. */
-  code: string;
-}
-
-/**
- * A person a timer typed in.
- *
- * Carries the team the timer tapped, because a visiting swimmer belongs to a
- * real roster and guessing which one is how a season ends up with two Sofias.
- */
-export interface QueuedAthlete extends Athlete {
-  teamId?: string;
-}
-
 /**
  * A swimmer a timer typed in.
  *
@@ -204,15 +177,15 @@ export interface QueuedAthlete extends Athlete {
 export function newVisitingAthlete(
   name: string,
   teamId: string,
-  gender: Athlete["gender"],
-): QueuedAthlete {
+  gender: Gender,
+): MeetAthlete {
   // The same split the server will apply when it creates the athlete, so the
   // lane doesn't show one thing now and another once it's created.
   return {
     id: generateId(),
     ...splitTypedName(name),
     gender,
-    teamId: teamId || undefined,
+    teamId: teamId,
   };
 }
 

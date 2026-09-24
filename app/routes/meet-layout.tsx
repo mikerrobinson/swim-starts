@@ -15,6 +15,7 @@ import { requireDb, type SyncEnv } from "~/lib/api.server";
 import { getMeet } from "~/lib/meets.server";
 import { readResultsManifest } from "~/lib/results.server";
 import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
+import { subscribeDevicePrefs } from "~/lib/storage";
 import { AccountMenu } from "~/components/AccountMenu";
 import { HeaderToggles } from "~/components/HeaderToggles";
 import type { MeetRouteHandle } from "~/lib/route-handle";
@@ -64,6 +65,29 @@ export default function MeetRootLayout() {
   const location = useLocation();
   const navigation = useNavigation();
   const matches = useMatches();
+
+  // `toggleGroup` below calls the leaf route's own `handle.headerToggle`
+  // fresh on every render, so all this needs to do is make sure a render
+  // happens: once right after mount, because the one that produced this
+  // page's first paint ran with the server's view of things (no
+  // `localStorage` there — a device-scoped toggle like lane layout comes
+  // back "wrong" until something re-renders with the real value); and again
+  // whenever a device preference changes after that.
+  // Whether this component has made it past its first client commit. Not
+  // just a re-render trigger: React's own hydration-mismatch handling
+  // deliberately leaves a mismatched attribute exactly as the server wrote
+  // it and never patches it again on that same DOM node (see the console
+  // warning this trips) — so a device-scoped toggle whose active option
+  // differs from the server's default needs its element actually rebuilt,
+  // not just re-rendered. `key={hasMounted}` below on `HeaderToggles` is
+  // what forces that one-time rebuild; `forceRerender`/`subscribeDevicePrefs`
+  // is what keeps it in step with later, ordinary (non-hydration) changes.
+  const [, forceRerender] = useState(0);
+  const [hasMounted, setHasMounted] = useState(false);
+  useEffect(() => {
+    setHasMounted(true);
+    return subscribeDevicePrefs(() => forceRerender((n) => n + 1));
+  }, []);
 
   const leafHandle = matches[matches.length - 1]?.handle as
     | MeetRouteHandle
@@ -121,6 +145,7 @@ export default function MeetRootLayout() {
             {toggleGroup && (
               <div className="justify-self-center">
                 <HeaderToggles
+                  key={hasMounted ? "live" : "ssr"}
                   label={toggleGroup.label}
                   options={toggleGroup.options}
                 />
