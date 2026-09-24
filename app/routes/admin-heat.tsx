@@ -319,8 +319,8 @@ export default function AdminHeat({
 
   const eventNo = Number(params.event);
   const heatNo = Number(params.heat);
-  const event = meet.events[params.event]; // events.find((e) => e.position === eventNo - 1);
-  const swimsInHeat = getHeatSwims(meet, params.event, heatNo);
+  const event = events.find((e) => e.position === eventNo - 1);
+  const swimsInHeat = event ? getHeatSwims(meet, event.id, heatNo) : [];
 
   const heats = useMemo(
     () => (event ? heatsOf({ swims }, event.id) : []),

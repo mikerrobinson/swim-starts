@@ -9,9 +9,7 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
-import { ViewPrefsProvider } from "./state/view-prefs";
 import { currentUser, type SyncEnv } from "./lib/api.server";
-import { isTimingPath } from "./lib/timer-path";
 import { sessionPayload } from "./lib/auth.server";
 import { SIGNED_OUT } from "./state/session";
 import { deviceCookie, deviceId, existingDeviceId } from "./lib/device.server";

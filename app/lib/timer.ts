@@ -223,7 +223,7 @@ export function timerPath(
   lane?: number,
 ): string {
   if (![event, heat, lane].every((n) => n! && Number.isInteger(n) && n > 0)) {
-    return `/meets/${meetId}`;
+    return `/meets/${meetId}/timer`;
   }
   return `/meets/${meetId}/timer/${event}/${heat}/${lane}`;
 }
