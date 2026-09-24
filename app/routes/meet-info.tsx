@@ -5,6 +5,7 @@ import {
   Banner,
   Button,
   Card,
+  EmptyState,
   Field,
   SectionTitle,
   Select,
@@ -36,23 +37,31 @@ import {
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
 import { useMeet } from "./meet-layout";
+import { distancesFor, makeEvent, RELAY_DISTANCES, renumber } from "~/lib/events";
 import {
   courseLabel,
+  eventName,
   formatNumberList,
+  getSortedEvents,
   isLaneCount,
   isMeetCourse,
+  isRelay,
   isTimersPerLane,
   LANE_COUNTS,
   MEET_COURSES,
   MEET_TYPES,
   meetSubtitle,
   parseNumberList,
+  STROKES,
   TIMERS_PER_LANE,
+  type Event,
+  type EventGender,
   type LaneAssignments,
   type LaneCount,
   type MeetDetails,
   type MeetType,
   type ScoringRules,
+  type Stroke,
   type TimersPerLane,
 } from "~/types/meet";
 import type { Team } from "~/types/team";
@@ -194,6 +203,20 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
     const current = await stub.getDetails(meetId);
     await stub.setDetails(meetId, nextDetails(current, intent, form));
+    return { ok: true };
+  }
+
+  /**
+   * The running order, replaced whole — `setEvents`' own contract. The
+   * client sends the events in the order they should run; renumbering
+   * `position`/`eventNumber` is done here rather than trusted from the
+   * client, the same way `nextDetails` is the one place a `MeetDetails` gets
+   * built from a form.
+   */
+  if (intent === "events") {
+    const events = JSON.parse(String(form.get("events"))) as Event[];
+    const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
+    await stub.setEvents(meetId, renumber(events));
     return { ok: true };
   }
 
@@ -372,6 +395,11 @@ export async function clientAction({
     }
   }
 
+  if (intent === "events") {
+    const events = JSON.parse(String(form.get("events"))) as Event[];
+    meetCache.applyPatch(meetId, { type: "EVENTS", events }, () => {});
+  }
+
   return serverAction();
 }
 
@@ -417,6 +445,8 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
           reader sees the settings; whoever runs the meet sees them and can
           change them. */}
       {editing && <DetailsEditor details={details} />}
+
+      {editing && <EventsCard course={details.course} leadGender={details.leadGender} />}
 
       {/* Above seeding on purpose: assigning lanes needs to know which teams
           there are to assign them to. */}
@@ -616,6 +646,171 @@ function DetailsEditor({ details }: { details: MeetDetails }) {
           {fetcher.state === "submitting" ? "Saving…" : "Save details"}
         </Button>
       </fetcher.Form>
+    </Card>
+  );
+}
+
+/**
+ * The running order: reorder, remove, or add a race.
+ *
+ * Reads the live lineup from `useMeet()` rather than loader data, so a add/
+ * remove/reorder that just landed (or one from another tab) shows up without
+ * a special-cased refetch. Every change sends the *whole* list — `setEvents`'
+ * own contract — so reordering and adding both go through the one `submit`
+ * below rather than three different intents.
+ *
+ * An event with a swim already seated or an athlete already entered in it
+ * can't be removed: `setEvents` would drop it from the programme while the
+ * DO's `swims`/`entries` rows still named it, orphaning them. Reordering and
+ * adding are always safe, since neither touches an existing event's id.
+ */
+function EventsCard({
+  course,
+  leadGender,
+}: {
+  course: MeetDetails["course"];
+  leadGender: MeetDetails["leadGender"];
+}) {
+  const meet = useMeet();
+  const fetcher = useFetcher();
+  const events = getSortedEvents(meet);
+  const swims = Object.values(meet.swims);
+  const entries = Object.values(meet.entries);
+
+  const hasActivity = (eventId: string) =>
+    swims.some((s) => s.eventId === eventId) ||
+    entries.some((e) => e.eventId === eventId);
+
+  const submit = (next: Event[]) => {
+    const form = new FormData();
+    form.set("intent", "events");
+    form.set("events", JSON.stringify(renumber(next)));
+    fetcher.submit(form, { method: "post" });
+  };
+
+  const move = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= events.length) return;
+    const next = [...events];
+    [next[index], next[target]] = [next[target], next[index]];
+    submit(next);
+  };
+
+  const remove = (eventId: string) => {
+    submit(events.filter((e) => e.id !== eventId));
+  };
+
+  const [distance, setDistance] = useState(50);
+  const [stroke, setStroke] = useState<Stroke>("Free");
+  const [gender, setGender] = useState<EventGender>(leadGender);
+
+  const relay = isRelay({ stroke });
+  const distances = relay ? RELAY_DISTANCES : distancesFor(course);
+  const chosenDistance = distances.includes(distance)
+    ? distance
+    : relay
+      ? 200
+      : 50;
+
+  const add = () => {
+    submit([...events, makeEvent(meet.id, chosenDistance, stroke, gender)]);
+  };
+
+  const saving = fetcher.state !== "idle";
+
+  return (
+    <Card>
+      <SectionTitle>Event order</SectionTitle>
+      {events.length === 0 ? (
+        <EmptyState title="No events yet">
+          Add events below to build the running order.
+        </EmptyState>
+      ) : (
+        <ol className="divide-y divide-slate-200 dark:divide-slate-800">
+          {events.map((event, index) => {
+            const locked = hasActivity(event.id);
+            return (
+              <li key={event.id} className="flex items-center gap-2 py-2">
+                <span className="w-6 shrink-0 text-right text-xs tabular-nums text-slate-400">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                  {eventName(event)}
+                </span>
+                <Button
+                  size="sm"
+                  disabled={saving || index === 0}
+                  onClick={() => move(index, -1)}
+                  aria-label={`Move ${eventName(event)} up`}
+                >
+                  ↑
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={saving || index === events.length - 1}
+                  onClick={() => move(index, 1)}
+                  aria-label={`Move ${eventName(event)} down`}
+                >
+                  ↓
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={saving || locked}
+                  title={
+                    locked
+                      ? "Already has entries or seated swims — can't remove"
+                      : undefined
+                  }
+                  onClick={() => remove(event.id)}
+                >
+                  Remove
+                </Button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <Field label="Distance">
+          <Select
+            value={chosenDistance}
+            onChange={(e) => setDistance(Number(e.target.value))}
+          >
+            {distances.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Stroke">
+          <Select
+            value={stroke}
+            onChange={(e) => setStroke(e.target.value as Stroke)}
+          >
+            {STROKES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Gender">
+          <Select
+            value={gender}
+            onChange={(e) => setGender(e.target.value as EventGender)}
+          >
+            <option value="Open">Open</option>
+            <option value="F">Girls</option>
+            <option value="M">Boys</option>
+          </Select>
+        </Field>
+      </div>
+      <Button className="mt-2" full disabled={saving} onClick={add}>
+        Add event
+      </Button>
     </Card>
   );
 }

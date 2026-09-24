@@ -4,6 +4,7 @@ import {
   toSwimKey,
   toWatchKey,
   type Entry,
+  type Event,
   type MeetDetails,
   type MeetManifest,
   type Swim,
@@ -34,6 +35,10 @@ export type LiveSocketMessage =
   | {
       type: "MEET_DETAILS";
       details: MeetDetails;
+    }
+  | {
+      type: "EVENTS";
+      events: Event[];
     };
 
 class MeetCacheManager {
@@ -133,6 +138,12 @@ class MeetCacheManager {
       case "MEET_DETAILS": {
         meet.details = msg.details;
         meet.name = msg.details.name;
+        didMutate = true;
+        break;
+      }
+
+      case "EVENTS": {
+        meet.events = Object.fromEntries(msg.events.map((e) => [e.id, e]));
         didMutate = true;
         break;
       }

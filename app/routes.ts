@@ -57,6 +57,7 @@ export default [
     // own. Read-only for everyone; the editing appears for whoever the
     // server says may edit.
     route("meets/:meetId", "routes/meet-layout.tsx", [
+      index("routes/meet-redirect.tsx"),
       route("info", "routes/meet-info.tsx"),
       route("entries", "routes/entries.tsx"),
       // One grant check for the whole timer workspace, then the lane picker

@@ -1,6 +1,5 @@
 import { generateId } from "./id";
 import { DIVING_DISTANCE, isDiving, isRelay, raceKey } from "~/types/meet";
-import type { Gender } from "~/types/athlete";
 import type {
   EntryLimits,
   EventGender,
@@ -84,12 +83,18 @@ export function makeEvent(
   stroke: Stroke,
   gender: EventGender = "Open",
 ): Event {
-  return { id: generateId(), position: 0, distance, stroke, gender };
+  return { id: generateId(), position: 0, eventNumber: 0, distance, stroke, gender };
 }
 
-/** Stamp array order onto `position`, ready to be written. */
+/** Stamp array order onto `position`/`eventNumber`, ready to be written —
+ *  each event's own place in the running order, 1-based for `eventNumber`
+ *  the same way every other address in this app is (heat, lane, position). */
 export function renumber(events: Event[]): Event[] {
-  return events.map((event, position) => ({ ...event, position }));
+  return events.map((event, position) => ({
+    ...event,
+    position,
+    eventNumber: position + 1,
+  }));
 }
 
 export function otherGender(gender: Gender): Gender {

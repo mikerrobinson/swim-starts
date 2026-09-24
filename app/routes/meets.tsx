@@ -16,6 +16,7 @@ import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { coachedTeamsFor } from "~/lib/auth.server";
 import { createMeet, listMeets } from "~/lib/meets.server";
+import { defaultEvents } from "~/lib/events";
 import { addMeetAdmin } from "~/lib/admins.server";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { useSession } from "~/state/session";
@@ -142,9 +143,19 @@ export async function action({ request, context }: Route.ActionArgs) {
   // Seed the meet's Durable Object with its starting settings — from here
   // on, `meet-info.tsx`'s `setDetails` is what keeps them current, not this
   // D1 row (see `meetDetailsFrom`'s doc comment in `types/meet.ts`).
-  await context.cloudflare.env.MEET_DO.getByName(meet.id).setDetails(
+  const stub = context.cloudflare.env.MEET_DO.getByName(meet.id);
+  await stub.setDetails(meet.id, meetDetailsFrom(meet));
+
+  // A standard dual-meet order, girls/boys split, so there's something to
+  // seat swimmers into right away — `meet-info.tsx`'s lineup editor is what
+  // changes it from here.
+  await stub.setEvents(
     meet.id,
-    meetDetailsFrom(meet),
+    defaultEvents(meet.id, {
+      course: meet.course,
+      leadGender: meet.leadGender,
+      includeDiving: meet.includeDiving,
+    }),
   );
 
   return redirect(`/meets/${meet.id}`);

@@ -559,6 +559,7 @@ export class MeetDurableObject extends DurableObject<Env> {
         event.totalHeats ?? null,
       );
     }
+    this.broadcast({ type: "EVENTS", events });
   }
 
   /**

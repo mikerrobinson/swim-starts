@@ -104,15 +104,19 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     // A coach needs it to say which one is current and to move it.
     const record = access.coach ? await getTeam(env.DB, params.teamId) : null;
 
-    // How many meets each swimmer has a time in. One aggregate rather than
-    // deriving every result on the client just to count them — and only for
-    // somebody who can act on it, since a visitor is reading, not managing.
+    // How many completed meets each swimmer has a time in. One aggregate
+    // rather than deriving every result on the client just to count them —
+    // and only for somebody who can act on it, since a visitor is reading,
+    // not managing. `results` is D1's archive of a closed meet's swims (see
+    // `meets.server.ts`'s `readResultsManifest`) — a meet still in progress
+    // lives in its own Durable Object, not here, so this only ever counts
+    // meets that have actually finished.
     const swims = access.coach
       ? await env.DB.prepare(
-          `SELECT s.athlete_id AS id, COUNT(DISTINCT w.meet_id) AS n
-           FROM seeds s JOIN watches w ON w.seed_id = s.id
-           WHERE w.time_ms IS NOT NULL
-           GROUP BY s.athlete_id`,
+          `SELECT athlete_id AS id, COUNT(DISTINCT meet_id) AS n
+           FROM results
+           WHERE time_ms IS NOT NULL AND athlete_id IS NOT NULL
+           GROUP BY athlete_id`,
         ).all<{ id: string; n: number }>()
       : null;
 
@@ -125,7 +129,10 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
         (swims?.results ?? []).map((row) => [row.id, row.n]),
       ),
     };
-  } catch {
+  } catch (error) {
+    // Rendered as "Team not found," so a real bug here is invisible unless
+    // it's logged — see the D1/DO split described in the top-level README.
+    console.error("team-detail loader failed", error);
     return {
       team: null,
       access: null,
