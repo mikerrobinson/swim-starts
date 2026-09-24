@@ -1,44 +1,34 @@
 import type { Route } from "./+types/meet-layout";
 
 import {
+  NavLink,
   Outlet,
   useLoaderData,
+  useLocation,
+  useMatches,
+  useNavigation,
   useRevalidator,
   useRouteLoaderData,
 } from "react-router";
 import { useEffect, useState } from "react";
 import { requireDb, type SyncEnv } from "~/lib/api.server";
-import { getMeetGate } from "~/lib/meets.server";
+import { getMeet } from "~/lib/meets.server";
 import { readResultsManifest } from "~/lib/results.server";
 import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
-import type { MeetManifest } from "~/types/meet";
+import { AccountMenu } from "~/components/AccountMenu";
+import { HeaderToggles } from "~/components/HeaderToggles";
+import type { MeetRouteHandle } from "~/lib/route-handle";
+import { meetSubtitle, type MeetManifest } from "~/types/meet";
 
-/**
- * Everything under `/meets/:meetId`: the shell for the MeetManifest-shaped
- * client (see `app/types/meet.ts`'s `MeetManifest` and `app/lib/meetCache.ts`).
- * One loader hands back a single manifest, `clientLoader` caches it so a
- * child route can render instantly —
- * even offline — and `LiveMeetSync` below is the *only* place a WebSocket
- * exists in this tree. Everything under `<Outlet/>` reads the manifest via
- * `useLoaderData`/`useRouteLoaderData` rather than holding a subscription of
- * its own; a socket message lands in `meetCache`, which nudges Remix to
- * re-run `clientLoader`, which is what actually updates the screen.
- *
- * Where the manifest comes from depends on the one thing D1 needs to answer
- * before anything else: is this meet `"complete"`? If so, everything —
- * events, swims, results — is read straight from D1's `results` archive and
- * the meet's Durable Object is never woken. Otherwise, the DO is the whole
- * story: `getMeetGate` is the only D1 read this path makes.
- */
 export async function loader({ params, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env;
   const db = requireDb(env as SyncEnv);
   const meetId = params.meetId!;
 
-  const gate = await getMeetGate(db, meetId);
-  if (!gate) throw new Response("Meet Not Found", { status: 404 });
+  const [meetFacts] = await Promise.all([getMeet(db, meetId)]);
+  if (!meetFacts) throw new Response("Meet Not Found", { status: 404 });
 
-  if (gate.status === "complete") {
+  if (meetFacts.status === "complete") {
     return { meet: await readResultsManifest(meetId, db) };
   }
 
@@ -46,10 +36,6 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   return { meet: await stub.getMeetManifest(meetId) };
 }
 
-/** Cache-first, stale-while-revalidate: render whatever's already in
- *  `meetCache` (memory, or localStorage on a cold load) so the workspace is
- *  usable the instant it mounts, then quietly replace it with the server's
- *  copy once that lands. */
 export async function clientLoader({
   params,
   serverLoader,
@@ -59,7 +45,9 @@ export async function clientLoader({
 
   if (cached) {
     serverLoader()
-      .then((fresh) => meetCache.saveMeet(meetId, fresh.meet))
+      .then((fresh) => {
+        meetCache.saveMeet(meetId, fresh.meet);
+      })
       .catch(() => {});
     return { meet: cached };
   }
@@ -73,15 +61,125 @@ clientLoader.hydrate = true;
 export default function MeetRootLayout() {
   const { meet } = useLoaderData<typeof loader>();
   const [connected, setConnected] = useState(true);
+  const location = useLocation();
+  const navigation = useNavigation();
+  const matches = useMatches();
+
+  const leafHandle = matches[matches.length - 1]?.handle as
+    | MeetRouteHandle
+    | undefined;
+  const toggleGroup =
+    leafHandle?.headerToggle?.({
+      pathname: location.pathname,
+      searchParams: new URLSearchParams(location.search),
+      meet,
+    }) ?? null;
+
+  // TBD: limit by role
+  const tabs = [
+    { to: "/meets", label: "Meets", icon: "‹" },
+    { to: `/meets/${meet.id}`, label: "Info", icon: "📄" },
+    { to: `/meets/${meet.id}/entries`, label: "Entries", icon: "📋" },
+    { to: `/meets/${meet.id}/admin`, label: "Admin", icon: "🖥️" },
+    { to: `/meets/${meet.id}/splits`, label: "Splits", icon: "⏱️" },
+    { to: `/meets/${meet.id}/results`, label: "Results", icon: "🏅" },
+  ];
+
+  const status: { text: string; tone: string } | null =
+    navigation.state !== "idle"
+      ? {
+          text: "Loading…",
+          tone: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
+        }
+      : null;
+
+  const subtitle = meetSubtitle(meet.details);
 
   return (
-    <>
-      {/* Headless socket listener living safely at the layout boundary */}
-      {meet.status !== "complete" && (
-        <LiveMeetSync meetId={meet.id} onConnectedChange={setConnected} />
-      )}
-      <Outlet />
-    </>
+    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      <header className="sticky top-0 z-30 h-[var(--app-chrome-top)] border-b border-slate-200 bg-white/95 pt-[env(safe-area-inset-top)] backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
+        <div
+          className={`mx-auto grid h-full items-center gap-3 px-4 ${
+            toggleGroup
+              ? "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"
+              : "grid-cols-[minmax(0,1fr)_auto]"
+          } "max-w-none"`}
+        >
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-bold leading-tight">
+              {meet.name}
+            </h1>
+            {subtitle && (
+              <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                {subtitle}
+              </p>
+            )}
+          </div>
+
+          {toggleGroup && (
+            <div className="justify-self-center">
+              <HeaderToggles
+                label={toggleGroup.label}
+                options={toggleGroup.options}
+              />
+            </div>
+          )}
+
+          {/* Status and the account control share the right-hand cell. The
+              chip is about what the app is doing; the circle is about the
+              person. */}
+          <div className="flex items-center gap-2 justify-self-end">
+            {status && (
+              <span
+                className={`rounded-full px-2 py-1 text-xs font-semibold ${status.tone}`}
+              >
+                {status.text}
+              </span>
+            )}
+            <AccountMenu />
+          </div>
+        </div>
+      </header>
+
+      {/* Bottom padding clears the fixed tab bar, including the iOS home bar.
+          The full-width screens opt out of the centered column so their own
+          grids can spread across the full window. */}
+      <main className="mx-auto px-4 pt-4 pb-[calc(var(--app-chrome-bottom)+1rem)] max-w-none">
+        {/* Headless socket listener living safely at the layout boundary */}
+        {meet.status !== "complete" && (
+          <LiveMeetSync meetId={meet.id} onConnectedChange={setConnected} />
+        )}
+        <Outlet />
+      </main>
+
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] dark:border-slate-800 dark:bg-slate-900">
+        <div className="mx-auto flex h-[var(--app-nav-h)] max-w-3xl">
+          {tabs.map((tab) => {
+            // The back arrow points at the meet list, which would otherwise
+            // light up as the active tab while you're inside a meet.
+            const isBackLink = tab.to === "/meets";
+            return (
+              <NavLink
+                key={tab.to}
+                to={tab.to}
+                className={({ isActive }) =>
+                  `flex flex-1 touch-manipulation flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-colors ${
+                    isActive && !isBackLink
+                      ? "text-blue-600 dark:text-blue-400"
+                      : "text-slate-500 dark:text-slate-400"
+                  }`
+                }
+              >
+                <span aria-hidden className="text-xl leading-none">
+                  {tab.icon}
+                </span>
+                {tab.label}
+              </NavLink>
+            );
+          })}
+        </div>
+      </nav>
+    </div>
   );
 }
 
@@ -181,6 +279,7 @@ function LiveMeetSync({
 
     return () => {
       stopped = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };

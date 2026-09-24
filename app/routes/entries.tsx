@@ -17,6 +17,7 @@ import {
 import { meetCache } from "~/lib/meetCache";
 import { useMeet } from "./meet-layout";
 import { useViewPrefs } from "~/state/view-prefs";
+import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
 import {
   byAthlete,
   displayName,
@@ -32,6 +33,41 @@ import type { Athlete, Gender } from "~/types/athlete";
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Entries · Swim Starts" }];
 }
+
+/**
+ * Girls / Boys for the grid below. Rides on a search param (`?g=`) so this
+ * screen needn't share state with `meet-layout.tsx`'s chrome — the header
+ * reads this screen's `handle.headerToggle` instead of the other way
+ * around.
+ *
+ * There's no "All" button: showing everyone is the default, and tapping the
+ * active filter is the way back to it.
+ */
+function genderOptions(pathname: string, current: string): ToggleOption[] {
+  return [
+    { value: "f", label: "Girls" },
+    { value: "m", label: "Boys" },
+  ].map((option) => {
+    const active = current === option.value;
+    return {
+      ...option,
+      active,
+      title: active
+        ? `${option.label} only — tap to show everyone`
+        : `${option.label} only`,
+      // Tapping the active one clears the filter; tapping the other swaps to
+      // it. Either way only one can be on.
+      to: active ? pathname : `${pathname}?g=${option.value}`,
+    };
+  });
+}
+
+export const handle: MeetRouteHandle = {
+  headerToggle: ({ pathname, searchParams }) => ({
+    label: "Filter roster by gender",
+    options: genderOptions(pathname, searchParams.get("g") ?? ""),
+  }),
+};
 
 /**
  * `userId`, `coachedTeamIds`, `meet`, and the racing teams' rosters — the
