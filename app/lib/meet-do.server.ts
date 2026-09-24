@@ -161,8 +161,8 @@ const SCHEMA = [
      is_walkup INTEGER NOT NULL DEFAULT 0
    )`,
 
-  // Scalar bookkeeping the tables above don't carry a column for: `isLive`,
-  // `currentEventId`, `currentHeatNumber` (see `getMeetManifest`/`setLive`/
+  // Scalar bookkeeping the tables above don't carry a column for:
+  // `currentEventId`, `currentHeatNumber` (see `getMeetManifest`/
   // `setCurrentHeat`). `name` isn't here — D1's `meets.name` is that fact's
   // one home, so callers pass it into `getMeetManifest` rather than this DO
   // keeping its own copy to drift out of sync.
@@ -335,10 +335,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   private getMeta(key: string): string | null {
     return (
       this.ctx.storage.sql
-        .exec<{ value: string }>(
-          "SELECT value FROM meta WHERE key = ?",
-          key,
-        )
+        .exec<{ value: string }>("SELECT value FROM meta WHERE key = ?", key)
         .toArray()[0]?.value ?? null
     );
   }
@@ -452,7 +449,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       id: meetId,
       name: details.name,
       details,
-      isLive: this.getMeta("isLive") === "1",
+      status: "scheduled",
       currentEventId: this.getMeta("currentEventId") ?? undefined,
       currentHeatNumber: rawHeat === null ? undefined : Number(rawHeat),
       events,
@@ -645,7 +642,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     if ((timed ?? 0) > 0 || (watched ?? 0) > 0) {
       return {
         ok: false,
-        reason: "This team has times or results recorded — it can't be removed.",
+        reason:
+          "This team has times or results recorded — it can't be removed.",
       };
     }
 
@@ -662,10 +660,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       `DELETE FROM entries WHERE athlete_id IN (${placeholders})`,
       ...athleteIds,
     );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM athletes WHERE team_id = ?`,
-      teamId,
-    );
+    this.ctx.storage.sql.exec(`DELETE FROM athletes WHERE team_id = ?`, teamId);
     this.ctx.storage.sql.exec("DELETE FROM teams WHERE id = ?", teamId);
 
     for (const athlete of athletes) {
@@ -676,10 +671,6 @@ export class MeetDurableObject extends DurableObject<Env> {
       });
     }
     return { ok: true };
-  }
-
-  async setLive(meetId: string, isLive: boolean): Promise<void> {
-    this.setMeta("isLive", isLive ? "1" : "0");
   }
 
   /** The advisory deck pointer — `MeetManifest.currentEventId`/
@@ -731,7 +722,9 @@ export class MeetDurableObject extends DurableObject<Env> {
       await enrolVisitor(this.env.DB, meetId, row.team_id, athlete.id);
     }
 
-    const swims = this.ctx.storage.sql.exec<SwimRow>("SELECT * FROM swims").toArray();
+    const swims = this.ctx.storage.sql
+      .exec<SwimRow>("SELECT * FROM swims")
+      .toArray();
     const events = this.ctx.storage.sql
       .exec<LiveEventRow>("SELECT * FROM events")
       .toArray();
@@ -765,7 +758,9 @@ export class MeetDurableObject extends DurableObject<Env> {
             null,
           );
       }),
-      db.prepare("UPDATE meets SET status = 'complete' WHERE id = ?").bind(meetId),
+      db
+        .prepare("UPDATE meets SET status = 'complete' WHERE id = ?")
+        .bind(meetId),
     ]);
   }
 
@@ -846,7 +841,6 @@ export class MeetDurableObject extends DurableObject<Env> {
    * to infer it.
    */
   async upsertSwim(meetId: string, swim: Swim): Promise<Swim> {
-
     if (swim.athleteId) {
       const vacated = this.ctx.storage.sql
         .exec<SwimRow>(
@@ -870,7 +864,11 @@ export class MeetDurableObject extends DurableObject<Env> {
           row.heat,
           row.lane,
         );
-        this.broadcast({ type: "SWIM", swim: swimFromRow(row), isDelete: true });
+        this.broadcast({
+          type: "SWIM",
+          swim: swimFromRow(row),
+          isDelete: true,
+        });
       }
     }
 
@@ -931,7 +929,11 @@ export class MeetDurableObject extends DurableObject<Env> {
       slot.heat,
       slot.lane,
     );
-    this.broadcast({ type: "SWIM", swim: swimFromRow(existing), isDelete: true });
+    this.broadcast({
+      type: "SWIM",
+      swim: swimFromRow(existing),
+      isDelete: true,
+    });
   }
 
   /**
@@ -980,7 +982,10 @@ export class MeetDurableObject extends DurableObject<Env> {
       )
       .toArray()[0];
     if (!row) return { name: "", team: "" };
-    return { name: athleteName(athleteFromLocalRow(row)), team: row.code ?? "" };
+    return {
+      name: athleteName(athleteFromLocalRow(row)),
+      team: row.code ?? "",
+    };
   }
 
   /**
@@ -1047,7 +1052,11 @@ export class MeetDurableObject extends DurableObject<Env> {
       key.deviceId,
       key.slot,
     );
-    this.broadcast({ type: "WATCH", watch: watchFromRow(existing), isDelete: true });
+    this.broadcast({
+      type: "WATCH",
+      watch: watchFromRow(existing),
+      isDelete: true,
+    });
   }
 
   /**
@@ -1075,7 +1084,6 @@ export class MeetDurableObject extends DurableObject<Env> {
     meet: Meet,
     userId: string | null,
   ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
-
     const [teamsOf, athleteUserId, coachedTeamIds] = await Promise.all([
       this.teamsOfAthlete(input.athleteId),
       this.athleteUserId(input.athleteId),
@@ -1086,7 +1094,11 @@ export class MeetDurableObject extends DurableObject<Env> {
         meet,
         userId,
         coachedTeamIds,
-        athlete: { id: input.athleteId, userId: athleteUserId, teamIds: teamsOf },
+        athlete: {
+          id: input.athleteId,
+          userId: athleteUserId,
+          teamIds: teamsOf,
+        },
       })
     ) {
       return {
@@ -1263,7 +1275,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     }
 
     for (const [key, prior] of before) {
-      if (!after.has(key)) this.broadcast({ type: "SWIM", swim: prior, isDelete: true });
+      if (!after.has(key))
+        this.broadcast({ type: "SWIM", swim: prior, isDelete: true });
     }
     for (const [key, swim] of after) {
       const prior = before.get(key);
@@ -1370,7 +1383,6 @@ export class MeetDurableObject extends DurableObject<Env> {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
     }
-
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);

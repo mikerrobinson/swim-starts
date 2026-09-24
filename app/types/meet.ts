@@ -329,7 +329,7 @@ export interface MeetManifest {
   id: string;
   name: string;
   details: MeetDetails;
-  isLive: boolean;
+  status: MeetStatus;
   currentEventId?: string;
   currentHeatNumber?: number;
   events: Record<string, Event>;

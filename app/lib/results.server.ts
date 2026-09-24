@@ -38,9 +38,7 @@ interface ResultRow {
 }
 
 function asResultStatus(value: string): ResultStatus | undefined {
-  return value === "DQ" || value === "NS" || value === "OK"
-    ? value
-    : undefined;
+  return value === "DQ" || value === "NS" || value === "OK" ? value : undefined;
 }
 
 /**
@@ -101,7 +99,7 @@ export async function readResultsManifest(
     id: meetId,
     name: details.name,
     details,
-    isLive: false,
+    status: "complete",
     events,
     entries: {},
     swims,

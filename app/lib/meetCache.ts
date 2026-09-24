@@ -48,6 +48,8 @@ class MeetCacheManager {
   // Coalescing queue for high-frequency bursts
   private isRevalidationPending = false;
   private diskSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private revalidateTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingCallback: (() => void) | null = null;
 
   /**
    * Retrieves the manifest synchronously from memory if warm,
@@ -151,26 +153,41 @@ class MeetCacheManager {
 
     if (!didMutate) return false;
 
-    // 1. Coalesce UI revalidations so rapid multi-timer bursts only repaint once per frame
-    if (!this.isRevalidationPending) {
-      this.isRevalidationPending = true;
-      if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
-        requestAnimationFrame(() => {
-          this.isRevalidationPending = false;
-          onRevalidate();
-        });
-      } else {
-        queueMicrotask(() => {
-          this.isRevalidationPending = false;
-          onRevalidate();
-        });
-      }
-    }
+    this.scheduleRevalidation(onRevalidate);
 
     // 2. Debounce serialization & disk write until pool action settles
     this.scheduleDiskPersist(meetId, meet);
 
     return true;
+  }
+
+  hasPendingRevalidation(): boolean {
+    return this.isRevalidationPending;
+  }
+
+  flushRevalidation(): void {
+    if (this.revalidateTimer) {
+      clearTimeout(this.revalidateTimer);
+      this.revalidateTimer = null;
+    }
+    this.isRevalidationPending = false;
+
+    if (this.pendingCallback) {
+      const cb = this.pendingCallback;
+      this.pendingCallback = null;
+      cb();
+    }
+  }
+
+  scheduleRevalidation(callback: () => void): void {
+    this.pendingCallback = callback;
+
+    if (this.isRevalidationPending) return;
+    this.isRevalidationPending = true;
+
+    this.revalidateTimer = setTimeout(() => {
+      this.flushRevalidation();
+    }, 50);
   }
 
   private scheduleDiskPersist(meetId: string, meet: MeetManifest): void {

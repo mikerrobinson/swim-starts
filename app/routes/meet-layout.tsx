@@ -77,7 +77,7 @@ export default function MeetRootLayout() {
   return (
     <>
       {/* Headless socket listener living safely at the layout boundary */}
-      {meet.isLive && (
+      {meet.status !== "complete" && (
         <LiveMeetSync meetId={meet.id} onConnectedChange={setConnected} />
       )}
       <Outlet />
@@ -121,6 +121,20 @@ function LiveMeetSync({
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectAttempt = 0;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // If mutations happened while backgrounded, flush immediately
+        if (meetCache.hasPendingRevalidation()) {
+          meetCache.flushRevalidation();
+        } else {
+          // Optional safety net: nudge revalidator in case a socket message was dropped
+          revalidator.revalidate();
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     const connect = () => {
       if (stopped) return;
