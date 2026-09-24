@@ -40,7 +40,7 @@ function meetTabs(meetId: string): Tab[] {
   const base = `/meets/${meetId}`;
   return [
     { to: "/meets", label: "Meets", icon: "‹" },
-    { to: `${base}/info`, label: "Info", icon: "📄" },
+    { to: `${base}`, label: "Info", icon: "📄" },
     { to: `${base}/entries`, label: "Entries", icon: "📋" },
     { to: `${base}/admin`, label: "Admin", icon: "🖥️" },
     { to: `${base}/splits`, label: "Splits", icon: "⏱️" },

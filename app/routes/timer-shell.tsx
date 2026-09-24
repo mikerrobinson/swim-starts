@@ -25,10 +25,13 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   if (resolved.ok && resolved.value.deviceCookie) {
     headers.append("set-cookie", resolved.value.deviceCookie);
   }
-  return data(
-    { error: resolved.ok ? undefined : resolved.error },
-    { headers },
-  );
+  return data({ error: resolved.ok ? undefined : resolved.error }, { headers });
+}
+
+export function shouldRevalidate({ actionResult, defaultShouldRevalidate }) {
+  // Return false to skip revalidating this parent's loader
+  // when a child action is triggered.
+  return false;
 }
 
 export default function TimerShell() {

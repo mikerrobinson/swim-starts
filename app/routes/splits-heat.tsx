@@ -181,7 +181,11 @@ export async function clientAction({
 
   if (intent === "upsert-swim") {
     const swim = JSON.parse(String(form.get("swim"))) as Swim;
-    meetCache.applyPatch(meetId, { type: "SWIM", swim, isDelete: false }, () => {});
+    meetCache.applyPatch(
+      meetId,
+      { type: "SWIM", swim, isDelete: false },
+      () => {},
+    );
   } else if (intent === "delete-swim") {
     meetCache.applyPatch(
       meetId,
@@ -199,7 +203,11 @@ export async function clientAction({
     );
   } else if (intent === "upsert-watch") {
     const watch = JSON.parse(String(form.get("watch"))) as Watch;
-    meetCache.applyPatch(meetId, { type: "WATCH", watch, isDelete: false }, () => {});
+    meetCache.applyPatch(
+      meetId,
+      { type: "WATCH", watch, isDelete: false },
+      () => {},
+    );
   } else if (intent === "delete-watch") {
     meetCache.applyPatch(
       meetId,
@@ -473,7 +481,7 @@ export default function SplitsHeat({
     return (
       <EmptyState title="No events yet">
         <Link
-          to={`/meets/${meet.id}/info`}
+          to={`/meets/${meet.id}`}
           className="font-semibold text-blue-600 underline"
         >
           Add events under Info

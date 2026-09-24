@@ -18,6 +18,25 @@ export function stopPath(meetId: string, stop: Stop, lane: number): string {
 }
 
 /**
+ * The lane picker, but remembering which heat to come back to.
+ *
+ * A timer's own "change lane" link uses this rather than the bare
+ * `timerPath` — swapping lanes mid-meet (the case that link exists for,
+ * per `timer.tsx`) means picking up the *same* heat with a different lane,
+ * not restarting at the meet's first one. `stop` absent (a fresh scan, from
+ * `timer-claim.tsx`) falls back to the bare picker, which is what sends a
+ * lane choice there through `firstStopPath` instead.
+ */
+export function lanesPath(meetId: string, stop?: Stop): string {
+  if (!stop) return timerPath(meetId);
+  const search = new URLSearchParams({
+    event: String(stop.event.position + 1),
+    heat: String(stop.heat),
+  });
+  return `${timerPath(meetId)}?${search}`;
+}
+
+/**
  * Where a timer starts: the first heat with anything seeded in it.
  *
  * Not simply the first event. A meet's programme opens with relays that are

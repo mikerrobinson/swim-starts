@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/timer-lanes";
-import { loadRole, saveRole, type TimerRole } from "~/lib/timer";
-import { firstStopPath } from "~/lib/timer-path";
+import { loadRole, runningOrder, saveRole, type TimerRole } from "~/lib/timer";
+import { firstStopPath, stopPath } from "~/lib/timer-path";
 import { useMeet } from "./meet-layout";
 
 /**
@@ -27,6 +27,7 @@ import { useMeet } from "./meet-layout";
  */
 export default function TimerLanes({ params }: Route.ComponentProps) {
   const meet = useMeet();
+  const [searchParams] = useSearchParams();
 
   /**
    * What this phone is: its own stopwatch, or the clipboard for the lane.
@@ -52,6 +53,24 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
 
   const events = Object.values(meet.events);
   const swims = Object.values(meet.swims);
+
+  /**
+   * Where a lane choice sends this phone: back to the heat it just left —
+   * `?event=&heat=`, set by `timer.tsx`'s "change lane" link (`lanesPath`)
+   * — if there is one, or the meet's first seeded heat for a fresh scan.
+   * Without this, swapping lanes mid-meet silently restarted every timer
+   * back at event 1 heat 1 rather than picking up where they were.
+   */
+  const order = runningOrder(events, swims);
+  const returnEvent = Number(searchParams.get("event"));
+  const returnHeat = Number(searchParams.get("heat"));
+  const returnStop = order.find(
+    (s) => s.event.position + 1 === returnEvent && s.heat === returnHeat,
+  );
+  const laneHref = (lane: number) =>
+    returnStop
+      ? stopPath(params.meetId!, returnStop, lane)
+      : firstStopPath({ events, swims }, params.meetId!, lane);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center p-6">
@@ -99,7 +118,7 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
         ).map((lane) => (
           <Link
             key={lane}
-            to={firstStopPath({ events, swims }, params.meetId!, lane)}
+            to={laneHref(lane)}
             className="flex min-h-24 touch-manipulation items-center justify-center rounded-2xl border-2 border-slate-300 text-4xl font-bold active:bg-blue-600 active:text-white dark:border-slate-700"
           >
             {lane}

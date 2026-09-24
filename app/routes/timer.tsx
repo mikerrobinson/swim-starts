@@ -10,26 +10,17 @@ import type { Route } from "./+types/timer";
 import { Button } from "~/components/ui";
 import { SwimmerPicker } from "~/components/SwimmerPicker";
 import { formatClock, formatTime, parseTime } from "~/lib/time";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
-import { getMeet } from "~/lib/meets.server";
-import {
-  getTeam,
-  listSeasons,
-  roster as teamRoster,
-  seasonForDate,
-} from "~/lib/teams.server";
 import {
   earliestAllowed,
   loadFurthest,
   loadRole,
   runningOrder,
   saveFurthest,
-  timerPath,
   watchCount,
   type QueuedAthlete,
   type TimerAthlete,
 } from "~/lib/timer";
-import { stopPath, timerCookiePath } from "~/lib/timer-path";
+import { lanesPath, stopPath, timerCookiePath } from "~/lib/timer-path";
 import { currentWatches } from "~/lib/timing";
 import { eventName } from "~/types/meet";
 import { queueState, saveSeedRecord } from "~/lib/seed-queue";
@@ -50,51 +41,12 @@ import { useMeet } from "./meet-layout";
 import { useDeviceId } from "~/state/user";
 
 /**
- * The season roster for the racing teams, and what to call athletes with no
- * team of their own at this meet — the two things `SwimmerPicker`'s teams
- * grouping needs that `useMeet()`'s `MeetManifest` doesn't carry (it has
- * whoever a swim already names, not the whole season list a walk-up gets
- * chosen from). Same D1 join every other ported screen's `meetRoster` makes.
- */
-export async function loader({ params, context }: Route.LoaderArgs) {
-  const db = requireDb(context.cloudflare.env as SyncEnv);
-  const meetId = params.meetId!;
-  const meet = await getMeet(db, meetId);
-  if (!meet) return { roster: [], enrollments: [], ownTeam: "Home" };
-
-  const perTeam = await Promise.all(
-    meet.teamIds.map(async (teamId) => {
-      const [team, seasons] = await Promise.all([
-        getTeam(db, teamId),
-        listSeasons(db, teamId),
-      ]);
-      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
-      return teamRoster(db, teamId, season?.id);
-    }),
-  );
-  const entries = perTeam.flat();
-
-  const label = new Map(
-    (await Promise.all(meet.teamIds.map((id) => getTeam(db, id)))).map(
-      (t) => [t?.id, t?.code || t?.name] as const,
-    ),
-  );
-  const host = meet.hostTeamId ? label.get(meet.hostTeamId) : undefined;
-
-  return {
-    roster: entries.map((e) => e.athlete),
-    enrollments: entries.map((e) => e.enrollment),
-    ownTeam: host || label.get(meet.teamIds[0]) || "Home",
-  };
-}
-
-/**
  * Every write in this workspace — a seat, an exhibition flag, an armed or
  * stopped watch, the final sheet — is the same shape: the screen's whole
  * `SeedRecord` for this lane, submitted as one form field. `clientAction`
- * writes it into the seed cookie exactly the way `loader` would pick it up
- * from a plain navigation, then calls `serverAction` to deliver it now
- * rather than leaving it for the next request that happens to reach here.
+ * writes it into the seed cookie first, then calls `serverAction` to
+ * deliver it now rather than leaving it for the next request that happens
+ * to reach here.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
   const meetId = params.meetId!;
@@ -172,7 +124,7 @@ export async function clientAction({
  * does it, with the handheld watches doing the timing and this holding what
  * they read.
  */
-export default function Timer({ params, loaderData }: Route.ComponentProps) {
+export default function Timer({ params }: Route.ComponentProps) {
   const navigate = useNavigate();
   const meet = useMeet();
   const fetcher = useFetcher<typeof action>();
@@ -330,37 +282,45 @@ export default function Timer({ params, loaderData }: Route.ComponentProps) {
 
   const floor = earliestAllowed(furthest);
 
-  /** This meet's roster, by team label — what `SwimmerPicker` groups by. */
+  /**
+   * This meet's roster, by team label — what `SwimmerPicker` groups by.
+   * `meet.athletes` is this DO's own copy of every racing team's roster
+   * (`addTeam` copies a team's roster in whole, at meet creation and
+   * whenever a team joins later), so there's nothing here that a D1 fetch
+   * would know and this offline-safe manifest doesn't.
+   */
   const teamLabel = (teamId: string) =>
     meet.teams[teamId]?.code || meet.teams[teamId]?.name || "";
-  const teamOf = useMemo(() => {
-    const found = new Map<string, string>();
-    for (const enrolled of loaderData.enrollments) {
-      if (!found.has(enrolled.athleteId)) {
-        found.set(enrolled.athleteId, teamLabel(enrolled.teamId));
-      }
-    }
-    return found;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaderData.enrollments, meet.teams]);
 
   const athletes = useMemo(() => {
-    const roster: TimerAthlete[] = loaderData.roster.map((a) => ({
+    const roster: TimerAthlete[] = Object.values(meet.athletes).map((a) => ({
       id: a.id,
       firstName: a.firstName,
       lastName: a.lastName,
-      team: teamOf.get(a.id) || undefined,
+      team: teamLabel(a.teamId) || undefined,
     }));
     const seen = new Set(roster.map((a) => a.id));
     return [...roster, ...added.filter((a) => !seen.has(a.id))] as TimerAthlete[];
-  }, [loaderData.roster, teamOf, added]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meet.athletes, meet.teams, added]);
 
   const byId = useMemo(
     () => new Map(athletes.map((a) => [a.id, a])),
     [athletes],
   );
 
-  const ownTeam = loaderData.ownTeam;
+  /**
+   * The fallback team label for a lane nothing else names yet.
+   *
+   * `meet.hostTeamId` lives on D1's own `Meet` row, not this manifest — kept
+   * out on purpose so this screen never needs a D1 trip to render (see
+   * `types/meet.ts`'s `MeetDetails`). The first racing team this DO knows
+   * about stands in for it; every roster swimmer resolves a real team of
+   * their own above, so this is only ever seen for an empty or newly typed
+   * lane.
+   */
+  const firstTeam = Object.values(meet.teams)[0];
+  const ownTeam = firstTeam?.code || firstTeam?.name || "Home";
 
   /**
    * How many columns this phone is filling in — one for a stopwatch, one per
@@ -629,9 +589,10 @@ export default function Timer({ params, loaderData }: Route.ComponentProps) {
           {/* Back to the lane picker, which is a page rather than a state —
               so this is a link, and the browser's own back button does the
               same thing. A timer swapping ends of the pool mid-meet is the
-              case it exists for. */}
+              case it exists for, and `lanesPath` is what sends them back to
+              this same heat rather than the meet's first one. */}
           <Link
-            to={timerPath(meetId)}
+            to={lanesPath(meetId, stop)}
             className={`flex w-full touch-manipulation items-center justify-between rounded-2xl bg-white px-4 py-3 text-left dark:bg-slate-900 ${
               locked ? "pointer-events-none opacity-60" : ""
             }`}
