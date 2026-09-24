@@ -1,55 +1,44 @@
+import type { Athlete } from "~/types/athlete";
 import {
-  parseSwimKey,
+  toEntryKey,
   toSwimKey,
+  toWatchKey,
+  type Entry,
+  type MeetDetails,
   type MeetManifest,
   type Swim,
-  type SwimKey,
   type Watch,
 } from "~/types/meet";
 
 export type LiveSocketMessage =
   | {
-      type: "WATCH_RECORDED";
-      eventId: string;
-      heat: number;
-      lane: number;
+      type: "WATCH";
       watch: Watch;
+      isDelete: boolean;
     }
   | {
-      type: "SWIM_STATUS_UPDATED";
-      eventId: string;
-      heat: number;
-      lane: number;
-      status: "pending" | "official" | "dq" | "dns";
-      officialTimeMs?: number;
-      decidedAt?: number;
-      decidedBy?: string;
+      type: "SWIM";
+      swim: Swim;
+      isDelete: boolean;
     }
   | {
-      type: "LANE_ASSIGNMENT_CHANGED";
-      eventId: string;
-      heat: number;
-      lane: number;
-      athleteId?: string;
-      athleteName?: string;
-      athleteTeam?: string;
-      exhibition?: boolean;
+      type: "ENTRY";
+      entry: Entry;
+      isDelete: boolean;
     }
   | {
-      type: "ACTIVE_DECK_POSITION";
-      eventId: string;
-      heatNumber: number;
+      type: "ATHLETE";
+      athlete: Athlete;
+      isDelete: boolean;
     }
   | {
-      type: "EVENT_RESEEDED";
-      eventId: string;
-      totalHeats: number;
-      swims: Swim[];
+      type: "MEET_DETAILS";
+      details: MeetDetails;
     };
 
 class MeetCacheManager {
   // In-memory heap cache of deserialized manifests
-  private manifests = new Map<string, MeetManifest>();
+  private meets = new Map<string, MeetManifest>();
 
   // Coalescing queue for high-frequency bursts
   private isRevalidationPending = false;
@@ -59,9 +48,9 @@ class MeetCacheManager {
    * Retrieves the manifest synchronously from memory if warm,
    * falling back to localStorage during initial bootstrap.
    */
-  getManifest(meetId: string): MeetManifest | null {
-    if (this.manifests.has(meetId)) {
-      return this.manifests.get(meetId)!;
+  getMeet(meetId: string): MeetManifest | null {
+    if (this.meets.has(meetId)) {
+      return this.meets.get(meetId)!;
     }
 
     if (typeof window !== "undefined") {
@@ -69,11 +58,11 @@ class MeetCacheManager {
         const raw = localStorage.getItem(`meet:${meetId}`);
         if (raw) {
           const parsed = JSON.parse(raw) as MeetManifest;
-          this.manifests.set(meetId, parsed);
+          this.meets.set(meetId, parsed);
           return parsed;
         }
       } catch (err) {
-        console.warn("Failed to load meet manifest from storage", err);
+        console.warn("Failed to load meet from storage", err);
       }
     }
 
@@ -83,8 +72,8 @@ class MeetCacheManager {
   /**
    * Stores fresh manifest from initial SSR/loader hydration in RAM and disk.
    */
-  saveManifest(meetId: string, manifest: MeetManifest): void {
-    this.manifests.set(meetId, manifest);
+  saveMeet(meetId: string, manifest: MeetManifest): void {
+    this.meets.set(meetId, manifest);
 
     if (typeof window !== "undefined") {
       try {
@@ -104,95 +93,46 @@ class MeetCacheManager {
     msg: LiveSocketMessage,
     onRevalidate: () => void,
   ): boolean {
-    const meet = this.manifests.get(meetId);
+    const meet = this.meets.get(meetId);
     if (!meet) return false;
 
     let didMutate = false;
 
     switch (msg.type) {
-      case "WATCH_RECORDED": {
-        const key = toSwimKey({
-          eventId: msg.eventId,
-          heat: msg.heat,
-          lane: msg.lane,
-        });
-        const swim = meet.swims[key];
-        if (swim) {
-          if (!swim.watches) swim.watches = [];
-          const existingIdx = swim.watches.findIndex(
-            (w) => w.id === msg.watch.id,
-          );
-          if (existingIdx >= 0) {
-            swim.watches[existingIdx] = msg.watch;
-          } else {
-            swim.watches.push(msg.watch);
-          }
-          didMutate = true;
-        }
-        break;
-      }
-
-      case "SWIM_STATUS_UPDATED": {
-        const key = toSwimKey({
-          eventId: msg.eventId,
-          heat: msg.heat,
-          lane: msg.lane,
-        });
-        const swim = meet.swims[key];
-        if (swim) {
-          swim.status = msg.status;
-          if (msg.officialTimeMs !== undefined)
-            swim.officialTimeMs = msg.officialTimeMs;
-          if (msg.decidedAt !== undefined) swim.decidedAt = msg.decidedAt;
-          if (msg.decidedBy !== undefined) swim.decidedBy = msg.decidedBy;
-          didMutate = true;
-        }
-        break;
-      }
-
-      case "LANE_ASSIGNMENT_CHANGED": {
-        const key = toSwimKey({
-          eventId: msg.eventId,
-          heat: msg.heat,
-          lane: msg.lane,
-        });
-        const swim = meet.swims[key];
-        if (swim) {
-          swim.athleteId = msg.athleteId;
-          if (msg.athleteName !== undefined) swim.athleteName = msg.athleteName;
-          if (msg.athleteTeam !== undefined) swim.athleteTeam = msg.athleteTeam;
-          if (msg.exhibition !== undefined) swim.exhibition = msg.exhibition;
-          didMutate = true;
-        }
-        break;
-      }
-
-      case "ACTIVE_DECK_POSITION": {
-        meet.currentEventId = msg.eventId;
-        meet.currentHeatNumber = msg.heatNumber;
+      case "WATCH": {
+        const key = toWatchKey(msg.watch);
+        if (msg.isDelete) delete meet.watches[key];
+        else meet.watches[key] = msg.watch;
         didMutate = true;
         break;
       }
 
-      case "EVENT_RESEEDED": {
-        if (meet.events[msg.eventId]) {
-          meet.events[msg.eventId].totalHeats = msg.totalHeats;
-        }
-        // Remove prior swims for this event
-        for (const key of Object.keys(meet.swims) as SwimKey[]) {
-          if (parseSwimKey(key).eventId === msg.eventId) {
-            delete meet.swims[key];
-          }
-        }
-        // Populate newly seeded swims
-        for (const swim of msg.swims) {
-          const key = toSwimKey({
-            eventId: swim.eventId,
-            heat: swim.heat,
-            lane: swim.lane,
-          });
-          meet.swims[key] = swim;
-        }
+      case "SWIM": {
+        const key = toSwimKey(msg.swim);
+        if (msg.isDelete) delete meet.swims[key];
+        else meet.swims[key] = msg.swim;
+        didMutate = true;
+        break;
+      }
+
+      case "ATHLETE": {
+        if (msg.isDelete) delete meet.athletes[msg.athlete.id];
+        else meet.athletes[msg.athlete.id] = msg.athlete;
+        didMutate = true;
+        break;
+      }
+
+      case "ENTRY": {
+        const key = toEntryKey(msg.entry);
+        if (msg.isDelete) delete meet.entries[key];
+        else meet.entries[key] = msg.entry;
+        didMutate = true;
+        break;
+      }
+
+      case "MEET_DETAILS": {
+        meet.details = msg.details;
+        meet.name = msg.details.name;
         didMutate = true;
         break;
       }
@@ -236,14 +176,14 @@ class MeetCacheManager {
       } finally {
         this.diskSaveTimers.delete(meetId);
       }
-    }, 1200); // 1.2s debounce buffer
+    }, 500); // 500ms debounce buffer
 
     this.diskSaveTimers.set(meetId, timer);
   }
 
   clear(meetId?: string): void {
     if (meetId) {
-      this.manifests.delete(meetId);
+      this.meets.delete(meetId);
       const timer = this.diskSaveTimers.get(meetId);
       if (timer) clearTimeout(timer);
       this.diskSaveTimers.delete(meetId);
@@ -251,7 +191,7 @@ class MeetCacheManager {
         localStorage.removeItem(`meet:${meetId}`);
       }
     } else {
-      this.manifests.clear();
+      this.meets.clear();
       for (const timer of this.diskSaveTimers.values()) {
         clearTimeout(timer);
       }

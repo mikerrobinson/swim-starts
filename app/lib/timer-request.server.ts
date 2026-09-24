@@ -7,13 +7,11 @@
  */
 
 import { requireDb } from "./api.server";
-import { deviceCookie, deviceId, existingDeviceId } from "./device.server";
 import { grantToken } from "~/lib/grants.server";
 import { grantFor } from "~/lib/grants.server";
 import { type Grant } from "~/lib/grants.server";
-import { meetDetail } from "./meets.server";
 import type { MeetDurableObject } from "./meet-do.server";
-import { withLiveTables, type MeetDetail } from "~/types/meet";
+import type { MeetDetail } from "~/types/meet";
 
 export interface TimerRequest {
   db: D1Database;
@@ -51,28 +49,16 @@ export async function resolveTimerRequest(
     };
   }
 
-  const loaded = await meetDetail(db, meetId);
-  if (!loaded) {
-    return { ok: false, error: "That meet is no longer on the server" };
-  }
-
-  const stub = env.MEET_DO.getByName(meetId);
-  const live = await stub.getSnapshot(meetId);
-  const detail = withLiveTables(loaded, live);
-
-  const known = existingDeviceId(request);
-  const timerId = known ?? deviceId(request);
-
+  // This resolved to `withLiveTables(await meetDetail(db, meetId), await
+  // stub.getSnapshot(meetId))` — `meetDetail` assembled a `MeetDetail` from
+  // D1's events/entries/swims/watches tables. Those moved entirely into the
+  // meet's Durable Object (see `meets2.tsx`), and this old `MeetDetail`-
+  // shaped timer workspace (`timer-shell.tsx`/`timer.tsx`) hasn't been
+  // ported to read from it, so it refuses rather than assembling stale or
+  // wrong data.
   return {
-    ok: true,
-    value: {
-      db,
-      stub,
-      grant,
-      timerId,
-      detail,
-      deviceCookie: known ? undefined : deviceCookie(timerId, request),
-    },
+    ok: false,
+    error: "This timer workspace isn't available for this meet.",
   };
 }
 

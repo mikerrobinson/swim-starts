@@ -1,18 +1,10 @@
-// app/routes/meets.$id.timer.heats.$heat.lanes.$lane.tsx
-import {
-  useRouteLoaderData,
-  useParams,
-  Form,
-  useNavigation,
-  useNavigate,
-} from "react-router";
+import { useParams, Form, useNavigation, useNavigate } from "react-router";
 import { useState, useRef, useCallback } from "react";
 import type {
   ActionFunctionArgs,
   ClientActionFunctionArgs,
 } from "react-router";
-import { meetCache } from "~/lib/meetCache";
-import type { LoaderData as RootLoaderData } from "~/routes/meets2";
+import { useMeet } from "~/routes/meets2";
 import { toSwimKey } from "~/types/meet";
 
 // Server action: executed on the Cloudflare Worker/DO
@@ -75,8 +67,7 @@ export default function TimerLaneKiosk() {
   const navigation = useNavigation();
 
   // Read directly from the parent shell loader
-  const rootData = useRouteLoaderData<RootLoaderData>("routes/meets2");
-  const meet = rootData?.meet;
+  const meet = useMeet();
 
   const currentEventNo = Number(params.event);
   const currentHeat = Number(params.heat);

@@ -1,6 +1,7 @@
 import type { Route } from "./+types/api.meet.live";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
-import { meetAccess } from "~/lib/access.server";
+import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import { canEditMeet } from "~/lib/access";
+import { getMeet } from "~/lib/meets.server";
 import { grantToken } from "~/lib/grants.server";
 import { grantFor } from "~/lib/grants.server";
 import type { MeetRole } from "~/lib/meet-do.server";
@@ -13,8 +14,8 @@ import type { MeetRole } from "~/lib/meet-do.server";
  *
  * Auth happens here, once, before the upgrade ever reaches the DO. The DO
  * trusts `role`/`userId` on the forwarded request rather than parsing a
- * cookie or a grant token itself, the same separation
- * `access.server.ts`/`grants.server.ts` already keep for every other route.
+ * cookie or a grant token itself, the same separation `access.ts`/
+ * `grants.server.ts` already keep for every other route.
  *
  * `useMeetLive` (`app/lib/meet-live.ts`) is the client side of this.
  */
@@ -25,14 +26,17 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
 
   const env = context.cloudflare.env;
   const db = requireDb(env as SyncEnv);
-  const meetId = params.meetId;
-  const user = await currentUser(request, env as SyncEnv);
-  const access = await meetAccess(db, meetId, user);
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env as SyncEnv),
+    getMeet(db, meetId),
+  ]);
+  const user = await resolveUser(db, rawUser, request);
 
   let role: MeetRole = "spectator";
-  if (access.admin) {
+  if (meet && canEditMeet({ meet, user })) {
     role = "admin";
-  } else if (access.coachOf.length > 0) {
+  } else if (meet && meet.teamIds.some((id) => user.coachOf.includes(id))) {
     role = "coach";
   } else {
     const grant = await grantFor(db, grantToken(request));
@@ -42,7 +46,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const forwardUrl = new URL(request.url);
   forwardUrl.searchParams.set("meetId", meetId);
   forwardUrl.searchParams.set("role", role);
-  if (user) forwardUrl.searchParams.set("userId", user.id);
+  if (user.userId) forwardUrl.searchParams.set("userId", user.userId);
 
   const stub = env.MEET_DO.getByName(meetId);
   return stub.fetch(new Request(forwardUrl, request));

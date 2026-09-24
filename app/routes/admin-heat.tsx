@@ -65,7 +65,7 @@ export function meta({}: Route.MetaArgs) {
  */
 export default function AdminHeat({ params }: Route.ComponentProps) {
   // Already live-merged and pending-overlaid by the shell — see admin.tsx.
-  const { detail, access } = useAdmin();
+  const { detail, user } = useAdmin();
   const send = useSend();
   const { nameOrder } = useViewPrefs();
   const navigate = useNavigate();
@@ -171,7 +171,7 @@ export default function AdminHeat({ params }: Route.ComponentProps) {
           heat={heatNo}
           nameOrder={nameOrder}
           send={send}
-          me={access.userId}
+          me={user.userId}
           onAssign={(lane) => setAssigning({ heat: heatNo, lane })}
         />
       ) : (

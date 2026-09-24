@@ -38,18 +38,18 @@ export async function ensureAdminStore(db: D1Database): Promise<void> {
   ready = true;
 }
 
-export async function isMeetAdmin(
+/** Every user id running this meet — what `Meet.adminIds` is, so
+ *  `access.ts`'s `canEditMeet`/`canDecideMeet` need no D1 read of their own. */
+export async function meetAdminIds(
   db: D1Database,
-  userId: string | null | undefined,
   meetId: string,
-): Promise<boolean> {
-  if (!userId) return false;
+): Promise<string[]> {
   await ensureAdminStore(db);
-  const row = await db
-    .prepare("SELECT 1 AS ok FROM meet_admins WHERE meet_id = ? AND user_id = ?")
-    .bind(meetId, userId)
-    .first<{ ok: number }>();
-  return row !== null;
+  const { results } = await db
+    .prepare("SELECT user_id FROM meet_admins WHERE meet_id = ?")
+    .bind(meetId)
+    .all<{ user_id: string }>();
+  return results.map((row) => row.user_id);
 }
 
 /** Every meet this person administrates, for deciding a whole sync batch at once. */

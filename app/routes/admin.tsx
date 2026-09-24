@@ -2,10 +2,10 @@ import { useMemo } from "react";
 import { Outlet, useNavigate, useOutletContext, useParams } from "react-router";
 import type { Route } from "./+types/admin";
 import { Card, EmptyState, SectionTitle } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
-import { mayEditMeet } from "~/lib/access";
-import { meetAccess, type MeetAccess } from "~/lib/access.server";
-import { addHeat as addHeatRow, meetDetail } from "~/lib/meets.server";
+import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import { canEditMeet, type UserIdentity } from "~/lib/access";
+import { getMeet } from "~/lib/meets.server";
+import type { Meet } from "~/types/meet";
 import { eventClosed, heatsOf } from "~/lib/timing";
 import { applyPending } from "~/lib/pending";
 import { usePending } from "~/state/outbox";
@@ -18,55 +18,55 @@ export function meta({}: Route.MetaArgs) {
 }
 
 /**
- * The desk's own read: meet setup from D1 (events, teams, lane count — rarely
- * changes, cheap to read once here), the four live tables from the meet's
- * Durable Object rather than D1. The DO is the source of truth for those the
- * moment anything has touched the meet, and a plain D1 read here would show
- * whatever the last checkpoint happened to catch — up to
- * `CHECKPOINT_INTERVAL_MS` stale.
+ * The desk's own read: meet setup used to come from D1 (events, teams, lane
+ * count) merged with the four live tables from the meet's Durable Object.
+ * D1 no longer holds a meet's programme/entries/swims/watches at all — see
+ * `meets2.tsx` — and this old-model admin desk hasn't been ported to read
+ * the DO's `MeetManifest` shape instead, so `detail` stays `null` (the
+ * component's already-handled "no such meet" state) until it is.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
-  const user = await currentUser(request, env as SyncEnv);
-  const access = await meetAccess(db, params.meetId, user);
-  const detail = await meetDetail(db, params.meetId);
-  if (!detail) return { detail: null, access };
-
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(params.meetId);
-  return { detail: withLiveTables(detail, live), access };
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env),
+    getMeet(db, meetId),
+  ]);
+  const user = await resolveUser(db, rawUser, request);
+  return { detail: null as MeetDetail | null, meet, user };
 }
 
 /**
  * One more heat for an event, on request.
  *
- * The only seeding decision left for a person to make: entering a swimmer
- * seats them automatically, so this exists for the heats nobody's entry
- * creates on its own — an exhibition swim, a late addition before the
- * lineup's finished, room held for somebody not on the roster yet.
- *
- * Not a queued write: it's one deliberate tap at a desk with signal, and the
- * new heat number comes back from the server rather than being guessed.
+ * Used to write straight to D1's `swims` table (`addHeat` in
+ * `meets.server.ts`), which no longer exists — see the loader's doc comment.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
-  const user = await currentUser(request, env);
-  const access = await meetAccess(db, params.meetId, user);
-  if (!mayEditMeet(access)) {
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env),
+    getMeet(db, meetId),
+  ]);
+  const user = await resolveUser(db, rawUser, request);
+  if (!meet || !canEditMeet({ meet, user })) {
     throw new Response("Whoever is running this meet adds a heat.", {
       status: 403,
     });
   }
 
-  const { eventId } = (await request.json()) as { eventId: string };
-  const heat = await addHeatRow(db, params.meetId, eventId);
-  return { ok: true, heat };
+  throw new Response("Adding a heat isn't available for this meet yet.", {
+    status: 501,
+  });
 }
 
 interface AdminContext {
   detail: MeetDetail;
-  access: MeetAccess;
+  meet: Meet | null;
+  user: UserIdentity;
 }
 
 /** The shell's own live-merged data, for the leaf below it — not
@@ -139,7 +139,11 @@ export default function AdminShell({ loaderData }: Route.ComponentProps) {
         onOpen={goToEvent}
       />
       <div className="mt-4 min-w-0 space-y-4 lg:mt-0">
-        <Outlet context={{ detail, access: loaderData.access } satisfies AdminContext} />
+        <Outlet
+          context={
+            { detail, meet: loaderData.meet, user: loaderData.user } satisfies AdminContext
+          }
+        />
       </div>
     </div>
   );

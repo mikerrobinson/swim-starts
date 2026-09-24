@@ -6,8 +6,10 @@ import {
   json,
   readJson,
   requireDb,
+  resolveUser,
 } from "~/lib/api.server";
-import { mayDecide, mayRecordTime, meetAccess } from "~/lib/access.server";
+import { canDecideMeet, canEditMeet, canRecordTime } from "~/lib/access";
+import { getMeet } from "~/lib/meets.server";
 import type { Write } from "~/lib/writes";
 
 /**
@@ -32,11 +34,11 @@ import type { Write } from "~/lib/writes";
  * write itself and broadcasts it, which is what lets a connected admin/coach
  * screen see it land without polling.
  *
- * **Who may do what is asked once, and then per kind.** `meetAccess` is one
- * read for the whole request; the rule that follows differs because the moves
- * genuinely differ — entering a swimmer is a coach's business for their own
- * team, a watch is evidence any racing coach may add, and deciding a lane is
- * the administrator's alone.
+ * **Who may do what is asked once, and then per kind.** The meet and the
+ * asker's identity are each resolved once for the whole request; the rule
+ * that follows differs because the moves genuinely differ — entering a
+ * swimmer is a coach's business for their own team, a watch is evidence any
+ * racing coach may add, and deciding a lane is the administrator's alone.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env;
@@ -44,16 +46,21 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     if (request.method !== "POST") throw new SyncError("Use POST", 405);
 
     const db = requireDb(env);
-    const user = await currentUser(request, env);
-    const access = await meetAccess(db, params.meetId, user);
+    const meetId = params.meetId!;
+    const [rawUser, meet] = await Promise.all([
+      currentUser(request, env),
+      getMeet(db, meetId),
+    ]);
+    if (!meet) throw new SyncError("No such meet.", 404);
+    const user = await resolveUser(db, rawUser, request);
     const write = await readJson<Write>(request);
-    const stub = env.MEET_DO.getByName(params.meetId);
+    const stub = env.MEET_DO.getByName(meetId);
 
     switch (write.kind) {
       /**
        * Entering and scratching.
        *
-       * `mayEnter`, the meet's own entry limits, and the auto-reseed that
+       * `canEnter`, the meet's own entry limits, and the auto-reseed that
        * follows are all decided inside the DO now (`declareEntry`) — entries
        * are DO-owned like the other three live tables, so the check reads
        * this device's own most current state rather than a D1 snapshot that
@@ -62,12 +69,13 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       case "entry": {
         const result = await stub.declareEntry(
           {
-            meetId: params.meetId,
+            meetId: meetId,
             eventId: write.eventId,
             athleteId: write.athleteId,
             entering: write.entering,
           },
-          access,
+          meet,
+          user,
         );
         if (!result.ok) throw new SyncError(result.error, result.status);
         return json({ ok: true });
@@ -85,11 +93,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
        */
       case "swim":
       case "unswim": {
-        if (!mayRecordTime(access)) {
+        if (!canRecordTime({ meet, user })) {
           throw new SyncError("Only the teams racing can seed a lane.", 403);
         }
         if (write.kind === "unswim") {
-          await stub.unseat({ meetId: params.meetId, swimId: write.swimId });
+          await stub.unseat({ meetId: meetId, swimId: write.swimId });
           return json({ ok: true });
         }
         if (!Number.isInteger(write.heat) || write.heat < 1) {
@@ -104,7 +112,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         // a bug on the way in rather than a lane to be emptied.
         if (!write.athleteId) throw new SyncError("Which swimmer?", 400);
         const swim = await stub.seat({
-          meetId: params.meetId,
+          meetId: meetId,
           eventId: write.eventId,
           heat: write.heat,
           lane: write.lane,
@@ -122,14 +130,14 @@ export async function action({ params, request, context }: Route.ActionArgs) {
        * rather than the administrator alone.
        */
       case "exhibition": {
-        if (!mayRecordTime(access)) {
+        if (!canRecordTime({ meet, user })) {
           throw new SyncError(
             "Only the teams racing can mark a swim exhibition.",
             403,
           );
         }
         await stub.setExhibition({
-          meetId: params.meetId,
+          meetId: meetId,
           swimId: write.swimId,
           exhibition: write.exhibition,
         });
@@ -152,10 +160,10 @@ export async function action({ params, request, context }: Route.ActionArgs) {
        */
       case "watch":
       case "drop-watch": {
-        if (!mayRecordTime(access)) {
+        if (!canRecordTime({ meet, user })) {
           throw new SyncError("Only the teams racing can record times.", 403);
         }
-        const submitter = user?.id ?? write.timerId;
+        const submitter = rawUser?.id ?? write.timerId;
         if (!submitter) throw new SyncError("Which watch?", 400);
 
         if (write.kind === "drop-watch") {
@@ -163,14 +171,14 @@ export async function action({ params, request, context }: Route.ActionArgs) {
           // started again. Throwing away somebody else's is a decision, and
           // belongs at the desk.
           const whose = write.timerId ?? submitter;
-          if (whose !== submitter && !mayDecide(access)) {
+          if (whose !== submitter && !canDecideMeet({ meet, user })) {
             throw new SyncError(
               "Only whoever is running this meet can drop another timer's watch.",
               403,
             );
           }
           await stub.dropWatch({
-            meetId: params.meetId,
+            meetId: meetId,
             swimId: write.swimId,
             timerId: whose,
             slot: write.slot,
@@ -188,11 +196,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         }
 
         await stub.recordWatch({
-          meetId: params.meetId,
+          meetId: meetId,
           swimId: write.swimId,
           timerId: submitter,
-          userId: user?.id,
-          role: access.admin ? "admin" : user ? "coach" : "timer",
+          userId: rawUser?.id,
+          role: canEditMeet({ meet, user }) ? "admin" : rawUser ? "coach" : "timer",
           slot: write.slot,
           timeMs: hasTime ? Math.round(timeMs) : undefined,
           submittedAt: Number(write.submittedAt) || Date.now(),
@@ -217,11 +225,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
        */
       case "result":
       case "unresult": {
-        if (!mayDecide(access)) {
+        if (!canDecideMeet({ meet, user })) {
           throw new SyncError("Whoever is running this meet decides a lane.", 403);
         }
         if (write.kind === "unresult") {
-          await stub.undecideResult({ meetId: params.meetId, swimId: write.swimId });
+          await stub.undecideResult({ meetId: meetId, swimId: write.swimId });
           return json({ ok: true });
         }
 
@@ -229,7 +237,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
         try {
           await stub.decideResult(
             {
-              meetId: params.meetId,
+              meetId: meetId,
               swimId: write.swimId,
               status:
                 write.status === "DQ" || write.status === "NS" ? write.status : "OK",
@@ -241,7 +249,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
             // The app's own sentinel rather than nobody's id when `auto`, so a
             // later discrepancy can tell its own earlier call apart from a
             // person's and take only its own back — decided inside the DO.
-            user?.id,
+            rawUser?.id,
           );
         } catch {
           throw new SyncError("That swim is no longer in the meet", 404);

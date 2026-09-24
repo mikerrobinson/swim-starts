@@ -36,10 +36,13 @@ const TOP_TABS: Tab[] = [
  */
 function meetTabs(meetId: string): Tab[] {
   const base = `/meets/${meetId}`;
+  // Info and Entries moved under meets2.tsx's route tree — see meet-info.tsx/
+  // entries.tsx's own doc comments. Admin/Splits/Results haven't, yet.
+  const base2 = `/meets2/${meetId}`;
   return [
     { to: "/meets", label: "Meets", icon: "‹" },
-    { to: base, label: "Info", icon: "📄" },
-    { to: `${base}/entries`, label: "Entries", icon: "📋" },
+    { to: `${base2}/info`, label: "Info", icon: "📄" },
+    { to: `${base2}/entries`, label: "Entries", icon: "📋" },
     { to: `${base}/admin`, label: "Admin", icon: "🖥️" },
     { to: `${base}/splits`, label: "Splits", icon: "⏱️" },
     { to: `${base}/results`, label: "Results", icon: "🏅" },

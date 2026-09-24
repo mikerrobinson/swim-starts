@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Form, redirect, useFetcher, useLoaderData } from "react-router";
+import { Form, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/meet-info";
 import {
   Banner,
@@ -13,39 +13,26 @@ import {
 import { TimerAccess } from "~/components/TimerAccess";
 import { MeetTeams } from "~/components/MeetTeams";
 import { MeetAdmins } from "~/components/MeetAdmins";
-import { downloadFile, resultsToCsv } from "~/lib/csv";
-import { eventClosed, recordedCount } from "~/lib/timing";
 import {
   appBaseUrl,
   currentUser,
   requireDb,
+  resolveUser,
   type SyncEnv,
 } from "~/lib/api.server";
 import { addMeetAdmin, meetAdmins, removeMeetAdmin } from "~/lib/admins.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
-import { issueGrant } from "~/lib/grants.server";
-import { revokeGrants } from "~/lib/grants.server";
-import { grantFor } from "~/lib/grants.server";
+import { issueGrant, revokeGrants, grantFor } from "~/lib/grants.server";
 import { createInvite, inviteUser, supersedeInvites } from "~/lib/auth.server";
 import { parseContact } from "~/lib/identity";
 import { revealsCodes, sendMeetInvite } from "~/lib/notify.server";
-import { mayEditMeet } from "~/lib/access";
-import { meetAccess } from "~/lib/access.server";
-import {
-  addEvent,
-  addEventsToMeet,
-  deleteMeet,
-  getMeet,
-  meetDetail,
-  removeEvent,
-  setEventOrder,
-  updateMeet,
-} from "~/lib/meets.server";
-import { renumber, withDiving, withoutDiving } from "~/lib/events";
-import { useMeet } from "./meet-layout";
+import { canEditMeet, type MeetFacts } from "~/lib/access";
+import { deleteMeet, getMeet, updateMeet } from "~/lib/meets.server";
+import { getTeam } from "~/lib/teams.server";
+import { meetCache } from "~/lib/meetCache";
+import { useMeet } from "./meets2";
 import {
   courseLabel,
-  eventName,
   formatNumberList,
   isLaneCount,
   isMeetCourse,
@@ -55,104 +42,77 @@ import {
   MEET_TYPES,
   meetSubtitle,
   parseNumberList,
-  STROKES,
   TIMERS_PER_LANE,
-  type EventGender,
   type LaneAssignments,
   type LaneCount,
+  type MeetDetails,
   type MeetType,
   type ScoringRules,
   type TimersPerLane,
-  type Stroke,
 } from "~/types/meet";
+import type { Team } from "~/types/team";
 
 /**
- * The two things on this page that aren't in the meet document: who runs it,
- * and whether a timing code is live.
- *
- * Loaded here rather than fetched by the cards that show them. Each used to
- * hold its own list behind a `useEffect`, which cost two round trips after the
- * page had already rendered and left two more copies of "loading / working /
- * that didn't work" to keep honest.
- *
- * The full `MeetDetail` is read here too, now that `meet-layout`'s own loader
- * is metadata + access only (see its doc comment) — this screen is exactly
- * the "still simplest as a plain D1 read" case: the programme, the entry
- * count, the export buttons, none of it live or high-frequency.
+ * The two things this page needs that aren't a meet's `details`: who runs
+ * it, whether a timing code is live, and who's racing. None of those three
+ * are `MeetManifest`-owned — admins/grants are D1 (`admins.server.ts`/
+ * `grants.server.ts`), and "who's racing" is a `meet_teams` join, not a
+ * setting to broadcast — so this loader reads exactly those and nothing
+ * else. Everything the Details/Seeding forms show comes from `useMeet()`'s
+ * `MeetManifest.details` instead (see the action's doc comment).
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const rawUser = await currentUser(request, env);
+  const meetId = params.meetId!;
 
-  const [detail, admins, grant] = await Promise.all([
-    meetDetail(db, params.meetId),
-    meetAdmins(db, params.meetId),
+  const [user, admins, grant, meet] = await Promise.all([
+    resolveUser(db, rawUser, request),
+    meetAdmins(db, meetId),
     // Whether a sheet is live and when it dies — never the token itself.
     // That is handed over exactly once, by the action that mints it.
-    user ? grantFor(db, params.meetId) : null,
+    rawUser ? grantFor(db, meetId) : null,
+    getMeet(db, meetId),
   ]);
 
-  return { detail, admins, grant };
+  const teams = meet
+    ? (await Promise.all(meet.teamIds.map((id) => getTeam(db, id)))).filter(
+        (t): t is Team => t !== null,
+      )
+    : [];
+
+  return {
+    user,
+    meet,
+    admins,
+    grant,
+    teams,
+    hostTeamId: meet?.hostTeamId ?? "",
+  };
 }
 
-/** This screen's own `meetDetail` read — see the loader's doc comment. Not
- *  `useMeet()`, which only carries the meet's metadata now. */
-function useDetail() {
-  return useLoaderData<typeof loader>().detail!;
-}
+/** What `canEditMeet` falls back to when the meet's own D1 row is somehow
+ *  missing — nobody may edit a meet that isn't there. */
+const EMPTY_MEET_FACTS: MeetFacts = {
+  adminIds: [],
+  teamIds: [],
+  athletesMayEnter: false,
+};
 
 /**
- * Everything that changes a meet, behind one check.
- *
- * `mayEditMeet` is asked here, against the same request that loaded the rows —
- * so the screen and the server cannot disagree about whether you run this
- * meet. The old split, where the page rendered from a local copy and asked a
- * separate endpoint about permissions, is what hid the Edit button on meets
- * their own creator had made.
+ * Merge a settings form's fields onto the meet's current `details` —
+ * `intent: "details"` for name/date/type/course/location/lanes/timers,
+ * `intent: "seeding"` for lane assignments and scoring. Pure, so both the
+ * server `action` (merging onto the DO's own copy) and `clientAction`
+ * (merging onto whatever's cached, for the optimistic update) compute
+ * exactly the same next object from exactly the same form.
  */
-export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
-  const access = await meetAccess(db, params.meetId, user);
-  if (!mayEditMeet(access) || !access.userId) {
-    throw new Response("Whoever is running this meet decides that.", {
-      status: 403,
-    });
-  }
-  // Who is doing it, recorded against the rows that remember who let somebody
-  // in. Pulled out here because `mayEditMeet` is `access.admin`, which nobody
-  // signed out can be — so past this line there is always somebody to name.
-  const actor = access.userId;
-
-  const form = await request.formData();
-  const intent = String(form.get("intent") ?? "");
-
-  if (intent === "details") {
-    const lanes = Number(form.get("laneCount"));
-    const timers = Number(form.get("timersPerLane"));
-    const course = form.get("course");
-    await updateMeet(db, params.meetId, {
-      name: String(form.get("name") ?? "").trim() || "Meet",
-      date: String(form.get("date") ?? ""),
-      type: String(form.get("type") ?? "dual") as MeetType,
-      course: isMeetCourse(course) ? course : "SCY",
-      location: String(form.get("location") ?? "").trim(),
-      laneCount: isLaneCount(lanes) ? lanes : 6,
-      timersPerLane: isTimersPerLane(timers) ? timers : 1,
-    });
-    return { ok: true };
-  }
-
-  /**
-   * How the deck is laid out and how it's scored — not derived from anything
-   * else, since a coach setting up the meet is the only one who knows either.
-   *
-   * Lane fields arrive one per racing team, named `lanes-<teamId>`; a team the
-   * form doesn't mention (dropped from the meet since the page loaded, say)
-   * just doesn't end up in the map rather than erroring.
-   */
+function nextDetails(
+  current: MeetDetails,
+  intent: string,
+  form: FormData,
+): MeetDetails {
   if (intent === "seeding") {
     const laneAssignments: LaneAssignments = {};
     for (const [key, value] of form.entries()) {
@@ -165,7 +125,68 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       relay: parseNumberList(String(form.get("relayPoints") ?? "")),
       separateByGender: form.get("separateByGender") === "on",
     };
-    await updateMeet(db, params.meetId, { laneAssignments, scoring });
+    return { ...current, laneAssignments, scoring };
+  }
+
+  const lanes = Number(form.get("laneCount"));
+  const timers = Number(form.get("timersPerLane"));
+  const course = form.get("course");
+  return {
+    ...current,
+    name: String(form.get("name") ?? "").trim() || "Meet",
+    date: String(form.get("date") ?? ""),
+    type: String(form.get("type") ?? "dual") as MeetType,
+    course: isMeetCourse(course) ? course : "SCY",
+    location: String(form.get("location") ?? "").trim() || undefined,
+    laneCount: isLaneCount(lanes) ? lanes : current.laneCount,
+    timersPerLane: isTimersPerLane(timers) ? timers : current.timersPerLane,
+    leadGender: form.get("leadGender") === "M" ? "M" : "F",
+    includeDiving: form.get("includeDiving") === "on",
+    entryVisibility:
+      form.get("entryVisibility") === "own-team" ? "own-team" : "everyone",
+    athletesMayEnter: form.get("athletesMayEnter") === "on",
+  };
+}
+
+/**
+ * Everything that changes a meet, behind one check.
+ *
+ * `canEditMeet` is asked here, against the same request that loaded the rows —
+ * so the screen and the server cannot disagree about whether you run this
+ * meet.
+ *
+ * `details`/`seeding` write through the meet's Durable Object
+ * (`setDetails`) now, not D1's `updateMeet` — see `MeetDetails`' doc comment
+ * in `types/meet.ts`. Everything else here (teams, admins, invites, the
+ * timing code, deleting the meet) is still a plain D1 write; none of it was
+ * ever part of the `MeetDetail` read this page used to also do.
+ */
+export async function action({ params, request, context }: Route.ActionArgs) {
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env),
+    getMeet(db, meetId),
+  ]);
+  const user = await resolveUser(db, rawUser, request);
+  if (!meet || !canEditMeet({ meet, user }) || !user.userId) {
+    throw new Response("Whoever is running this meet decides that.", {
+      status: 403,
+    });
+  }
+  // Who is doing it, recorded against the rows that remember who let somebody
+  // in. Pulled out here because `canEditMeet` is admin-only, which nobody
+  // signed out can be — so past this line there is always somebody to name.
+  const actor = user.userId;
+
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "");
+
+  if (intent === "details" || intent === "seeding") {
+    const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
+    const current = await stub.getDetails(meetId);
+    await stub.setDetails(meetId, nextDetails(current, intent, form));
     return { ok: true };
   }
 
@@ -179,7 +200,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   if (intent === "teams") {
     const teamIds = form.getAll("teamId").map(String).filter(Boolean);
     const host = String(form.get("hostTeamId") ?? "");
-    await updateMeet(db, params.meetId, {
+    await updateMeet(db, meetId, {
       teamIds,
       // A host that isn't racing isn't the host, whatever the form said.
       hostTeamId: teamIds.includes(host) ? host : "",
@@ -206,70 +227,24 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     return { ok: true, team };
   }
 
-  if (intent === "add-event") {
-    await addEvent(db, params.meetId, {
-      distance: Number(form.get("distance")) || 50,
-      stroke: String(form.get("stroke") ?? "Free") as Stroke,
-      gender: String(form.get("gender") ?? "Open") as EventGender,
-    });
-    return { ok: true };
-  }
-
-  if (intent === "remove-event") {
-    await removeEvent(db, String(form.get("eventId")));
-    return { ok: true };
-  }
-
-  if (intent === "reorder") {
-    await setEventOrder(db, form.getAll("eventId").map(String));
-    return { ok: true };
-  }
-
-  if (intent === "diving") {
-    // The lineup is the truth about diving; the option just reports it.
-    const on = form.get("includeDiving") === "on";
-    const events = JSON.parse(String(form.get("events"))) as Parameters<
-      typeof addEventsToMeet
-    >[2];
-    const next = on
-      ? withDiving(
-          params.meetId,
-          events,
-          form.get("leadGender") === "M" ? "M" : "F",
-        )
-      : withoutDiving(events);
-    await updateMeet(db, params.meetId, { includeDiving: on });
-    // Only the diving rows change; everything else keeps its id and position.
-    const added = next.filter((e) => !events.some((o) => o.id === e.id));
-    const gone = events.filter((e) => !next.some((o) => o.id === e.id));
-    for (const event of gone) await removeEvent(db, event.id);
-    if (added.length) await addEventsToMeet(db, params.meetId, added);
-    await setEventOrder(
-      db,
-      renumber(next).map((e) => e.id),
-    );
-    return { ok: true };
-  }
-
   /**
    * Who runs this meet, and the timing code — both behind the check above and
    * no other.
    *
-   * `mayEditMeet` is `access.admin`, which is the row in `meet_admins` that
-   * the two endpoints this replaced each looked up a second time for
-   * themselves. Stepping down passes it for the same reason it always did:
-   * you are only ever in that list if you are an administrator.
+   * `canEditMeet` is a row in `meet_admins` — the same one this whole action
+   * is already gated on. Stepping down passes it for the same reason it
+   * always did: you are only ever in that list if you are an administrator.
    */
   if (intent === "admin-add") {
     const userId = String(form.get("userId") ?? "");
     if (!userId) return { ok: false, error: "Which person?" };
-    await addMeetAdmin(db, params.meetId, userId, actor);
+    await addMeetAdmin(db, meetId, userId, actor);
     return { ok: true };
   }
 
   if (intent === "admin-remove") {
     const userId = String(form.get("userId") ?? "");
-    const result = await removeMeetAdmin(db, params.meetId, userId);
+    const result = await removeMeetAdmin(db, meetId, userId);
     // Refusing to remove the last one is an ordinary answer the card shows,
     // not a failure — so it comes back as data rather than being thrown.
     return result.ok ? { ok: true } : { ok: false, error: result.reason };
@@ -288,16 +263,13 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
     const name = String(form.get("name") ?? "").trim() || null;
     const { user: invitee } = await inviteUser(db, parsed.contact, name);
-    await addMeetAdmin(db, params.meetId, invitee.id, actor);
+    await addMeetAdmin(db, meetId, invitee.id, actor);
 
     // Resending replaces the outstanding link rather than adding a second.
-    await supersedeInvites(db, {
-      meetId: params.meetId,
-      contact: parsed.contact.value,
-    });
+    await supersedeInvites(db, { meetId, contact: parsed.contact.value });
     const token = await createInvite(
       db,
-      { meetId: params.meetId, contact: parsed.contact.value },
+      { meetId, contact: parsed.contact.value },
       actor,
     );
     const link = `${appBaseUrl(request)}sign-in?invite=${encodeURIComponent(token)}`;
@@ -316,14 +288,12 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   /**
    * The QR code a timer scans.
    *
-   * The meet's own date is read here rather than accepted from the form: a
-   * screen may ask for a code, it doesn't get to say when the code expires.
    * Issuing is also how you revoke — a coach who thinks a sheet has gone
    * walkabout taps the same button and prints a new one — which is why there
    * is no separate rotate. The link comes back exactly once.
    */
   if (intent === "grant-create") {
-    const meet = await getMeet(db, params.meetId);
+    const meet = await getMeet(db, meetId);
     if (!meet) return { ok: false, error: "No such meet" };
     const { token, expiresAt } = await issueGrant(db, {
       id: meet.id,
@@ -333,40 +303,52 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   }
 
   if (intent === "grant-revoke") {
-    await revokeGrants(db, params.meetId);
+    await revokeGrants(db, meetId);
     return { ok: true };
   }
 
   if (intent === "delete") {
-    await deleteMeet(db, params.meetId);
+    await deleteMeet(db, meetId);
     return redirect("/meets");
   }
 
   return { ok: false };
 }
 
+/**
+ * Details/seeding submit here first, on the client: merge the form onto
+ * whatever's cached, broadcast-shaped as a `MEET_DETAILS` patch so
+ * `meetCache` updates the same way a socket message would, then hand off to
+ * the real request. Every other intent (teams, admins, invites, the timing
+ * code, delete) has nothing cached to update optimistically, so it's just a
+ * pass-through.
+ */
+export async function clientAction({
+  params,
+  request,
+  serverAction,
+}: Route.ClientActionArgs) {
+  const meetId = params.meetId!;
+  const form = await request.clone().formData();
+  const intent = String(form.get("intent") ?? "");
+
+  if (intent === "details" || intent === "seeding") {
+    const cached = meetCache.getMeet(meetId);
+    if (cached) {
+      const details = nextDetails(cached.details, intent, form);
+      meetCache.applyPatch(meetId, { type: "MEET_DETAILS", details }, () => {});
+    }
+  }
+
+  return serverAction();
+}
+
 export default function MeetInfo({ loaderData }: Route.ComponentProps) {
-  const { admins, grant } = loaderData;
-  const detail = loaderData.detail!;
-  const { access } = useMeet();
-  const { meet, events, entries, swims } = detail;
+  const { user, meet, admins, grant, teams, hostTeamId } = loaderData;
+  const { details } = useMeet();
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const mayEdit = mayEditMeet(access);
-
-  const entryCount = Object.values(entries).reduce(
-    (n, ids) => n + ids.length,
-    0,
-  );
-  const times = recordedCount(detail);
-  const stats = [
-    { label: "Events", value: events.length },
-    { label: "Entries", value: entryCount },
-    { label: "Swims", value: swims.length },
-    { label: "Times", value: times },
-  ];
-
-  const slug = `${meet.name.replace(/[^\w-]+/g, "-").toLowerCase()}-${meet.date}`;
+  const mayEdit = canEditMeet({ meet: meet ?? EMPTY_MEET_FACTS, user });
 
   return (
     <div className="space-y-4">
@@ -380,125 +362,76 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
             ) : undefined
           }
         >
-          {meet.name}
+          {details.name}
         </SectionTitle>
         <p className="text-sm text-slate-600 dark:text-slate-300">
           {[
-            meetSubtitle(meet),
-            meet.date,
-            courseLabel(meet.course),
-            `${meet.laneCount} lanes`,
-            meet.timersPerLane > 1 ? `${meet.timersPerLane} timers a lane` : "",
-            meet.location,
+            meetSubtitle(details),
+            details.date,
+            courseLabel(details.course),
+            `${details.laneCount} lanes`,
+            details.timersPerLane > 1
+              ? `${details.timersPerLane} timers a lane`
+              : "",
+            details.location,
           ]
             .filter(Boolean)
             .join(" · ")}
         </p>
-
-        <dl className="mt-4 grid grid-cols-4 gap-2">
-          {stats.map((stat) => (
-            <div
-              key={stat.label}
-              className="rounded-xl bg-slate-100 p-2 text-center dark:bg-slate-800"
-            >
-              <dd className="text-xl font-bold">{stat.value}</dd>
-              <dt className="text-xs text-slate-500 dark:text-slate-400">
-                {stat.label}
-              </dt>
-            </div>
-          ))}
-        </dl>
       </Card>
 
       {/* Editing is the same page with controls, not a different screen. A
-          reader sees the lineup; whoever runs the meet sees the lineup and can
-          change it. */}
-      {editing && <DetailsEditor />}
+          reader sees the settings; whoever runs the meet sees them and can
+          change them. */}
+      {editing && <DetailsEditor details={details} />}
 
-      {/* Above the lineup on purpose: who is racing decides whose roster the
-          entries grid can draw from, so it is the first thing to get right
-          and the first thing to notice is wrong. */}
-      <MeetTeamsCard />
+      {/* Above seeding on purpose: assigning lanes needs to know which teams
+          there are to assign them to. */}
+      <TeamsCard
+        teams={teams}
+        hostTeamId={hostTeamId}
+        canEdit={mayEdit}
+        coachOf={user.coachOf}
+      />
 
-      {/* Below who's racing, on purpose: assigning lanes needs to know which
-          teams there are to assign them to. */}
-      {editing && <SeedingScoringEditor />}
+      {editing && <SeedingScoringEditor details={details} teams={teams} />}
 
       {/* Directly under who's racing, because they answer adjacent questions —
           which teams are in this, and who among everyone here decides it. */}
-      <MeetAdmins admins={admins} youRunThis={access.admin} />
-
-      <EventList editing={editing} />
+      <MeetAdmins admins={admins} youRunThis={mayEdit} />
 
       {mayEdit && <TimerAccess grant={grant} />}
 
-      <Card>
-        <SectionTitle>Export</SectionTitle>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            disabled={times === 0}
-            onClick={() =>
-              downloadFile(
-                `${slug}-results.csv`,
-                resultsToCsv(detail),
-                "text/csv",
-              )
-            }
-          >
-            Results CSV
-          </Button>
-          <Button
-            onClick={() =>
-              downloadFile(
-                `${slug}.json`,
-                JSON.stringify(detail, null, 2),
-                "application/json",
-              )
-            }
-          >
-            Meet JSON
-          </Button>
-        </div>
-
-        {mayEdit && (
-          <>
-            <hr className="my-4 border-slate-200 dark:border-slate-800" />
-            {confirmDelete ? (
-              <div className="space-y-2">
-                <Banner tone="error">
-                  Deleting <strong>{meet.name}</strong> removes its events,
-                  entries and {times} recorded time{times === 1 ? "" : "s"}. The
-                  team roster isn&rsquo;t touched. This can&rsquo;t be undone.
-                </Banner>
-                <div className="grid grid-cols-2 gap-2">
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="delete" />
-                    <Button type="submit" variant="danger" full>
-                      Delete meet
-                    </Button>
-                  </Form>
-                  <Button onClick={() => setConfirmDelete(false)}>
-                    Cancel
+      {mayEdit && (
+        <Card>
+          <SectionTitle>Delete</SectionTitle>
+          {confirmDelete ? (
+            <div className="space-y-2">
+              <Banner tone="error">
+                Deleting <strong>{details.name}</strong> can&rsquo;t be
+                undone. The team rosters aren&rsquo;t touched.
+              </Banner>
+              <div className="grid grid-cols-2 gap-2">
+                <Form method="post">
+                  <input type="hidden" name="intent" value="delete" />
+                  <Button type="submit" variant="danger" full>
+                    Delete meet
                   </Button>
-                </div>
+                </Form>
+                <Button onClick={() => setConfirmDelete(false)}>Cancel</Button>
               </div>
-            ) : (
-              <Button
-                variant="ghost"
-                full
-                onClick={() => setConfirmDelete(true)}
-              >
-                Delete this meet
-              </Button>
-            )}
-          </>
-        )}
-      </Card>
+            </div>
+          ) : (
+            <Button variant="ghost" full onClick={() => setConfirmDelete(true)}>
+              Delete this meet
+            </Button>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
 
-/** Name, date, type, course, lanes, location — one form, one write. */
 /**
  * Who's racing, wired to the action.
  *
@@ -507,16 +440,25 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
  * page back to the top mid-setup, and so the card can say it's working
  * without the whole screen going into a loading state.
  */
-function MeetTeamsCard() {
-  const detail = useDetail();
-  const { access } = useMeet();
+function TeamsCard({
+  teams,
+  hostTeamId,
+  canEdit,
+  coachOf,
+}: {
+  teams: Team[];
+  hostTeamId: string;
+  canEdit: boolean;
+  coachOf: string[];
+}) {
   const fetcher = useFetcher();
 
   return (
     <MeetTeams
-      detail={detail}
-      canEdit={mayEditMeet(access)}
-      coachOf={access.coachOf}
+      teams={teams}
+      hostTeamId={hostTeamId}
+      canEdit={canEdit}
+      coachOf={coachOf}
       saving={fetcher.state !== "idle"}
       onChange={({ teamIds, hostTeamId }) => {
         const form = new FormData();
@@ -531,18 +473,127 @@ function MeetTeamsCard() {
   );
 }
 
+function DetailsEditor({ details }: { details: MeetDetails }) {
+  const fetcher = useFetcher();
+
+  return (
+    <Card>
+      <SectionTitle>Details</SectionTitle>
+      <fetcher.Form method="post" className="space-y-3">
+        <input type="hidden" name="intent" value="details" />
+        <Field label="Name">
+          <TextInput
+            name="name"
+            defaultValue={details.name}
+            autoCapitalize="words"
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Date">
+            <TextInput type="date" name="date" defaultValue={details.date} />
+          </Field>
+          <Field label="Type">
+            <Select name="type" defaultValue={details.type}>
+              {MEET_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Course">
+            <Select name="course" defaultValue={details.course}>
+              {MEET_COURSES.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {courseLabel(c.value)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Lanes">
+            <Select name="laneCount" defaultValue={details.laneCount}>
+              {LANE_COUNTS.map((n: LaneCount) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        {/* How many stopwatches stand behind a lane, which is a fact about
+            the deck rather than a way of working: whether those watches
+            report themselves from three phones or get read onto one sheet is
+            answered on each phone, at the lane picker. */}
+        <Field
+          label="Timers per lane"
+          hint={
+            details.timersPerLane > 1
+              ? "A timing phone can hold the sheet for all of them, or be one timer’s own watch."
+              : "One watch a lane. Raise it and a phone can record every timer’s time on the lane."
+          }
+        >
+          <Select name="timersPerLane" defaultValue={details.timersPerLane}>
+            {TIMERS_PER_LANE.map((n: TimersPerLane) => (
+              <option key={n} value={n}>
+                {n === 1 ? "1 — one watch a lane" : `${n} watches a lane`}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Location">
+          <TextInput
+            name="location"
+            defaultValue={details.location ?? ""}
+            autoCapitalize="words"
+          />
+        </Field>
+        <label className="flex min-h-12 touch-manipulation items-center gap-3">
+          <input
+            type="checkbox"
+            name="includeDiving"
+            defaultChecked={details.includeDiving}
+            className="h-6 w-6 rounded border-slate-300"
+          />
+          <span className="text-sm font-semibold">Include diving</span>
+        </label>
+        <label className="flex min-h-12 touch-manipulation items-center gap-3">
+          <input
+            type="checkbox"
+            name="athletesMayEnter"
+            defaultChecked={details.athletesMayEnter}
+            className="h-6 w-6 rounded border-slate-300"
+          />
+          <span className="text-sm font-semibold">
+            Swimmers may enter themselves
+          </span>
+        </label>
+        <Field label="Who can see entries before the meet">
+          <Select name="entryVisibility" defaultValue={details.entryVisibility}>
+            <option value="everyone">Everyone</option>
+            <option value="own-team">Coaches, their own team only</option>
+          </Select>
+        </Field>
+        <Button type="submit" variant="primary" full>
+          {fetcher.state === "submitting" ? "Saving…" : "Save details"}
+        </Button>
+      </fetcher.Form>
+    </Card>
+  );
+}
+
 /**
  * The rules the meet runs by: which lanes each team swims, and how places
  * turn into points.
- *
- * Both are configuration only — nothing downstream reads either yet. They're
- * asked for here anyway because a coach setting a meet up knows both answers
- * at setup time, and the alternative is asking again later when nobody
- * remembers what was agreed on deck.
  */
-function SeedingScoringEditor() {
-  const detail = useDetail();
-  const { meet, teams } = detail;
+function SeedingScoringEditor({
+  details,
+  teams,
+}: {
+  details: MeetDetails;
+  teams: Team[];
+}) {
   const fetcher = useFetcher();
 
   return (
@@ -565,7 +616,7 @@ function SeedingScoringEditor() {
                 <TextInput
                   name={`lanes-${team.id}`}
                   defaultValue={formatNumberList(
-                    meet.laneAssignments[team.id] ?? [],
+                    details.laneAssignments[team.id] ?? [],
                   )}
                   placeholder="1, 3, 5"
                   inputMode="numeric"
@@ -583,14 +634,14 @@ function SeedingScoringEditor() {
           <Field label="Individual points" hint="Best place first">
             <TextInput
               name="individualPoints"
-              defaultValue={formatNumberList(meet.scoring.individual)}
+              defaultValue={formatNumberList(details.scoring.individual)}
               placeholder="6, 4, 3, 2, 1"
             />
           </Field>
           <Field label="Relay points" hint="Best place first">
             <TextInput
               name="relayPoints"
-              defaultValue={formatNumberList(meet.scoring.relay)}
+              defaultValue={formatNumberList(details.scoring.relay)}
               placeholder="8, 4"
             />
           </Field>
@@ -600,7 +651,7 @@ function SeedingScoringEditor() {
           <input
             type="checkbox"
             name="separateByGender"
-            defaultChecked={meet.scoring.separateByGender}
+            defaultChecked={details.scoring.separateByGender}
             className="h-6 w-6 rounded border-slate-300"
           />
           <span className="text-sm font-semibold">
@@ -614,221 +665,6 @@ function SeedingScoringEditor() {
             : "Save seeding & scoring"}
         </Button>
       </fetcher.Form>
-    </Card>
-  );
-}
-
-function DetailsEditor() {
-  const detail = useDetail();
-  const { meet } = detail;
-  const fetcher = useFetcher();
-
-  return (
-    <Card>
-      <SectionTitle>Details</SectionTitle>
-      <fetcher.Form method="post" className="space-y-3">
-        <input type="hidden" name="intent" value="details" />
-        <Field label="Name">
-          <TextInput
-            name="name"
-            defaultValue={meet.name}
-            autoCapitalize="words"
-          />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Date">
-            <TextInput type="date" name="date" defaultValue={meet.date} />
-          </Field>
-          <Field label="Type">
-            <Select name="type" defaultValue={meet.type}>
-              {MEET_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Course">
-            <Select name="course" defaultValue={meet.course}>
-              {MEET_COURSES.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {courseLabel(c.value)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Lanes">
-            <Select name="laneCount" defaultValue={meet.laneCount}>
-              {LANE_COUNTS.map((n: LaneCount) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-        {/* How many stopwatches stand behind a lane, which is a fact about
-            the deck rather than a way of working: whether those watches
-            report themselves from three phones or get read onto one sheet is
-            answered on each phone, at the lane picker. */}
-        <Field
-          label="Timers per lane"
-          hint={
-            meet.timersPerLane > 1
-              ? "A timing phone can hold the sheet for all of them, or be one timer\u2019s own watch."
-              : "One watch a lane. Raise it and a phone can record every timer\u2019s time on the lane."
-          }
-        >
-          <Select name="timersPerLane" defaultValue={meet.timersPerLane}>
-            {TIMERS_PER_LANE.map((n: TimersPerLane) => (
-              <option key={n} value={n}>
-                {n === 1 ? "1 \u2014 one watch a lane" : `${n} watches a lane`}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="Location">
-          <TextInput
-            name="location"
-            defaultValue={meet.location ?? ""}
-            autoCapitalize="words"
-          />
-        </Field>
-        <Button type="submit" variant="primary" full>
-          {fetcher.state === "submitting" ? "Saving…" : "Save details"}
-        </Button>
-      </fetcher.Form>
-    </Card>
-  );
-}
-
-/**
- * The running order.
- *
- * Read-only it shows how far along the meet is, marking events official —
- * derived from every lane having been signed off, so it can't claim more than
- * the calls underneath it. Editing adds the controls in place.
- */
-function EventList({ editing }: { editing: boolean }) {
-  const detail = useDetail();
-  const { events, entries } = detail;
-  const fetcher = useFetcher();
-
-  const move = (index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= events.length) return;
-    const order = events.map((e) => e.id);
-    [order[index], order[target]] = [order[target], order[index]];
-    const data = new FormData();
-    data.set("intent", "reorder");
-    for (const id of order) data.append("eventId", id);
-    fetcher.submit(data, { method: "post" });
-  };
-
-  return (
-    <Card>
-      <SectionTitle>Events ({events.length})</SectionTitle>
-      {events.length === 0 ? (
-        <p className="text-sm text-slate-500">No events yet.</p>
-      ) : (
-        <ol className="divide-y divide-slate-100 dark:divide-slate-800">
-          {events.map((event, index) => {
-            const entered = (entries[event.id] ?? []).length;
-            const official = eventClosed(detail, event.id);
-            return (
-              <li
-                key={event.id}
-                className="flex items-center gap-2 py-2 text-sm"
-              >
-                <span className="w-6 text-right tabular-nums text-slate-400">
-                  {index + 1}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {eventName(event)}
-                </span>
-                {official && (
-                  <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-                    official
-                  </span>
-                )}
-                <span className="shrink-0 text-xs text-slate-500">
-                  {entered} entered
-                </span>
-                {editing && (
-                  <span className="flex shrink-0 gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => move(index, -1)}
-                    >
-                      ↑
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => move(index, 1)}
-                    >
-                      ↓
-                    </Button>
-                    <fetcher.Form method="post">
-                      <input type="hidden" name="intent" value="remove-event" />
-                      <input type="hidden" name="eventId" value={event.id} />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        variant="ghost"
-                        title={
-                          official
-                            ? "This event has official results — removing it discards them."
-                            : "Remove this event"
-                        }
-                      >
-                        ✕
-                      </Button>
-                    </fetcher.Form>
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      )}
-
-      {editing && (
-        <fetcher.Form method="post" className="mt-3 flex items-end gap-2">
-          <input type="hidden" name="intent" value="add-event" />
-          <Field label="Distance">
-            <TextInput
-              name="distance"
-              type="number"
-              defaultValue={50}
-              inputMode="numeric"
-              className="w-20"
-            />
-          </Field>
-          <Field label="Stroke">
-            <Select name="stroke" defaultValue="Free">
-              {STROKES.map((stroke) => (
-                <option key={stroke} value={stroke}>
-                  {stroke}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Gender">
-            <Select name="gender" defaultValue="F">
-              <option value="F">Girls</option>
-              <option value="M">Boys</option>
-              <option value="Open">Open</option>
-            </Select>
-          </Field>
-          <Button type="submit" variant="primary">
-            Add
-          </Button>
-        </fetcher.Form>
-      )}
     </Card>
   );
 }

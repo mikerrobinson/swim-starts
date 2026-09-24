@@ -74,7 +74,10 @@ function publish(conn: Connection): void {
 }
 
 function wsUrl(meetId: string): string {
-  const url = new URL(apiUrl(`/api/meets/${encodeURIComponent(meetId)}/live`), location.href);
+  const url = new URL(
+    apiUrl(`/api/meets/${encodeURIComponent(meetId)}/live`),
+    location.href,
+  );
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
 }
@@ -109,7 +112,8 @@ function open(meetId: string, conn: Connection): void {
     if (conn.closed || conn.ws !== ws) return;
     conn.state = { ...conn.state, connected: false };
     publish(conn);
-    const delay = RECONNECT_MS[Math.min(conn.reconnectAttempt, RECONNECT_MS.length - 1)];
+    const delay =
+      RECONNECT_MS[Math.min(conn.reconnectAttempt, RECONNECT_MS.length - 1)];
     conn.reconnectAttempt += 1;
     conn.reconnectTimer = setTimeout(() => open(meetId, conn), delay);
   };
@@ -168,14 +172,4 @@ export function joinMeetLive(
     if (current.reconnectTimer) clearTimeout(current.reconnectTimer);
     connections.delete(meetId);
   };
-}
-
-/** The meet's current live state, without subscribing to it. */
-export function meetLiveSnapshot(meetId: string): MeetLiveState {
-  return (
-    connections.get(meetId)?.state ?? {
-      snapshot: readCache(meetId) ?? EMPTY_SNAPSHOT,
-      connected: false,
-    }
-  );
 }

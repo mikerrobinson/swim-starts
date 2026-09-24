@@ -41,9 +41,11 @@ export default [
     route(":event/:heat/:lane", "routes/timer.tsx"),
   ]),
 
-  route("meets2/:meetId/timer", "routes/meets2.tsx", [
-    index("routes/timer-lanes2.tsx"),
-    route(":event/:heat/:lane", "routes/timer2.tsx"),
+  route("meets2/:meetId", "routes/meets2.tsx", [
+    route("info", "routes/meet-info.tsx"),
+    route("entries", "routes/entries.tsx"),
+    route("timer", "routes/timer-lanes2.tsx"),
+    route("timer/:event/:heat/:lane", "routes/timer2.tsx"),
   ]),
 
   layout("routes/shell.tsx", [
@@ -73,14 +75,13 @@ export default [
     // (a plain D1 read, or the meet's Durable Object), rather than all of it
     // arriving once at the top.
     route("meets/:meetId", "routes/meet-layout.tsx", [
-      index("routes/meet-info.tsx"),
+      index("routes/meet-redirect.tsx"),
       // Public, read-only: one event's declared entries, seeds and current
       // results. Ordered after the literal children below; React Router
       // ranks a static segment over a dynamic one at the same depth
       // regardless of declaration order, but the ordering still reads truer
       // this way.
       route(":eventId", "routes/event-detail.tsx"),
-      route("entries", "routes/entries.tsx"),
       route("results", "routes/results.tsx", [
         index("routes/results-index.tsx"),
         // by-event / by-swimmer / team-scores, as a path segment rather than

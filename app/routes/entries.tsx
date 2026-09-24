@@ -1,26 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useSearchParams, useSubmit } from "react-router";
 import type { Route } from "./+types/entries";
-import { AthleteSheet } from "~/components/AthleteSheet";
 import { Button, EmptyState, TextInput } from "~/components/ui";
-import { enrollmentIndex } from "~/lib/roster";
 import { whyNotEnter } from "~/lib/events";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
-import { meetDetail } from "~/lib/meets.server";
-import { useMeet } from "./meet-layout";
-import { useMeetLive } from "~/hooks/use-meet-live";
-import { usePending, useSend } from "~/state/outbox";
-import { applyPending } from "~/lib/pending";
+import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import { canEditMeet, canEnter, canRecordTime, type MeetFacts } from "~/lib/access";
+import { getMeet } from "~/lib/meets.server";
+import {
+  getTeam,
+  listSeasons,
+  roster as teamRoster,
+  seasonForDate,
+  type RosterEntry,
+} from "~/lib/teams.server";
+import { meetCache } from "~/lib/meetCache";
+import { useMeet } from "./meets2";
+import { useUser } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
   byAthlete,
   displayName,
+  getSortedEvents,
   raceKey,
   shortStroke,
-  withLiveTables,
   type Event,
   type Stroke,
 } from "~/types/meet";
+import type { Meet } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
@@ -28,26 +34,135 @@ export function meta({}: Route.MetaArgs) {
 }
 
 /**
- * This screen's own whole-meet read.
- *
- * Same URL, same grid, same everything as before the meet's live tables
- * moved into a Durable Object — `meet-layout`'s loader doesn't hand this down
- * for free (see its doc comment), so it's read here instead.
- *
- * The four live tables — entries included, now that `declareEntry` makes
- * them genuinely DO-owned — come from the meet's Durable Object rather than
- * D1, same reasoning as admin/splits/results.
+ * `user`, `meet`, and the racing teams' rosters — the things this screen
+ * needs that aren't on `MeetManifest` (see `useMeet()` in the component
+ * below). None of it ever came from the events/entries/swims/watches read
+ * this screen used to also do: `user` is meet-agnostic identity
+ * (`resolveUser`, same as `root.tsx`), `meet` is what `access.ts`'s
+ * predicates need to decide anything about *this* meet (`adminIds`/
+ * `teamIds`/`athletesMayEnter` — see `canEnter`/`canRecordTime` below), and
+ * a roster is a `teams`/`enrollments` join — "who's racing" stays D1's, not
+ * the Durable Object's, same reasoning as `meet-info.tsx`'s `teams` read.
  */
-export async function loader({ params, context }: Route.LoaderArgs) {
+export async function loader({ params, request, context }: Route.LoaderArgs) {
+  const env = context.cloudflare.env as SyncEnv;
+  const db = requireDb(env);
+  const rawUser = await currentUser(request, env);
+  const meetId = params.meetId!;
+
+  const [user, meet] = await Promise.all([
+    resolveUser(db, rawUser, request),
+    getMeet(db, meetId),
+  ]);
+
+  const rosterEntries = meet ? await meetRoster(db, meet) : [];
+
+  return {
+    user,
+    meet,
+    athletes: rosterEntries.map((r) => r.athlete),
+    enrollments: rosterEntries.map((r) => r.enrollment),
+  };
+}
+
+/** What `access.ts`'s predicates fall back to when the meet's own D1 row
+ *  is somehow missing — nobody may edit or enter a meet that isn't there. */
+const EMPTY_MEET_FACTS: MeetFacts = {
+  adminIds: [],
+  teamIds: [],
+  athletesMayEnter: false,
+};
+
+/** Every racing team's roster, for the season the meet's date falls in. */
+async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
+  const perTeam = await Promise.all(
+    meet.teamIds.map(async (teamId) => {
+      const [team, seasons] = await Promise.all([
+        getTeam(db, teamId),
+        listSeasons(db, teamId),
+      ]);
+      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
+      return teamRoster(db, teamId, season?.id);
+    }),
+  );
+  return perTeam.flat();
+}
+
+/**
+ * One tap, one entry. `entering`/`eventId`/`athleteId` are all this needs —
+ * see `MeetDurableObject.declareEntry`, which re-checks everything
+ * (`canEnter`, `whyNotEnter`) against the session rather than trusting the
+ * client's own read of either.
+ */
+export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env;
   const db = requireDb(env as SyncEnv);
-  const detail = await meetDetail(db, params.meetId);
-  if (!detail) return { detail: null };
+  const meetId = params.meetId!;
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env as SyncEnv),
+    getMeet(db, meetId),
+  ]);
+  if (!meet) throw new Response("No such meet", { status: 404 });
+  const user = await resolveUser(db, rawUser, request);
 
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(
-    params.meetId,
+  const form = await request.formData();
+  const eventId = String(form.get("eventId") ?? "");
+  const athleteId = String(form.get("athleteId") ?? "");
+  const entering = form.get("entering") === "true";
+
+  const stub = env.MEET_DO.getByName(meetId);
+  const result = await stub.declareEntry(
+    { meetId, eventId, athleteId, entering },
+    meet,
+    user,
   );
-  return { detail: withLiveTables(detail, live) };
+  if (!result.ok) {
+    throw new Response(result.error, { status: result.status });
+  }
+  return { ok: true };
+}
+
+/**
+ * The tick moves the instant it's tapped: patch `meetCache`'s cached
+ * manifest the same shape a `MEET_DETAILS`/`ENTRY` broadcast would, then
+ * hand off to the real request. Refused writes (an entry limit, mostly)
+ * don't reach here in practice — `locked` below disables the tap before it
+ * can happen — so there's nothing to roll back on the rare case the server
+ * disagrees; the next revalidation just shows what actually stuck.
+ */
+export async function clientAction({
+  params,
+  request,
+  serverAction,
+}: Route.ClientActionArgs) {
+  const meetId = params.meetId!;
+  const form = await request.clone().formData();
+  const eventId = String(form.get("eventId") ?? "");
+  const athleteId = String(form.get("athleteId") ?? "");
+  const entering = form.get("entering") === "true";
+  // Set by the component from `useUser()` — see `toggle` below. Only for
+  // this optimistic patch's own accuracy; the server never trusts it,
+  // deciding `entered_by` itself from the session (`declareEntry`).
+  const enteredBy = String(form.get("enteredBy") ?? "");
+
+  meetCache.applyPatch(
+    meetId,
+    {
+      type: "ENTRY",
+      entry: {
+        id: "",
+        eventId,
+        athleteId,
+        exhibition: false,
+        enteredAt: Date.now(),
+        enteredBy,
+      },
+      isDelete: !entering,
+    },
+    () => {},
+  );
+
+  return serverAction();
 }
 
 /**
@@ -94,7 +209,6 @@ interface Race {
   open?: Event;
 }
 
-/** The event in this race that a given athlete would actually swim. */
 /** How a race reads in prose — diving has no distance worth printing. */
 function raceLabel(race: Race): string {
   return race.stroke === "Diving"
@@ -108,22 +222,19 @@ function eventFor(race: Race, athlete: Athlete): Event | undefined {
 }
 
 export default function Registration({ loaderData }: Route.ComponentProps) {
-  const loaded = loaderData.detail!;
-  const { access } = useMeet();
-  // Two coaches enter their own swimmers on this grid at the same time, and
-  // they write different rows — so each should see the other's ticks appear
-  // rather than find out at seeding. The meet's live connection now, rather
-  // than a poll — entries are DO-owned like the other three live tables.
-  const live = useMeetLive(loaded.meet.id, loaded);
-  const pending = usePending();
-  const send = useSend();
-  // What the server has acknowledged, plus what this device has said since.
-  const detail = useMemo(
-    () => applyPending(withLiveTables(loaded, live.snapshot), pending),
-    [loaded, live.snapshot, pending],
-  );
-  const { meet, events: meetEvents, entries, athletes } = detail;
+  const { athletes, enrollments } = loaderData;
+  const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
+  const meet = useMeet();
+  const user = useUser();
+  const submit = useSubmit();
   const { nameOrder } = useViewPrefs();
+
+  const isAdmin = canEditMeet({ meet: meetFacts, user });
+  // This person's own racing-team coaching, narrowed from the global list
+  // `useUser()` carries to just the teams actually in this meet.
+  const myRacingTeams = meetFacts.teamIds.filter((id) =>
+    user.coachOf.includes(id),
+  );
 
   const [params] = useSearchParams();
   const [search, setSearch] = useState("");
@@ -134,10 +245,22 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const genderFilter: Gender | "all" =
     param === "f" ? "F" : param === "m" ? "M" : "all";
 
-  const enrollments = useMemo(
-    () => enrollmentIndex(detail.enrollments),
-    [detail.enrollments],
+  const enrollmentByAthlete = useMemo(
+    () => new Map(enrollments.map((e) => [e.athleteId, e] as const)),
+    [enrollments],
   );
+
+  /** `useMeet().entries` (`Record<EntryKey, Entry>`) regrouped by event —
+   *  the shape `whyNotEnter`/the counts below already expect. */
+  const entriesByEvent = useMemo(() => {
+    const grouped: Record<string, string[]> = {};
+    for (const entry of Object.values(meet.entries)) {
+      (grouped[entry.eventId] ??= []).push(entry.athleteId);
+    }
+    return grouped;
+  }, [meet.entries]);
+
+  const meetEvents = useMemo(() => getSortedEvents(meet), [meet]);
 
   /**
    * Everyone enterable in this meet, before the screen's own filters.
@@ -156,12 +279,12 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
    */
   const roster = useMemo(() => {
     const mine =
-      !access.admin && access.coachOf.length > 0
-        ? detail.enrollments.filter((e) => access.coachOf.includes(e.teamId))
-        : detail.enrollments;
+      !isAdmin && myRacingTeams.length > 0
+        ? enrollments.filter((e) => myRacingTeams.includes(e.teamId))
+        : enrollments;
     const onRoster = new Set(mine.map((e) => e.athleteId));
     return athletes.filter((a) => onRoster.has(a.id));
-  }, [athletes, detail.enrollments, access.admin, access.coachOf]);
+  }, [athletes, enrollments, isAdmin, myRacingTeams]);
 
   const swimmers = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -211,27 +334,26 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   /** Registration lookup as a set of "eventId|athleteId" keys. */
   const registered = useMemo(() => {
     const keys = new Set<string>();
-    for (const [eventId, ids] of Object.entries(entries)) {
+    for (const [eventId, ids] of Object.entries(entriesByEvent)) {
       for (const id of ids) keys.add(`${eventId}|${id}`);
     }
     return keys;
-  }, [entries]);
+  }, [entriesByEvent]);
 
   const perAthlete = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const ids of Object.values(entries)) {
+    for (const ids of Object.values(entriesByEvent)) {
       for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
     }
     return counts;
-  }, [entries]);
+  }, [entriesByEvent]);
 
   // A meet can keep lineups to the teams they belong to. Before the racing, a
   // lineup is competitive information; a reader with no stake in the meet has
   // no claim on it, and the results are public either way.
   const mayLook =
-    meet.entryVisibility === "everyone" ||
-    access.admin ||
-    access.coachOf.length > 0;
+    meet.details.entryVisibility === "everyone" ||
+    canRecordTime({ meet: meetFacts, user });
   if (!mayLook) {
     return (
       <EmptyState title="Entries aren't public for this meet">
@@ -247,36 +369,45 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const rosterIds = new Set(roster.map((a) => a.id));
   const entryCount = (event?: Event) =>
     event
-      ? (entries[event.id] ?? []).filter((id) => rosterIds.has(id)).length
+      ? (entriesByEvent[event.id] ?? []).filter((id) => rosterIds.has(id))
+          .length
       : 0;
 
   /** What the limit checks read. Assembled once rather than per cell. */
   const entryContext = {
     events: meetEvents,
-    entries,
-    limits: meet.limits,
+    entries: entriesByEvent,
+    limits: meet.details.limits,
   };
 
-  /** Whose entries this person may change — see `mayEnter` on the server. */
-  const mayEditFor = (athleteId: string): boolean => {
-    if (access.admin) return true;
-    const teams = detail.enrollments
-      .filter((e) => e.athleteId === athleteId)
-      .map((e) => e.teamId);
-    if (teams.some((t) => access.coachOf.includes(t))) return true;
-    return meet.athletesMayEnter && access.athleteId === athleteId;
-  };
+  /** Whose entries this person may change — see `canEnter` on the server. */
+  const mayEditFor = (athleteId: string): boolean =>
+    canEnter({
+      meet: meetFacts,
+      user,
+      athlete: {
+        id: athleteId,
+        teamIds: enrollments
+          .filter((e) => e.athleteId === athleteId)
+          .map((e) => e.teamId),
+      },
+    });
 
   /**
-   * One tap, one row, queued.
-   *
-   * The tick moves immediately because the queue is folded over loader data
-   * above; the write goes out behind it and the grid settles onto the
-   * server's answer when it lands. On a deck with no signal the ticks keep
-   * working and the header says how many are waiting.
+   * One tap, one row, submitted. The tick moves immediately —
+   * `clientAction` above patches the cache before the request even leaves —
+   * and `submit`'s `navigate: false` keeps this a background write rather
+   * than a page transition, so tapping ten cells in a row doesn't queue ten
+   * history entries.
    */
   const toggle = (eventId: string, athleteId: string, entering: boolean) => {
-    send({ kind: "entry", meetId: meet.id, eventId, athleteId, entering });
+    const form = new FormData();
+    form.set("eventId", eventId);
+    form.set("athleteId", athleteId);
+    form.set("entering", String(entering));
+    // For `clientAction`'s optimistic patch only — see its doc comment.
+    form.set("enteredBy", user.userId ?? "");
+    submit(form, { method: "post", navigate: false });
   };
 
   /** The count line under a column header, phrased for the current filter. */
@@ -302,7 +433,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
               // Their own team if they coach one of the ones racing, since
               // that is the roster they can actually add to; otherwise the
               // host's, which is the one they came to look at.
-              to={`/teams/${access.coachOf[0] ?? meet.hostTeamId ?? meet.teamIds[0] ?? ""}`}
+              to={`/teams/${myRacingTeams[0] ?? loaderData.meet?.hostTeamId ?? meetFacts.teamIds[0] ?? ""}`}
               className="font-semibold text-blue-600 underline"
             >
               Add swimmers
@@ -310,16 +441,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
             .
           </>
         ) : races.length === 0 ? (
-          <>
-            This meet has no events.{" "}
-            <Link
-              to={`/meets/${meet.id}/setup`}
-              className="font-semibold text-blue-600 underline"
-            >
-              Set them up
-            </Link>
-            .
-          </>
+          <>This meet has no events yet.</>
         ) : (
           <>No {genderFilter === "F" ? "girls" : "boys"} on the roster.</>
         )}
@@ -420,8 +542,8 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                     </span>
                     <span className="block text-[11px] font-normal text-slate-500">
                       {athlete.gender}
-                      {enrollments.get(athlete.id)?.year &&
-                        ` · ${enrollments.get(athlete.id)?.year}`}{" "}
+                      {enrollmentByAthlete.get(athlete.id)?.year &&
+                        ` · ${enrollmentByAthlete.get(athlete.id)?.year}`}{" "}
                       · {perAthlete.get(athlete.id) ?? 0} ev
                     </span>
                   </th>

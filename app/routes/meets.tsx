@@ -15,11 +15,9 @@ import {
 import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { coachedTeamsFor } from "~/lib/auth.server";
-import { createMeet, listMeets, type MeetSummary } from "~/lib/meets.server";
+import { createMeet, listMeets } from "~/lib/meets.server";
 import { addMeetAdmin } from "~/lib/admins.server";
 import { teamsCoachedBy } from "~/lib/coaches.server";
-import { defaultEvents, dualMeetRaceCount } from "~/lib/events";
-import { addEventsToMeet } from "~/lib/meets.server";
 import { useSession } from "~/state/session";
 import { TeamPicker } from "~/components/TeamPicker";
 import {
@@ -27,6 +25,7 @@ import {
   isLaneCount,
   isMeetCourse,
   LANE_COUNTS,
+  meetDetailsFrom,
   MEET_COURSES,
   MEET_TYPES,
   meetTypeLabel,
@@ -140,32 +139,19 @@ export async function action({ request, context }: Route.ActionArgs) {
   // rather than inferred later from who happened to push it first.
   await addMeetAdmin(db, meet.id, user.id, user.id);
 
-  // Most meets swim the same lineup, so start from the standard order rather
-  // than an empty setup screen.
-  if (form.get("withDefaults") === "on") {
-    await addEventsToMeet(
-      db,
-      meet.id,
-      defaultEvents(meet.id, { course: meet.course }),
-    );
-  }
+  // Seed the meet's Durable Object with its starting settings — from here
+  // on, `meet-info.tsx`'s `setDetails` is what keeps them current, not this
+  // D1 row (see `meetDetailsFrom`'s doc comment in `types/meet.ts`).
+  await context.cloudflare.env.MEET_DO.getByName(meet.id).setDetails(
+    meet.id,
+    meetDetailsFrom(meet),
+  );
 
   return redirect(`/meets/${meet.id}`);
 }
 
 function isUpcoming(date: string, today: string): boolean {
   return date >= today;
-}
-
-function summarize(row: MeetSummary): string {
-  const parts = [
-    `${row.eventCount} event${row.eventCount === 1 ? "" : "s"}`,
-    `${row.entryCount} entr${row.entryCount === 1 ? "y" : "ies"}`,
-  ];
-  if (row.timedLanes > 0) {
-    parts.push(`${row.timedLanes} time${row.timedLanes === 1 ? "" : "s"}`);
-  }
-  return parts.join(" · ");
 }
 
 export default function Meets({ loaderData }: Route.ComponentProps) {
@@ -265,9 +251,6 @@ export default function Meets({ loaderData }: Route.ComponentProps) {
                       ]
                         .filter(Boolean)
                         .join(" · ")}
-                    </span>
-                    <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
-                      {summarize(row)}
                     </span>
                   </span>
                   <span aria-hidden className="text-xl text-slate-400">
@@ -479,19 +462,6 @@ function NewMeetSheet({
             autoCapitalize="words"
           />
         </Field>
-
-        <label className="flex min-h-12 touch-manipulation items-center gap-3">
-          <input
-            type="checkbox"
-            name="withDefaults"
-            defaultChecked
-            className="h-6 w-6 rounded border-slate-300"
-          />
-          <span className="text-sm font-semibold">
-            Start with the standard girls/boys order (
-            {dualMeetRaceCount(true) * 2} events)
-          </span>
-        </label>
 
         <Button
           type="submit"

@@ -6,26 +6,15 @@
  * wins a merge, and no tombstones — a row is written by whoever owns it, and
  * a delete is a DELETE.
  *
- * These shapes are mirrored exactly by the meet's Durable Object
- * (`meet-do.server.ts`), which is where `entries`, `swims` and `watches`
- * actually live for the duration of a meet — D1 holds the checkpointed copy.
- * Everything else here (teams, seasons, athletes, enrollments, meets, events)
- * is D1-only.
- *
- * Two shapes are worth knowing before reading the rest.
- *
- * **`meet_id` is denormalised onto events, entries, swims and watches.** It
- * is derivable by joining, and it's here anyway because every screen under a
- * meet asks "everything for this meet" and that answers fastest as a handful
- * of indexed single-table reads.
- *
- * **Rows several people write at once are keyed so they can't collide.** A
- * swim is `(event_id, heat, lane)`. Six timers seating their own lane write
- * six different rows; three timers on one lane write three different rows.
- * `watches` has no such key at all — it's append-only, so two timers, or one
- * timer correcting themselves, can only ever add rows, never contend for one.
- * Concurrency is a property of the keys (or their absence) rather than
- * something the app has to reconcile afterwards.
+ * D1 holds only what's global across meets — teams, seasons, athletes,
+ * enrollments — plus a minimal index row per meet (`meets`) and a
+ * read-optimized archive of finished ones (`results`). A meet's own
+ * programme and race-day state — events, entries, swims, watches — live
+ * entirely in that meet's Durable Object (`meet-do.server.ts`) for as long as
+ * it's `status = 'scheduled'`; there is no D1 mirror of them to keep in sync.
+ * `results` is written once, when an admin completes the meet — see
+ * `MeetDurableObject.completeMeet` — and is D1's only record of it from then
+ * on; the DO for a completed meet is never spun back up to answer a read.
  *
  * The account tables — users, identities, sessions, invites — are defined in
  * `auth.server.ts`; meet grants in `grants.server.ts`, and who runs what in
@@ -103,6 +92,7 @@ const SCHEMA = [
      max_per_team_per_event INTEGER,
      lane_assignments TEXT,
      scoring TEXT,
+     status TEXT NOT NULL DEFAULT 'scheduled',
      created_at INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS meets_by_date ON meets (date)`,
@@ -116,115 +106,37 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS meet_teams_by_team ON meet_teams (team_id)`,
 
   /**
-   * The programme. `position` is the order events are swum in, so reordering
-   * is an update to a column rather than a rewrite of a list.
+   * The read-optimized archive of a finished meet — written once, in one
+   * batch, by `MeetDurableObject.completeMeet`, and D1's only record of that
+   * meet's racing from then on.
+   *
+   * Fully denormalized on purpose: a completed meet's Durable Object is never
+   * spun back up to answer a read, so this row has to carry everything a
+   * results page needs by itself — the event's distance/stroke/gender
+   * (`eventName()` in `types/meet.ts` renders them) rather than an event id
+   * to look up, and the swimmer's name/team rather than an athlete id to
+   * join against a roster that may have since changed.
    */
-  `CREATE TABLE IF NOT EXISTS events (
+  `CREATE TABLE IF NOT EXISTS results (
      meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
-     position INTEGER NOT NULL,
+     event_number INTEGER NOT NULL,
      distance INTEGER NOT NULL,
      stroke TEXT NOT NULL,
      gender TEXT NOT NULL,
-     name TEXT,
-     PRIMARY KEY (meet_id, event_id)
-   )`,
-  `CREATE INDEX IF NOT EXISTS events_by_meet ON events (meet_id, position)`,
-
-  /**
-   * One swimmer in one race. Two coaches entering their own never collide.
-   *
-   * `entered_at` is what auto-seeding ranks by in place of a real seed time:
-   * first entered swims the middle lane until the app has a time to seed by.
-   * Seating someone never writes here — see `swims` — so this table can
-   * disagree with who's actually in a lane, on purpose.
-   */
-  `CREATE TABLE IF NOT EXISTS entries (
-     meet_id TEXT NOT NULL,
-     event_id TEXT NOT NULL,
-     athlete_id TEXT NOT NULL,
-     seed_time_ms INTEGER,
-     exhibition INTEGER NOT NULL DEFAULT 0,
-     entered_at INTEGER NOT NULL DEFAULT 0,
-     entered_by TEXT,
-     PRIMARY KEY (event_id, athlete_id),
-     FOREIGN KEY (meet_id, event_id) 
-       REFERENCES events(meet_id, event_id) 
-       ON DELETE CASCADE
-   )`,
-  `CREATE INDEX IF NOT EXISTS entries_by_meet ON entries (meet_id)`,
-  `CREATE INDEX IF NOT EXISTS entries_by_athlete ON entries (athlete_id)`,
-
-  /**
-   * One planned swim. The unit everything about running a meet hangs off.
-   *
-   * There is no heats table: a heat is which heat, a small integer, so the
-   * heats of an event are the distinct heats across its swims and a heat
-   * cannot exist with nothing in it. Keyed by event, heat and lane, so the
-   * coach seeding, the administrator correcting the desk and the timer fixing
-   * a name behind the blocks all write the same row and the last wins.
-   *
-   * The `id` is what lets a time survive somebody being moved: watches point
-   * at it, not at a lane number. `status`/`official_time_ms`/`decided_*` are
-   * absent until an administrator signs the swim off — there is no separate
-   * results table; the decision lives on the swim it's about.
-   */
-  `CREATE TABLE IF NOT EXISTS swims (
-     meet_id TEXT NOT NULL,
-     event_id TEXT NOT NULL,
      heat INTEGER NOT NULL,
      lane INTEGER NOT NULL,
-     athlete_id TEXT NOT NULL,
-     athlete_name TEXT NOT NULL DEFAULT '',
-     athlete_team TEXT NOT NULL DEFAULT '',
-     exhibition INTEGER NOT NULL DEFAULT 0,
-     status TEXT,
-     official_time_ms INTEGER,
-     decided_at INTEGER,
-     decided_by TEXT,
-
-     PRIMARY KEY (meet_id, event_id, heat, lane),
-     FOREIGN KEY (meet_id, event_id) 
-       REFERENCES events(meet_id, event_id) 
-       ON DELETE CASCADE
-   )`,
-  `CREATE INDEX IF NOT EXISTS swims_by_meet ON swims (meet_id)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS swims_by_lane ON swims (event_id, heat, lane)`,
-
-  /**
-   * Evidence. Append-only: a correction is a new row, never an edit to an old
-   * one, so nothing here is ever overwritten and a re-send after a dropped
-   * connection just adds a row a diff will find identical to the last.
-   *
-   * `time_ms` is null while a stopwatch is running and nothing has been
-   * submitted — which is how the desk tells a lane nobody is covering from one
-   * whose timers are still holding their clocks. `slot` is which of one
-   * submitter's concurrent stopwatches this is (clipboard mode); the current
-   * state of a slot is its latest row by `submitted_at`, which is what
-   * `currentWatches` (`timing.ts`) computes — history below that stays, on
-   * purpose, as the audit trail.
-   */
-  `CREATE TABLE IF NOT EXISTS watches (
-     meet_id TEXT NOT NULL,
-     event_id TEXT NOT NULL,
-     heat INTEGER NOT NULL,
-     lane INTEGER NOT NULL,
-     device_id TEXT NOT NULL,
-     slot INTEGER NOT NULL DEFAULT 1,
-     role TEXT NOT NULL DEFAULT 'timer',
-     user_id TEXT,
+     athlete_id TEXT,
+     athlete_name TEXT NOT NULL,
+     athlete_team TEXT NOT NULL,
      time_ms INTEGER,
-     started_at INTEGER,
-     stopped_at INTEGER,
-     recorded_at INTEGER NOT NULL,
-
-     PRIMARY KEY (meet_id, event_id, heat, lane, device_id, slot),
-     FOREIGN KEY (meet_id, event_id) 
-       REFERENCES events(meet_id, event_id) 
-       ON DELETE CASCADE
+     status TEXT NOT NULL,
+     exhibition INTEGER NOT NULL DEFAULT 0,
+     place INTEGER,
+     points REAL,
+     PRIMARY KEY (meet_id, event_id, heat, lane)
    )`,
-  `CREATE INDEX IF NOT EXISTS watches_by_meet ON watches (meet_id)`,
-  `CREATE INDEX IF NOT EXISTS watches_by_swim ON watches (swim_id, timer_id, slot)`,
+  `CREATE INDEX IF NOT EXISTS results_by_meet ON results (meet_id, event_number, heat)`,
 ];
 
 let ready = false;

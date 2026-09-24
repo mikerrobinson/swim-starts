@@ -1,8 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Banner, Button, Card, SectionTitle } from "./ui";
 import { TeamPicker } from "./TeamPicker";
-import { enrollmentIndex } from "~/lib/roster";
-import type { MeetDetail } from "~/types/meet";
+import type { Team } from "~/types/team";
 
 /**
  * Who's racing.
@@ -13,19 +12,20 @@ import type { MeetDetail } from "~/types/meet";
  * a real roster, and "Horizon", "horizon" and "Horzion" can't become three
  * different opponents.
  *
- * The names come from the loader rather than a fetch of their own. `detail`
- * already carries the racing teams — it has to, because the entries grid draws
- * its rows from their rosters — and a second opinion about which teams those
- * are is exactly the kind of disagreement this rewrite existed to remove.
+ * `teams` and `hostTeamId` come from the loader's own D1 read
+ * (`meet-info.tsx`) rather than the meet's `MeetManifest` — "who's racing" is
+ * a `meet_teams` join, not a Durable-Object-owned setting.
  */
 export function MeetTeams({
-  detail,
+  teams,
+  hostTeamId,
   canEdit,
   coachOf,
   saving,
   onChange,
 }: {
-  detail: MeetDetail;
+  teams: Team[];
+  hostTeamId: string;
   /** Whether to draw the editing controls at all. The server re-checks. */
   canEdit: boolean;
   /** Racing teams this person coaches — labelled, so their own is obvious. */
@@ -36,28 +36,6 @@ export function MeetTeams({
 }) {
   const [adding, setAdding] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
-
-  const { meet, teams } = detail;
-  const hostTeamId = meet.hostTeamId ?? "";
-
-  /**
-   * How many swimmers each team has entered.
-   *
-   * Removing a team doesn't remove its entries — the rows stay, pointing at
-   * athletes no racing team enrols, which is the "counts towards things and
-   * renders nowhere" failure. Nothing here deletes them either; it just
-   * refuses to let it happen silently.
-   */
-  const enteredBy = useMemo(() => {
-    const enrolled = enrollmentIndex(detail.enrollments);
-    const entered = new Set(Object.values(detail.entries).flat());
-    const counts = new Map<string, number>();
-    for (const athleteId of entered) {
-      const teamId = enrolled.get(athleteId)?.teamId;
-      if (teamId) counts.set(teamId, (counts.get(teamId) ?? 0) + 1);
-    }
-    return counts;
-  }, [detail.enrollments, detail.entries]);
 
   const teamIds = teams.map((team) => team.id);
 
@@ -111,7 +89,6 @@ export function MeetTeams({
       ) : (
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">
           {teams.map((team) => {
-            const entered = enteredBy.get(team.id) ?? 0;
             const host = hostTeamId === team.id;
             return (
               <li key={team.id} className="py-2.5">
@@ -136,11 +113,6 @@ export function MeetTeams({
                         )
                       )}
                     </span>
-                    {entered > 0 && (
-                      <span className="ml-2 text-xs text-slate-500">
-                        {entered} athletes entered
-                      </span>
-                    )}
                   </span>
 
                   {canEdit && (
@@ -148,25 +120,19 @@ export function MeetTeams({
                       size="sm"
                       variant="ghost"
                       disabled={saving}
-                      onClick={() =>
-                        entered > 0 ? setConfirming(team.id) : remove(team.id)
-                      }
+                      onClick={() => setConfirming(team.id)}
                     >
                       Remove
                     </Button>
                   )}
                 </div>
 
-                {/* Asked rather than prevented: sometimes the wrong school
-                    really was added and its entries are the mistake too. */}
                 {confirming === team.id && (
                   <div className="mt-2 space-y-2">
                     <Banner tone="warn">
-                      {team.name} has {entered} swimmer
-                      {entered === 1 ? "" : "s"} entered. Removing the team
-                      leaves those entries in the meet with nobody to show them
-                      against — scratch them first if they shouldn&rsquo;t
-                      count.
+                      Remove {team.name} from this meet? Anyone already
+                      entered for them stays in the meet with nobody to show
+                      them against.
                     </Banner>
                     <div className="grid grid-cols-2 gap-2">
                       <Button onClick={() => setConfirming(null)}>Keep</Button>

@@ -154,6 +154,14 @@ export function meetTypeLabel(type: MeetType): string {
 }
 
 /**
+ * Scheduled/in-progress vs. archived. The one thing D1 needs to know about a
+ * meet's lifecycle without waking its Durable Object: not-complete means "all
+ * data comes from the DO", complete means "all data comes from D1's `results`
+ * table instead, and the DO for it should never be spun up."
+ */
+export type MeetStatus = "scheduled" | "complete";
+
+/**
  * The pool a meet is swum in. Short course yards is the US high-school
  * default; the metric courses cover summer league and club water. Recorded
  * with the meet because a time only means something next to its course.
@@ -230,6 +238,12 @@ export function formatNumberList(values: number[]): string {
   return values.join(", ");
 }
 
+/**
+ * The D1 row: static, decided-at-setup facts about a meet, plus its
+ * lifecycle `status`. Deliberately doesn't carry `events`/`swims` or a live
+ * pointer like `currentEventId` — that's the meet's Durable Object's
+ * business (see `MeetManifest`), not D1's.
+ */
 export interface Meet {
   id: string;
   name: string;
@@ -238,6 +252,10 @@ export interface Meet {
   course: MeetCourse;
   location?: string;
   teamIds: string[];
+  /** Who runs this meet — `meet_admins`' user ids. Together with `teamIds`,
+   *  everything `access.ts`'s pure `canEditMeet`/`canRecordTime`/`canEnter`
+   *  need to decide anything about this meet, with no further D1 read. */
+  adminIds: string[];
   hostTeamId?: string;
   createdBy?: string;
   laneCount: LaneCount;
@@ -249,16 +267,69 @@ export interface Meet {
   athletesMayEnter: boolean;
   laneAssignments: LaneAssignments;
   scoring: ScoringRules;
-  isLive: boolean;
-  events: Record<string, Event>;
-  swims: Record<SwimKey, Swim>;
-  currentEventId?: string;
-  currentHeatNumber?: number;
+  status: MeetStatus;
+}
+
+/**
+ * The meet's own settings, edited from `meet-info.tsx`: everything a coach
+ * decides before race day except who's racing (`teamIds`/`hostTeamId` stay
+ * D1's — see `Meet` — since "who's racing" is a `meet_teams` join, not a
+ * setting to broadcast).
+ *
+ * DO-owned, like `MeetManifest`'s other tables: `MeetDurableObject.setDetails`
+ * is the only writer, and it always replaces the whole object rather than
+ * patching fields — the same "send the object" convention `setEvents` uses.
+ * D1's copy of these same fields (on `Meet`) is kept current too:
+ * `setDetails` pushes every edit straight through to D1's `meets` row in
+ * the same call, synchronously — so the meets list (D1-only, on purpose)
+ * never shows a stale name, date, or lane count. The DO is still the one
+ * source of truth being read from; D1 is a write-through copy, not a
+ * second place anything is decided.
+ */
+export interface MeetDetails {
+  name: string;
+  date: string;
+  type: MeetType;
+  course: MeetCourse;
+  location?: string;
+  laneCount: LaneCount;
+  timersPerLane: TimersPerLane;
+  leadGender: Gender;
+  includeDiving: boolean;
+  entryVisibility: EntryVisibility;
+  athletesMayEnter: boolean;
+  limits: EntryLimits;
+  laneAssignments: LaneAssignments;
+  scoring: ScoringRules;
+}
+
+/** Pick `MeetDetails`' fields off a D1 `Meet` row — what seeds a meet's
+ *  Durable Object at creation (`meets.tsx`) and what a completed meet's
+ *  archive read falls back to (`results.server.ts`). */
+export function meetDetailsFrom(meet: Meet): MeetDetails {
+  return {
+    name: meet.name,
+    date: meet.date,
+    type: meet.type,
+    course: meet.course,
+    location: meet.location,
+    laneCount: meet.laneCount,
+    timersPerLane: meet.timersPerLane,
+    leadGender: meet.leadGender,
+    includeDiving: meet.includeDiving,
+    entryVisibility: meet.entryVisibility,
+    athletesMayEnter: meet.athletesMayEnter,
+    limits: meet.limits,
+    laneAssignments: meet.laneAssignments,
+    scoring: meet.scoring,
+  };
 }
 
 export interface MeetManifest {
   id: string;
+  /** Always `details.name` — a convenience copy, not a second stored value. */
   name: string;
+  details: MeetDetails;
   isLive: boolean;
   currentEventId?: string;
   currentHeatNumber?: number;
@@ -409,20 +480,6 @@ export type MeetSnapshot = Pick<
   "entries" | "swims" | "watches" | "athletes"
 >;
 
-export interface MeetManifest {
-  id: string;
-  name: string;
-  isLive: boolean;
-  currentEventId?: string;
-  currentHeatNumber?: number;
-  events: Record<string, Event>;
-  entries: Record<string, Entry>;
-  swims: Record<SwimKey, Swim>;
-  watches: Record<string, Watch>;
-  athletes: Record<string, Athlete>;
-  teams: Record<string, Team>;
-}
-
 /**
  * Fold the Durable Object's live tables over a `MeetDetail` read from D1 —
  * what every workspace wired to the DO does with its loader's D1 read and
@@ -468,6 +525,24 @@ export const DUAL_MEET_SCORING: ScoringRules = {
   individual: [6, 4, 3, 2, 1],
   relay: [8, 4, 2],
   separateByGender: true,
+};
+
+/** What a meet's settings are before anyone has set any — a meet created
+ *  before `MeetDurableObject.setDetails` existed, say. */
+export const DEFAULT_MEET_DETAILS: MeetDetails = {
+  name: "Meet",
+  date: "",
+  type: "dual",
+  course: "SCY",
+  laneCount: 6,
+  timersPerLane: 1,
+  leadGender: "F",
+  includeDiving: false,
+  entryVisibility: "everyone",
+  athletesMayEnter: false,
+  limits: {},
+  laneAssignments: {},
+  scoring: DUAL_MEET_SCORING,
 };
 
 /* ------------------------------------------------------------------ naming */

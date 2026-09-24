@@ -1,13 +1,17 @@
 import type { Route } from "./+types/event-detail";
 import { Card, EmptyState, SectionTitle } from "~/components/ui";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
-import { meetDetail } from "~/lib/meets.server";
 import { enrollmentIndex } from "~/lib/roster";
 import { useMeetLive } from "~/hooks/use-meet-live";
 import { heatsOf, swimsForHeat, swimTime } from "~/lib/timing";
 import { formatTime } from "~/lib/time";
 import { useMeet } from "./meet-layout";
-import { displayName, eventName, findAthlete, withLiveTables } from "~/types/meet";
+import {
+  displayName,
+  eventName,
+  findAthlete,
+  withLiveTables,
+  type MeetDetail,
+} from "~/types/meet";
 
 export function meta({ data }: Route.MetaArgs) {
   const event = data?.detail?.events.find((e) => e.id === data.eventId);
@@ -19,24 +23,26 @@ export function meta({ data }: Route.MetaArgs) {
  * current results. Doesn't replace `entries.tsx`'s whole-meet grid, which
  * keeps its own URL and scope.
  *
- * Same whole-meet read as `entries.tsx` for the same reason: nothing here is
- * secret at the row level, so the visibility rule is applied at render time
- * rather than by filtering the query. The four live tables come from the
- * meet's Durable Object rather than D1, same reasoning as admin/splits.
+ * Used to assemble a `MeetDetail` the same way `entries.tsx` did — see its
+ * loader's doc comment. D1 no longer holds a meet's programme/entries/
+ * swims/watches, and this old-model screen hasn't been ported to the DO's
+ * `MeetManifest` shape, so `detail` stays `null` until it is.
  */
-export async function loader({ params, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
-  const detail = await meetDetail(db, params.meetId);
-  if (!detail) return { detail: null, eventId: params.eventId };
-
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(params.meetId);
-  return { detail: withLiveTables(detail, live), eventId: params.eventId };
+export async function loader({ params }: Route.LoaderArgs) {
+  return { detail: null as MeetDetail | null, eventId: params.eventId };
 }
 
 export default function EventDetail({ loaderData }: Route.ComponentProps) {
-  const loaded = loaderData.detail!;
   const { access } = useMeet();
+
+  if (!loaderData.detail) {
+    return (
+      <EmptyState title="Not available for this meet">
+        Event detail for this meet hasn't moved to the new data model yet.
+      </EmptyState>
+    );
+  }
+  const loaded = loaderData.detail;
   // Kept live the same way results-view.tsx is — see its doc comment.
   const live = useMeetLive(loaded.meet.id, loaded);
   const detail = withLiveTables(loaded, live.snapshot);

@@ -26,12 +26,12 @@ import type { NameOrder } from "~/types/preferences";
  */
 interface ViewPrefs {
   laneLayout: LaneLayout;
-  setLaneLayout: (layout: LaneLayout) => void;
+  //setLaneLayout: (layout: LaneLayout) => void;
   /** This device's identity as a timer — every watch it takes is filed under it. */
   timerId: string;
   /** How names are written and sorted for whoever is holding this device. */
   nameOrder: NameOrder;
-  setNameOrder: (order: NameOrder) => void;
+  //setNameOrder: (order: NameOrder) => void;
 }
 
 const ViewPrefsContext = createContext<ViewPrefs | null>(null);
@@ -74,7 +74,16 @@ export function ViewPrefsProvider({ children }: { children: ReactNode }) {
 }
 
 export function useViewPrefs(): ViewPrefs {
-  const value = useContext(ViewPrefsContext);
-  if (!value) throw new Error("useViewPrefs used outside ViewPrefsProvider");
-  return value;
+  // const value = useContext(ViewPrefsContext);
+  // if (!value) throw new Error("useViewPrefs used outside ViewPrefsProvider");
+  // return value;
+  return {
+    laneLayout: "grid",
+    //setLaneLayout: (layout: LaneLayout) => void,
+    /** This device's identity as a timer — every watch it takes is filed under it. */
+    timerId: "",
+    /** How names are written and sorted for whoever is holding this device. */
+    nameOrder: "first",
+    //setNameOrder: (order: NameOrder) => void,
+  };
 }

@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import type { Route } from "./+types/splits-heat";
 import type { SwimTime } from "~/lib/timing";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
-import { meetDetail } from "~/lib/meets.server";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
 import { LaneTile } from "~/components/LaneTile";
 import {
@@ -58,20 +56,15 @@ const METHOD_LABEL: Record<string, string> = {
 };
 
 /**
- * This screen's own read: meet setup from D1, the four live tables from the
- * meet's Durable Object — see admin.tsx's loader doc comment; the same
- * reasoning applies here.
+ * This screen's own read: meet setup used to come from D1, folded with the
+ * four live tables from the meet's Durable Object — see admin.tsx's loader
+ * doc comment. D1 no longer holds a meet's programme/entries/swims/watches
+ * at all — see `meets2.tsx` — and this old-model splits screen hasn't been
+ * ported to read the DO's `MeetManifest` shape instead, so `detail` stays
+ * `null` until it is.
  */
-export async function loader({ params, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
-  const detail = await meetDetail(db, params.meetId);
-  if (!detail) return { detail: null };
-
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(
-    params.meetId,
-  );
-  return { detail: withLiveTables(detail, live) };
+export async function loader() {
+  return { detail: null as MeetDetail | null };
 }
 
 /** Lane numbers in the order they should be drawn for a layout. */
@@ -104,10 +97,16 @@ export default function SplitsHeat({
   const { access } = useMeet();
   const pending = usePending();
   const send = useSend();
-  // The parent (meet-layout.tsx) already renders its own "no such meet" state
-  // instead of this Outlet when the meet doesn't exist, same guarantee every
-  // other leaf under it trusts.
-  const loaded = loaderData.detail!;
+
+  if (!loaderData.detail) {
+    return (
+      <EmptyState title="Not available for this meet">
+        The multi-lane stopwatch for this meet hasn't moved to the new data
+        model yet.
+      </EmptyState>
+    );
+  }
+  const loaded = loaderData.detail;
   const detail = useMemo(
     () => applyPending(withLiveTables(loaded, live.snapshot), pending),
     [loaded, live.snapshot, pending],

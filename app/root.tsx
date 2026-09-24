@@ -1,4 +1,5 @@
 import {
+  data,
   isRouteErrorResponse,
   Links,
   Meta,
@@ -10,22 +11,46 @@ import {
 import type { Route } from "./+types/root";
 import { ViewPrefsProvider } from "./state/view-prefs";
 import { OutboxProvider } from "./state/outbox";
-import { currentUser, type SyncEnv } from "./lib/api.server";
+import { currentUser, resolveUser, type SyncEnv } from "./lib/api.server";
 import { isTimingPath } from "./lib/timer-path";
 import { sessionPayload } from "./lib/auth.server";
 import { SIGNED_OUT } from "./state/session";
+import { deviceCookie, existingDeviceId } from "./lib/device.server";
 import "./app.css";
 
+/**
+ * The identity facts read once here, from cookies, so no route below has to
+ * re-derive them: who's signed in, the athlete their account is linked to,
+ * every team they coach, and which device this is — the identity a phone
+ * with nobody signed into it still has, same cookie the timer workspace
+ * already used. `resolveUser` (`api.server.ts`) is the shared resolution;
+ * `useUser()` (`state/user.tsx`) is the client-side read of what it
+ * resolves here.
+ *
+ * This is deliberately *not* a per-meet access decision — whether someone
+ * may administer meet X still has to ask D1 about meet X specifically
+ * (`access.ts`'s `canEditMeet`, given the meet each route already loaded).
+ * What's here is meet-agnostic: facts about the person, not about what
+ * they may do on any one meet.
+ */
 export async function loader({ request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
-  if (!env.DB) return { session: SIGNED_OUT };
+  const user = env.DB ? await currentUser(request, env) : null;
+  const identity = await resolveUser(env.DB, user, request);
 
-  const user = await currentUser(request, env);
+  // Minted once, on whatever request happens to be first — every timer, and
+  // every first visit of any kind — and carried in a cookie from then on.
+  const headers = new Headers();
+  if (!existingDeviceId(request)) {
+    headers.append("set-cookie", deviceCookie(identity.deviceId, request));
+  }
+
   // A phone with no cookie — every timer, and every first visit — costs
   // nothing here: there is no token to look up.
-  if (!user) return { session: SIGNED_OUT };
+  const session =
+    env.DB && user ? await sessionPayload(env.DB, user) : SIGNED_OUT;
 
-  return { session: await sessionPayload(env.DB, user) };
+  return data({ session, ...identity }, { headers });
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

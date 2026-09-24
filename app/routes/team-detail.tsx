@@ -17,9 +17,10 @@ import {
   appBaseUrl,
   currentUser,
   requireDb,
+  resolveUser,
   type SyncEnv,
 } from "~/lib/api.server";
-import { teamAccess } from "~/lib/access.server";
+import { canEditTeam, type TeamAccess } from "~/lib/access";
 import { publicTeamDetail } from "~/lib/public.server";
 import {
   addTeamCoach,
@@ -74,12 +75,17 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   }
 
   try {
-    const user = await currentUser(request, env);
-    const [team, access, roll] = await Promise.all([
+    const [rawUser, team, roll] = await Promise.all([
+      currentUser(request, env),
       publicTeamDetail(env.DB, params.teamId),
-      teamAccess(env.DB, params.teamId, user),
       teamCoaches(env.DB, params.teamId),
     ]);
+    const user = await resolveUser(env.DB, rawUser, request);
+    const access: TeamAccess = {
+      signedIn: user.signedIn,
+      userId: user.userId,
+      coach: canEditTeam({ team: { id: params.teamId! }, user }),
+    };
 
     /**
      * Who coaches this team is as public as the team is — it's on the heat
@@ -142,9 +148,14 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
 export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const rawUser = await currentUser(request, env);
+  const user = await resolveUser(db, rawUser, request);
 
-  const access = await teamAccess(db, params.teamId, user);
+  const access: TeamAccess = {
+    signedIn: user.signedIn,
+    userId: user.userId,
+    coach: canEditTeam({ team: { id: params.teamId! }, user }),
+  };
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "roster");
 

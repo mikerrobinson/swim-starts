@@ -1,15 +1,22 @@
 /**
  * One Meet Durable Object per meet — `env.MEET_DO.getByName(meetId)`.
  *
- * Owns the live, multi-writer, race-day state (`entries`, `swims`, `watches`)
- * for exactly the duration of the meet: hydrated from D1 the first time
- * anything touches the meet, dumped back to D1 on a periodic checkpoint and
- * at meet end.
+ * Owns everything meet-specific for as long as the meet is `status !==
+ * "complete"`: its settings (`details`), the programme (`events`), and the
+ * live, multi-writer race-day state (`entries`, `swims`, `watches`). All of
+ * it lives only here for reading — there is no D1 mirror to hydrate from or
+ * checkpoint back to; this DO's own SQLite storage is already durable.
+ * `details` is the one exception on the write side: `setDetails` pushes
+ * every edit straight through to D1's `meets` row too (name, date, lane
+ * count, ...), synchronously, so the D1-only meets list never shows a
+ * stale copy — D1 never gets to disagree with the DO, it just isn't asked
+ * for the current answer while the meet's still running. Once an admin
+ * completes the meet, `completeMeet` also flushes a denormalized `results`
+ * archive and flips `status`; from that point on D1 answers every read and
+ * this DO is never spun back up.
  *
- * Table shapes mirror `schema.server.ts` exactly, `meet_id` column included,
- * so hydration and the dump back are plain row copies rather than a reshape.
- * The write methods mirror `meets.server.ts`'s D1 versions the same way, one
- * table row at a time, just against local (synchronous) SQLite instead of D1.
+ * The write methods mirror `meets.server.ts`'s old D1-backed versions in
+ * spirit, one table row at a time, just against local (synchronous) SQLite.
  */
 
 import { DurableObject } from "cloudflare:workers";
@@ -17,13 +24,15 @@ import { generateId } from "./id";
 import { athleteRow, putAthlete, type AthleteRow } from "./athletes.server";
 import { enrolVisitor } from "./teams.server";
 import { getMeet } from "./meets.server";
-import { mayEnter, type MeetAccess } from "./access";
+import { canEnter, type MeetFacts, type UserIdentity } from "./access";
 import { whyNotEnter } from "./events";
 import { reseedEvent } from "./heats";
 import type { isLiveSignal, MeetBroadcast, Write } from "./writes";
+import type { LiveSocketMessage } from "./meetCache";
 import type {
   Meet,
   Event,
+  MeetDetails,
   MeetSnapshot,
   ResultStatus,
   Swim,
@@ -34,7 +43,14 @@ import type {
   Entry,
   EntryKey,
 } from "~/types/meet";
-import { athleteName, toEntryKey, toSwimKey } from "~/types/meet";
+import {
+  athleteName,
+  DEFAULT_MEET_DETAILS,
+  toEntryKey,
+  toSwimKey,
+  toWatchKey,
+} from "~/types/meet";
+import type { Team } from "~/types/team";
 import type { Athlete, Gender } from "~/types/athlete";
 
 const SCHEMA = [
@@ -87,6 +103,24 @@ const SCHEMA = [
      entered_by TEXT,
      PRIMARY KEY (event_id, athlete_id)
    )`,
+
+  /**
+   * The programme. Meet-specific, so — unlike the old D1 `events` table this
+   * replaces — it lives only here, no `meet_id` needed: one DO is already
+   * exactly one meet's worth of rows. `setEvents` (below) is the only write;
+   * nothing seeds this yet — see `getMeetManifest`'s doc comment.
+   */
+  `CREATE TABLE IF NOT EXISTS events (
+     id TEXT PRIMARY KEY,
+     position INTEGER NOT NULL,
+     event_number INTEGER NOT NULL,
+     distance INTEGER NOT NULL,
+     stroke TEXT NOT NULL,
+     gender TEXT NOT NULL,
+     name TEXT,
+     total_heats INTEGER
+   )`,
+
   `CREATE TABLE IF NOT EXISTS teams (
      id TEXT PRIMARY KEY,
      name TEXT NOT NULL,
@@ -102,16 +136,17 @@ const SCHEMA = [
      user_id TEXT
    )`,
 
-  // Bookkeeping the three tables above don't need for themselves: which meet
-  // this instance is (a DO doesn't know its own name — see `ensureHydrated`)
-  // and whether the D1 copy has already been pulled in once.
+  // Scalar bookkeeping the tables above don't carry a column for: `isLive`,
+  // `currentEventId`, `currentHeatNumber` (see `getMeetManifest`/`setLive`/
+  // `setCurrentHeat`). `name` isn't here — D1's `meets.name` is that fact's
+  // one home, so callers pass it into `getMeetManifest` rather than this DO
+  // keeping its own copy to drift out of sync.
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 ];
 
-/** How D1 rows for the three live tables come back, before mapping to POCOs. */
+/** How this DO's own live tables come back, before mapping to POCOs. */
 interface SwimRow {
   [key: string]: SqlStorageValue;
-  id: string;
   meet_id: string;
   event_id: string;
   heat: number;
@@ -153,37 +188,40 @@ interface EntryRow {
   entered_by: string;
 }
 
-/** D1's `events` row — read fresh for `declareEntry`'s checks, since the
- *  programme is setup data the DO doesn't own. */
-interface EventRow {
+/** This DO's own `events` table — its programme, once something writes one
+ *  via `setEvents`. `declareEntry`'s entry-limit check reads this now too —
+ *  it used to read a D1 `events` table that no longer exists. */
+interface LiveEventRow {
+  [key: string]: SqlStorageValue;
   id: string;
-  meet_id: string;
-  eventNumber: number;
   position: number;
+  event_number: number;
   distance: number;
   stroke: string;
   gender: string;
   name: string | null;
+  total_heats: number | null;
 }
 
-function eventFromRow(row: EventRow): Event {
+function liveEventFromRow(row: LiveEventRow): Event {
   return {
     id: row.id,
-    eventNumber: row.eventNumber,
     position: row.position,
+    eventNumber: row.event_number,
     distance: row.distance,
     stroke: row.stroke as Stroke,
     gender: row.gender as Event["gender"],
     name: row.name ?? undefined,
+    totalHeats: row.total_heats ?? undefined,
   };
 }
+
 function asResultStatus(value: string | null): ResultStatus | undefined {
   if (value === "DQ" || value === "NS") return value;
   return value === "OK" ? "OK" : undefined;
 }
 function swimFromRow(row: SwimRow): Swim {
   return {
-    id: row.id,
     eventId: row.event_id,
     heat: row.heat,
     lane: row.lane,
@@ -234,17 +272,11 @@ type WriteOf<K extends Write["kind"]> = Omit<
  *  reaches the DO — see `api.meet.live.ts`. */
 export type MeetRole = "admin" | "coach" | "timer" | "spectator";
 
-/** How often the DO mirrors its live tables back to D1 while a meet is
- *  connected — insurance, not the primary durability mechanism (DO SQLite
- *  storage already is one). */
-const CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
-
 export class MeetDurableObject extends DurableObject<Env> {
-  /** Lost on eviction, rebuilt from D1 by `loadRoster` on the next request —
+  /** Rebuilt from D1 by `loadRoster` on the next request after an eviction —
    *  a small in-memory cache for rendering names against seeds without
    *  hitting D1 on every read. Not the source of truth for anything. */
   private roster = new Map<string, Athlete>();
-  private hydrated = false;
   private rosterLoaded = false;
   private hydrating: Promise<void> | null = null;
 
@@ -258,238 +290,73 @@ export class MeetDurableObject extends DurableObject<Env> {
   /* ------------------------------------------------------------- lifecycle */
 
   /**
-   * Pull this meet's live tables in from D1, once ever per DO lifetime.
+   * Load the roster cache, once per DO lifetime, sharing one in-flight
+   * promise across whichever RPC calls arrive while it's still running.
    *
-   * Not run from the constructor's `blockConcurrencyWhile` — that's for
-   * schema setup only, never for I/O — so instead every RPC method calls
-   * this first and a single in-flight promise is
-   * shared by whichever requests arrive while it's still running. Without
-   * that, two RPC calls landing before hydration finishes would each see
-   * "not hydrated yet" and hydrate twice: D1 reads aren't storage operations,
-   * so they don't get an input gate, and requests can interleave across the
-   * `await`.
-   *
-   * A DO doesn't know its own name, so `meetId` is passed in by every caller
-   * rather than asked for — same reason every `Write` variant already
-   * carries one.
+   * This DO's own SQLite storage — `events`/`entries`/`swims`/`watches` — is
+   * already durable, so there's nothing left to pull in from D1 the way a
+   * prior version of this method did; the roster cache is the only thing
+   * that still needs a D1 trip, and only once. `meetId` stays a parameter
+   * (unused here) rather than being dropped, so every existing call site —
+   * `ensureHydrated(meetId)` — keeps meaning the same thing without an
+   * unrelated signature-churn edit through every write method below.
    */
   private async ensureHydrated(meetId: string): Promise<void> {
-    if (this.hydrated) {
-      if (!this.rosterLoaded) await this.loadRoster(meetId);
-      return;
-    }
-    if (!this.hydrating) this.hydrating = this.hydrate(meetId);
+    if (this.rosterLoaded) return;
+    if (!this.hydrating) this.hydrating = this.loadRoster();
     await this.hydrating;
   }
 
-  private async hydrate(meetId: string): Promise<void> {
-    // Storage surviving a prior instance of this same DO (an eviction, not a
-    // cold meet) shows up here as a meta row — pulling from D1 again would
-    // stomp on writes made since the last dump.
-    const already = this.ctx.storage.sql
-      .exec<{ value: string }>("SELECT value FROM meta WHERE key = 'meetId'")
+  /** Everyone the live tables currently name, for rendering without a D1
+   *  trip on every read — straight off this DO's own storage, not a
+   *  `meet_id`-scoped join, since one DO is already exactly one meet. */
+  private async loadRoster(): Promise<void> {
+    const entryIds = this.ctx.storage.sql
+      .exec<{ athlete_id: string }>("SELECT DISTINCT athlete_id FROM entries")
       .toArray();
-    if (already.length === 0) await this.hydrateFromD1(meetId);
-
-    await this.loadRoster(meetId);
-    this.hydrated = true;
-    this.rosterLoaded = true;
-
-    const alarm = await this.ctx.storage.getAlarm();
-    if (alarm === null) {
-      await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_INTERVAL_MS);
+    const swimIds = this.ctx.storage.sql
+      .exec<{ athlete_id: string }>(
+        "SELECT DISTINCT athlete_id FROM swims WHERE athlete_id != ''",
+      )
+      .toArray();
+    const ids = [
+      ...new Set([...entryIds, ...swimIds].map((r) => r.athlete_id)),
+    ];
+    if (ids.length > 0) {
+      const rows = await this.env.DB.prepare(
+        `SELECT * FROM athletes WHERE id IN (${ids.map(() => "?").join(",")})`,
+      )
+        .bind(...ids)
+        .all<AthleteRow>();
+      this.roster = new Map(
+        rows.results.map((row) => [row.id, athleteRow(row)]),
+      );
     }
+    this.rosterLoaded = true;
   }
 
-  private async hydrateFromD1(meetId: string): Promise<void> {
-    const db = this.env.DB;
-    const [swims, watches, entries] = await Promise.all([
-      db
-        .prepare("SELECT * FROM swims WHERE meet_id = ?")
-        .bind(meetId)
-        .all<SwimRow>(),
-      db
-        .prepare("SELECT * FROM watches WHERE meet_id = ?")
-        .bind(meetId)
-        .all<WatchRow>(),
-      db
-        .prepare("SELECT * FROM entries WHERE meet_id = ?")
-        .bind(meetId)
-        .all<EntryRow>(),
-    ]);
-
-    for (const s of swims.results) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO swims (id, meet_id, event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition, status, official_time_ms, decided_at, decided_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        s.id,
-        s.meet_id,
-        s.event_id,
-        s.heat,
-        s.lane,
-        s.athlete_id,
-        s.athlete_name,
-        s.athlete_team,
-        s.exhibition,
-        s.status,
-        s.official_time_ms,
-        s.decided_at,
-        s.decided_by,
-      );
-    }
-    for (const w of watches.results) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO watches (id, swim_id, meet_id, submitted_by, user_id, role, slot, time_ms, started_at, stopped_at, submitted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        w.id,
-        w.swim_id,
-        w.meet_id,
-        w.timer_id,
-        w.user_id,
-        w.role,
-        w.slot,
-        w.time_ms,
-        w.started_at,
-        w.stopped_at,
-        w.recorded_at,
-      );
-    }
-    for (const e of entries.results) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO entries (meet_id, event_id, athlete_id, seed_time_ms, exhibition, entered_at, entered_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        e.meet_id,
-        e.event_id,
-        e.athlete_id,
-        e.seed_time_ms,
-        e.exhibition,
-        e.entered_at,
-        e.entered_by,
-      );
-    }
-
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES ('meetId', ?)",
-      meetId,
+  private getMeta(key: string): string | null {
+    return (
+      this.ctx.storage.sql
+        .exec<{ value: string }>(
+          "SELECT value FROM meta WHERE key = ?",
+          key,
+        )
+        .toArray()[0]?.value ?? null
     );
   }
 
-  /** Everyone the live tables currently name, for rendering without a D1 trip. */
-  private async loadRoster(meetId: string): Promise<void> {
-    const rows = await this.env.DB.prepare(
-      `SELECT DISTINCT a.* FROM athletes a
-       WHERE a.id IN (SELECT athlete_id FROM entries WHERE meet_id = ?)
-          OR a.id IN (SELECT athlete_id FROM swims WHERE meet_id = ? AND athlete_id != '')`,
-    )
-      .bind(meetId, meetId)
-      .all<AthleteRow>();
-    this.roster = new Map(rows.results.map((row) => [row.id, athleteRow(row)]));
-  }
-
-  /**
-   * Mirror the live tables back to D1. Called on the periodic checkpoint
-   * alarm and by `finalizeMeet`; a full replace rather than an upsert, since
-   * a lane un-seated or a watch dropped in the DO has to disappear from D1
-   * too, not just have its later state overwritten.
-   */
-  private async dumpToD1(meetId: string): Promise<void> {
-    const db = this.env.DB;
-    const swims = this.ctx.storage.sql
-      .exec<SwimRow>("SELECT * FROM swims WHERE meet_id = ?", meetId)
-      .toArray();
-    const watches = this.ctx.storage.sql
-      .exec<WatchRow>("SELECT * FROM watches WHERE meet_id = ?", meetId)
-      .toArray();
-    const entries = this.ctx.storage.sql
-      .exec<EntryRow>("SELECT * FROM entries WHERE meet_id = ?", meetId)
-      .toArray();
-
-    await db.batch([
-      db.prepare("DELETE FROM swims WHERE meet_id = ?").bind(meetId),
-      db.prepare("DELETE FROM watches WHERE meet_id = ?").bind(meetId),
-      db.prepare("DELETE FROM entries WHERE meet_id = ?").bind(meetId),
-      ...swims.map((s) =>
-        db
-          .prepare(
-            `INSERT INTO swims (id, meet_id, event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition, status, official_time_ms, decided_at, decided_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            s.id,
-            s.meet_id,
-            s.event_id,
-            s.heat,
-            s.lane,
-            s.athlete_id,
-            s.athlete_name,
-            s.athlete_team,
-            s.exhibition,
-            s.status,
-            s.official_time_ms,
-            s.decided_at,
-            s.decided_by,
-          ),
-      ),
-      ...watches.map((w) =>
-        db
-          .prepare(
-            `INSERT INTO watches (id, swim_id, meet_id, submitted_by, user_id, role, slot, time_ms, started_at, stopped_at, submitted_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            w.id,
-            w.swim_id,
-            w.meet_id,
-            w.timer_id,
-            w.user_id,
-            w.role,
-            w.slot,
-            w.time_ms,
-            w.started_at,
-            w.stopped_at,
-            w.recorded_at,
-          ),
-      ),
-      ...entries.map((e) =>
-        db
-          .prepare(
-            `INSERT INTO entries (meet_id, event_id, athlete_id, seed_time_ms, exhibition, entered_at, entered_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            e.meet_id,
-            e.event_id,
-            e.athlete_id,
-            e.seed_time_ms,
-            e.exhibition,
-            e.entered_at,
-            e.entered_by,
-          ),
-      ),
-    ]);
-  }
-
-  /** The periodic checkpoint. Reschedules itself only while somebody's still
-   *  connected — a meet nobody is watching has nothing new to mirror. */
-  async alarm(): Promise<void> {
-    const meetId = this.ctx.storage.sql
-      .exec<{ value: string }>("SELECT value FROM meta WHERE key = 'meetId'")
-      .toArray()[0]?.value;
-    if (!meetId) return;
-
-    await this.dumpToD1(meetId);
-    if (this.ctx.getWebSockets().length > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_INTERVAL_MS);
+  private setMeta(key: string, value: string | null): void {
+    if (value === null) {
+      this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = ?", key);
+    } else {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        key,
+        value,
+      );
     }
-  }
-
-  /** The explicit end-of-meet dump. Not wired to any UI yet — nothing calls
-   *  this to mark a meet finished — but the RPC method exists for when
-   *  something does. */
-  async finalizeMeet(meetId: string): Promise<void> {
-    await this.ensureHydrated(meetId);
-    await this.dumpToD1(meetId);
-    await this.ctx.storage.deleteAlarm();
   }
 
   /* --------------------------------------------------------------- reading */
@@ -518,11 +385,35 @@ export class MeetDurableObject extends DurableObject<Env> {
     return { entries, swims, watches, athletes };
   }
 
-  async getSnapshotNew(meetId: string): Promise<MeetManifest> {
+  /**
+   * The full client-side `MeetManifest` — everything `meets2.tsx`'s loader
+   * needs for a meet that isn't `status: "complete"`. Plain `SELECT`s
+   * against this DO's own tables plus the `meta` scalars, no caching or
+   * sync engine beyond the roster cache `ensureHydrated` already keeps.
+   *
+   * `name` isn't its own `meta` row — it's just `details.name`, read back
+   * out. There's only one stored copy, so it can't drift out of sync with
+   * itself the way a separate denormalized copy could.
+   *
+   * Nothing seeds `events` yet — there's no meet-setup-into-the-DO flow to
+   * call `setEvents` — so a freshly created meet's manifest legitimately
+   * comes back with an empty programme until that's built.
+   */
+  async getMeetManifest(meetId: string): Promise<MeetManifest> {
     await this.ensureHydrated(meetId);
+    const details = this.getDetailsObject();
+
+    const events = this.ctx.storage.sql
+      .exec<LiveEventRow>("SELECT * FROM events")
+      .toArray()
+      .map(liveEventFromRow)
+      .reduce<Record<string, Event>>((record, event) => {
+        record[event.id] = event;
+        return record;
+      }, {});
 
     const swims = this.ctx.storage.sql
-      .exec<SwimRow>("SELECT * FROM swims WHERE meet_id = ?", meetId)
+      .exec<SwimRow>("SELECT * FROM swims")
       .toArray()
       .map(swimFromRow)
       .reduce<Record<SwimKey, Swim>>((record, swim) => {
@@ -531,7 +422,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       }, {});
 
     const entries = this.ctx.storage.sql
-      .exec<EntryRow>("SELECT * FROM entries WHERE meet_id = ?", meetId)
+      .exec<EntryRow>("SELECT * FROM entries")
       .toArray()
       .map(entryFromRow)
       .reduce<Record<EntryKey, Entry>>((record, entry) => {
@@ -540,30 +431,222 @@ export class MeetDurableObject extends DurableObject<Env> {
       }, {});
 
     const watches = this.ctx.storage.sql
-      .exec<WatchRow>("SELECT * FROM watches WHERE meet_id = ?", meetId)
+      .exec<WatchRow>("SELECT * FROM watches")
       .toArray()
       .map(watchFromRow)
       .reduce<Record<string, Watch>>((record, watch) => {
-        record[watch.id] = watch;
+        record[toWatchKey(watch)] = watch;
         return record;
       }, {});
 
-    //const entries = this.readEntries(meetId);
-
     const wanted = new Set<string>();
-    for (const list of Object.values(entries))
-      for (const id of list) wanted.add(id);
+    for (const entry of Object.values(entries)) wanted.add(entry.athleteId);
     for (const swim of Object.values(swims))
       if (swim.athleteId) wanted.add(swim.athleteId);
     const athletes: Record<string, Athlete> = {};
-
     for (const id of wanted) {
       const athlete = this.roster.get(id);
-      if (athlete) {
-        athletes[id] = athlete;
-      }
+      if (athlete) athletes[id] = athlete;
     }
-    return { entries, swims, watches, athletes };
+
+    const teams = this.ctx.storage.sql
+      .exec<{ id: string; name: string; code: string }>("SELECT * FROM teams")
+      .toArray()
+      .reduce<Record<string, Team>>((record, row) => {
+        record[row.id] = { id: row.id, name: row.name, code: row.code };
+        return record;
+      }, {});
+
+    const rawHeat = this.getMeta("currentHeatNumber");
+    return {
+      id: meetId,
+      name: details.name,
+      details,
+      isLive: this.getMeta("isLive") === "1",
+      currentEventId: this.getMeta("currentEventId") ?? undefined,
+      currentHeatNumber: rawHeat === null ? undefined : Number(rawHeat),
+      events,
+      entries,
+      swims,
+      watches,
+      athletes,
+      teams,
+    };
+  }
+
+  /** `details` alone, without the rest of the manifest — what a settings
+   *  form's action reads to merge its own changed fields onto before
+   *  calling `setDetails`, cheaper than a full `getMeetManifest`. */
+  async getDetails(meetId: string): Promise<MeetDetails> {
+    await this.ensureHydrated(meetId);
+    return this.getDetailsObject();
+  }
+
+  private getDetailsObject(): MeetDetails {
+    const raw = this.getMeta("details");
+    if (!raw) return DEFAULT_MEET_DETAILS;
+    try {
+      return JSON.parse(raw) as MeetDetails;
+    } catch {
+      return DEFAULT_MEET_DETAILS;
+    }
+  }
+
+  /**
+   * Replace the meet's whole settings object at once — the same "send the
+   * object" convention `setEvents` uses, and for the same reason: a settings
+   * form submits everything it's bound to, not a diff, so there's nothing
+   * to merge incorrectly here. Broadcasts `MEET_DETAILS` so every connected
+   * screen's `meetCache` picks it up the same way it already does watches/
+   * swims/entries/athletes.
+   *
+   * Also writes straight through to D1's `meets` row, synchronously, so the
+   * meets list (`meets.tsx`, D1-only on purpose) never shows a stale name/
+   * date/lane count — the DO stays the authoritative copy (this is the only
+   * writer either place ever sees), D1 is just never allowed to drift from
+   * it. A settings save is a deliberate, infrequent action, not a hot path
+   * like a watch or a swim, so the extra D1 round trip costs nothing anyone
+   * would notice.
+   */
+  async setDetails(meetId: string, details: MeetDetails): Promise<void> {
+    await this.ensureHydrated(meetId);
+    this.setMeta("details", JSON.stringify(details));
+    await this.detailsUpdateStatement(meetId, details).run();
+    this.broadcast({ type: "MEET_DETAILS", details });
+  }
+
+  /** The `UPDATE meets SET <details columns>` statement, bound and ready to
+   *  `.run()` or fold into a `.batch()` — shared by `setDetails` (every
+   *  edit) and `completeMeet` (which also flips `status` in the same
+   *  batch), so the column list lives in exactly one place. */
+  private detailsUpdateStatement(
+    meetId: string,
+    details: MeetDetails,
+  ): D1PreparedStatement {
+    return this.env.DB.prepare(
+      `UPDATE meets SET
+         name = ?, date = ?, type = ?, course = ?, location = ?,
+         lane_count = ?, timers_per_lane = ?, lead_gender = ?,
+         include_diving = ?, entry_visibility = ?, athletes_may_enter = ?,
+         max_individual = ?, max_relays = ?, max_total = ?,
+         max_per_team_per_event = ?, lane_assignments = ?, scoring = ?
+       WHERE id = ?`,
+    ).bind(
+      details.name,
+      details.date,
+      details.type,
+      details.course,
+      details.location ?? null,
+      details.laneCount,
+      details.timersPerLane,
+      details.leadGender,
+      details.includeDiving ? 1 : 0,
+      details.entryVisibility,
+      details.athletesMayEnter ? 1 : 0,
+      details.limits.maxIndividual ?? null,
+      details.limits.maxRelays ?? null,
+      details.limits.maxTotal ?? null,
+      details.limits.maxPerTeamPerEvent ?? null,
+      JSON.stringify(details.laneAssignments),
+      JSON.stringify(details.scoring),
+      meetId,
+    );
+  }
+
+  /** Replace the whole programme at once — what a meet-setup screen calling
+   *  this does when a coach or admin picks the lineup. */
+  async setEvents(meetId: string, events: Event[]): Promise<void> {
+    await this.ensureHydrated(meetId);
+    this.ctx.storage.sql.exec("DELETE FROM events");
+    for (const event of events) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO events (id, position, event_number, distance, stroke, gender, name, total_heats)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        event.id,
+        event.position,
+        event.eventNumber,
+        event.distance,
+        event.stroke,
+        event.gender,
+        event.name ?? null,
+        event.totalHeats ?? null,
+      );
+    }
+  }
+
+  async setLive(meetId: string, isLive: boolean): Promise<void> {
+    await this.ensureHydrated(meetId);
+    this.setMeta("isLive", isLive ? "1" : "0");
+  }
+
+  /** The advisory deck pointer — `MeetManifest.currentEventId`/
+   *  `currentHeatNumber`. Advisory only, per the design doc: nothing here
+   *  forces a connected timer's own screen to follow it. */
+  async setCurrentHeat(
+    meetId: string,
+    currentEventId?: string,
+    currentHeatNumber?: number,
+  ): Promise<void> {
+    await this.ensureHydrated(meetId);
+    this.setMeta("currentEventId", currentEventId ?? null);
+    this.setMeta(
+      "currentHeatNumber",
+      currentHeatNumber === undefined ? null : String(currentHeatNumber),
+    );
+  }
+
+  /**
+   * The one-time archive flush: denormalizes this DO's own `swims` (plus its
+   * `events` for the display fields a completed meet's D1 row has to carry
+   * on its own — see `results`' doc comment in `schema.server.ts`) into
+   * D1's `results`, and flips `meets.status` to `"complete"` — all in one
+   * batch. `details` doesn't need rewriting here: `setDetails` already keeps
+   * D1's `meets` row current on every edit, not just at completion. From
+   * this point on, D1 answers every read for this meet and this DO is never
+   * spun back up to do it again.
+   *
+   * Scoring (`place`/`points`) isn't computed here — nothing in this pass
+   * wires up `ScoringRules`/`timing.ts` — so those columns are written null.
+   */
+  async completeMeet(meetId: string): Promise<void> {
+    await this.ensureHydrated(meetId);
+
+    const swims = this.ctx.storage.sql.exec<SwimRow>("SELECT * FROM swims").toArray();
+    const events = this.ctx.storage.sql
+      .exec<LiveEventRow>("SELECT * FROM events")
+      .toArray();
+    const eventById = new Map(events.map((e) => [e.id, e] as const));
+
+    const db = this.env.DB;
+    await db.batch([
+      ...swims.map((s) => {
+        const event = eventById.get(s.event_id);
+        return db
+          .prepare(
+            `INSERT INTO results (meet_id, event_id, event_number, distance, stroke, gender, heat, lane, athlete_id, athlete_name, athlete_team, time_ms, status, exhibition, place, points)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(
+            meetId,
+            s.event_id,
+            event?.event_number ?? 0,
+            event?.distance ?? 0,
+            event?.stroke ?? "",
+            event?.gender ?? "Open",
+            s.heat,
+            s.lane,
+            s.athlete_id || null,
+            s.athlete_name,
+            s.athlete_team,
+            s.official_time_ms,
+            s.status ?? "OK",
+            s.exhibition,
+            null,
+            null,
+          );
+      }),
+      db.prepare("UPDATE meets SET status = 'complete' WHERE id = ?").bind(meetId),
+    ]);
   }
 
   /** Every declared entry, by event — the DO's own, not D1's, now that
@@ -863,26 +946,27 @@ export class MeetDurableObject extends DurableObject<Env> {
    * read from here, never from a D1 snapshot that could be stale between
    * checkpoints.
    *
-   * `access` is resolved by the Worker from the session before this is ever
-   * called — same separation as the WebSocket handshake in `fetch`. Returns
-   * a refusal rather than throwing: a DO RPC error crossing the Worker
-   * boundary loses everything but a message, and the caller needs a status
-   * code to answer with.
+   * `meet`/`user` are resolved by the Worker from the session (and the
+   * meet's own D1 row) before this is ever called — same separation as the
+   * WebSocket handshake in `fetch`, and why this takes the caller's already-
+   * fetched `Meet` rather than fetching its own copy the way this used to.
+   * Returns a refusal rather than throwing: a DO RPC error crossing the
+   * Worker boundary loses everything but a message, and the caller needs a
+   * status code to answer with.
    */
   async declareEntry(
     input: WriteOf<"entry">,
-    access: MeetAccess,
+    meet: Meet,
+    user: UserIdentity,
   ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
     await this.ensureHydrated(input.meetId);
 
-    const meet = await getMeet(this.env.DB, input.meetId);
-    if (!meet) return { ok: false, status: 404, error: "No such meet" };
-
     const teamsOf = await this.teamsOfAthlete(input.athleteId);
     if (
-      !mayEnter(access, input.athleteId, {
-        athletesMayEnter: meet.athletesMayEnter,
-        teamsOf: () => teamsOf,
+      !canEnter({
+        meet,
+        user,
+        athlete: { id: input.athleteId, teamIds: teamsOf },
       })
     ) {
       return {
@@ -892,15 +976,15 @@ export class MeetDurableObject extends DurableObject<Env> {
       };
     }
 
+    let enteredAt = 0;
     if (input.entering) {
-      const eventRows = await this.env.DB.prepare(
-        "SELECT * FROM events WHERE meet_id = ? ORDER BY position",
-      )
-        .bind(input.meetId)
-        .all<EventRow>();
+      const events = this.ctx.storage.sql
+        .exec<LiveEventRow>("SELECT * FROM events")
+        .toArray()
+        .map(liveEventFromRow);
       const refusal = whyNotEnter(
         {
-          events: eventRows.results.map(eventFromRow),
+          events,
           entries: this.readEntries(input.meetId),
           limits: meet.limits,
         },
@@ -909,6 +993,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       );
       if (refusal) return { ok: false, status: 400, error: refusal };
 
+      enteredAt = Date.now();
       this.ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO entries (meet_id, event_id, athlete_id, seed_time_ms, exhibition, entered_at, entered_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -917,8 +1002,8 @@ export class MeetDurableObject extends DurableObject<Env> {
         input.athleteId,
         input.seedTimeMs ?? null,
         input.exhibition ? 1 : 0,
-        Date.now(),
-        access.userId,
+        enteredAt,
+        user.userId,
       );
     } else {
       this.ctx.storage.sql.exec(
@@ -927,15 +1012,32 @@ export class MeetDurableObject extends DurableObject<Env> {
         input.athleteId,
       );
     }
-    this.broadcast({ kind: "entry", ...input });
+
+    // The `LiveSocketMessage` shape (`meetCache`'s), not the old `Write`
+    // one — nothing still listening for the old one cares about entries
+    // specifically (see `useMeetChanges`, which ignores message content
+    // entirely), so there's no reason to send both.
+    this.broadcast({
+      type: "ENTRY",
+      entry: {
+        id: "",
+        eventId: input.eventId,
+        athleteId: input.athleteId,
+        seedTimeMs: input.seedTimeMs,
+        exhibition: input.exhibition ?? false,
+        enteredAt,
+        enteredBy: user.userId ?? "",
+      },
+      isDelete: !input.entering,
+    });
 
     await this.reseedIfUntouched(input.meetId, input.eventId, meet);
     return { ok: true };
   }
 
-  /** Every team an athlete is enrolled on, anywhere — enough for `mayEnter`'s
+  /** Every team an athlete is enrolled on, anywhere — enough for `canEnter`'s
    *  "is this one of the teams you coach" check, which only cares whether
-   *  any of them intersects `access.coachOf`. */
+   *  any of them intersects `user.coachOf`. */
   private async teamsOfAthlete(athleteId: string): Promise<string[]> {
     const { results } = await this.env.DB.prepare(
       "SELECT DISTINCT team_id FROM enrollments WHERE athlete_id = ?",
@@ -1166,7 +1268,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    *
    * Trust here is coarse, matching `fetch`'s own: `role` is whatever the
    * Worker tagged the connection with at handshake (not re-checked against
-   * `meetAccess` per message), and a spectator is refused outright. A wrong
+   * `access.ts`'s predicates per message), and a spectator is refused outright. A wrong
    * or malicious signal costs at worst a UI hint that self-corrects the next
    * time the cookie or a broadcast catches everyone up — nothing here is the
    * durable record of anything.
@@ -1251,8 +1353,13 @@ export class MeetDurableObject extends DurableObject<Env> {
    * the same message as everyone else for now — narrowing that payload is
    * an open product decision, not a blocker for the broadcast mechanism
    * itself.
+   *
+   * Two unrelated vocabularies share this one wire, both just JSON over the
+   * same socket: `MeetBroadcast` (`Write`s) for the old model's clients, and
+   * `LiveSocketMessage` for `meetCache`'s (`meets2.tsx`). A client that
+   * doesn't recognize a message's `kind`/`type` just ignores it.
    */
-  private broadcast(message: MeetBroadcast): void {
+  private broadcast(message: MeetBroadcast | LiveSocketMessage): void {
     const payload = JSON.stringify(message);
     for (const ws of this.ctx.getWebSockets()) {
       try {

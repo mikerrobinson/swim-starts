@@ -11,8 +11,8 @@ import {
   SectionTitle,
 } from "~/components/ui";
 import { formatTime } from "~/lib/time";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
-import { teamAccess } from "~/lib/access.server";
+import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import { canEditTeam } from "~/lib/access";
 import {
   athleteForUser,
   getAthlete,
@@ -54,15 +54,15 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       teamId: null,
     };
 
-  const user = await currentUser(request, env);
+  const rawUser = await currentUser(request, env);
+  const user = await resolveUser(db, rawUser, request);
 
   // Editing is a coach's job, and the team that matters is one this swimmer is
   // actually on — a coach of some other school has no say here.
   let teamId: string | null = null;
   let coach = false;
   for (const team of detail.teams) {
-    const access = await teamAccess(db, team.id, user);
-    if (access.coach) {
+    if (canEditTeam({ team: { id: team.id }, user })) {
       teamId = team.id;
       coach = true;
       break;
@@ -105,12 +105,12 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
 export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const rawUser = await currentUser(request, env);
+  const user = await resolveUser(db, rawUser, request);
 
   const form = await request.formData();
   const teamId = String(form.get("teamId") ?? "");
-  const access = await teamAccess(db, teamId, user);
-  if (!access.coach) {
+  if (!canEditTeam({ team: { id: teamId }, user })) {
     throw new Response("Only a coach of this team can change that.", {
       status: 403,
     });

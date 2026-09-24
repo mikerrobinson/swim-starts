@@ -1,5 +1,3 @@
-/* -------------------------------------------------------------- device id */
-
 export const DEVICE_COOKIE = "mr_timer_id";
 
 /**

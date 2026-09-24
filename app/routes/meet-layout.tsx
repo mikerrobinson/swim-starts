@@ -1,8 +1,8 @@
 import { Link, Outlet, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/meet-layout";
 import { EmptyState } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
-import { meetAccess, type MeetAccess } from "~/lib/access.server";
+import { currentUser, requireDb, resolveUser, type SyncEnv } from "~/lib/api.server";
+import type { UserIdentity } from "~/lib/access";
 import { getMeet } from "~/lib/meets.server";
 import type { Meet } from "~/types/meet";
 
@@ -27,19 +27,19 @@ import type { Meet } from "~/types/meet";
 export async function loader({ params, request, context }: Route.LoaderArgs) {
   const env = context.cloudflare.env as SyncEnv;
   const db = requireDb(env);
-  const user = await currentUser(request, env);
 
-  const [meet, access] = await Promise.all([
+  const [rawUser, meet] = await Promise.all([
+    currentUser(request, env),
     getMeet(db, params.meetId),
-    meetAccess(db, params.meetId, user),
   ]);
+  const user = await resolveUser(db, rawUser, request);
 
-  return { meet, access };
+  return { meet, user };
 }
 
 export interface MeetContext {
   meet: Meet;
-  access: MeetAccess;
+  user: UserIdentity;
 }
 
 /**
@@ -56,7 +56,7 @@ export interface MeetContext {
 export function useMeet(): MeetContext {
   const data = useRouteLoaderData<typeof loader>("routes/meet-layout");
   if (!data?.meet) throw new Error("useMeet used outside a meet route");
-  return { meet: data.meet, access: data.access };
+  return { meet: data.meet, user: data.user };
 }
 
 export default function MeetLayout({ loaderData }: Route.ComponentProps) {

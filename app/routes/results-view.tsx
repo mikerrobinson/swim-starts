@@ -13,8 +13,6 @@ import {
   type RankedSwim,
   type ScoreGroup,
 } from "~/lib/scoring";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
-import { meetDetail } from "~/lib/meets.server";
 import { useMeetLive } from "~/hooks/use-meet-live";
 import {
   eventName,
@@ -37,16 +35,14 @@ export function meta({}: Route.MetaArgs) {
  * renders a plain "not built yet" rather than fabricating one nobody has
  * designed.
  */
-export async function loader({ params, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
-  const detail = await meetDetail(db, params.meetId);
-  if (!detail) return { detail: null };
-
-  const live = await env.MEET_DO.getByName(params.meetId).getSnapshot(
-    params.meetId,
-  );
-  return { detail: withLiveTables(detail, live) };
+export async function loader() {
+  // Used to assemble a `MeetDetail` from D1's events/entries/swims/watches
+  // tables (`meetDetail`) folded with the meet's Durable Object live tables.
+  // D1 no longer holds a meet's programme/entries/swims/watches at all —
+  // see `meets2.tsx` — and this old-model results view hasn't been ported
+  // to read the DO's `MeetManifest` shape instead, so `detail` stays `null`
+  // (the component's already-handled "no such meet" state) until it is.
+  return { detail: null as MeetDetail | null };
 }
 
 /** Girls, then boys, then whatever an Open event's points fell under. */
@@ -87,7 +83,14 @@ export default function ResultsView({
   loaderData,
   params,
 }: Route.ComponentProps) {
-  const loaded = loaderData.detail!;
+  if (!loaderData.detail) {
+    return (
+      <EmptyState title="Not available for this meet">
+        Results for this meet haven't moved to the new data model yet.
+      </EmptyState>
+    );
+  }
+  const loaded = loaderData.detail;
   // The screen a parent in the stands leaves open. Nothing here is written by
   // this device, so everything on it shows up this way or not at all —
   // the meet's live connection now, rather than a poll.

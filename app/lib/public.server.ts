@@ -14,17 +14,13 @@ import { ensureSchema } from "./schema.server";
 import { coachedTeams, teamsCoachedBy } from "./coaches.server";
 import { athleteRow, type AthleteRow } from "./athletes.server";
 import { teamRow, type TeamRow } from "./teams.server";
-import { listMeets, meetDetail } from "./meets.server";
-import { recordedCount } from "./timing";
+import { listMeets } from "./meets.server";
 import {
-  athleteSwims,
-  meetResults,
   meetSummary,
   publicAthlete,
   teamRef,
   type PublicAthlete,
   type PublicAthleteDetail,
-  type PublicMeetDetail,
   type PublicMeetSummary,
   type PublicTeam,
   type TeamRef,
@@ -45,7 +41,7 @@ async function teamCounts(
   if (teamIds.length === 0) return counts;
   const holes = teamIds.map(() => "?").join(", ");
 
-  const [people, meets, claimed] = await Promise.all([
+  const [people, meets] = await Promise.all([
     db
       .prepare(
         `SELECT team_id, COUNT(DISTINCT athlete_id) AS n FROM enrollments
@@ -60,21 +56,15 @@ async function teamCounts(
       )
       .bind(...teamIds)
       .all<{ team_id: string; n: number }>(),
-    db
-      .prepare(
-        `SELECT mt.team_id AS team_id, COUNT(DISTINCT w.swim_id) AS n
-       FROM meet_teams mt JOIN watches w ON w.meet_id = mt.meet_id
-       WHERE mt.team_id IN (${holes}) AND w.time_ms IS NOT NULL
-       GROUP BY mt.team_id`,
-      )
-      .bind(...teamIds)
-      .all<{ team_id: string; n: number }>(),
   ]);
+  // `times` used to be a count against D1's `watches` table, which no longer
+  // exists — that data lives only in each meet's own Durable Object now.
+  // Left at 0 until there's a D1-only way to answer it (see `results`, once
+  // a meet completes).
 
   for (const id of teamIds) counts.set(id, { athletes: 0, meets: 0, times: 0 });
   for (const row of people.results) counts.get(row.team_id)!.athletes = row.n;
   for (const row of meets.results) counts.get(row.team_id)!.meets = row.n;
-  for (const row of claimed.results) counts.get(row.team_id)!.times = row.n;
   return counts;
 }
 
@@ -190,12 +180,12 @@ export async function publicTeamDetail(
           active: r.status !== "inactive",
         })),
     })),
+    // Event/entry/timing counts used to come from `meetDetail`'s D1 read.
+    // That data is the meet's own Durable Object's now (see meets2.tsx) —
+    // no D1-only path to it yet, so a public team page can't show it until
+    // that's wired up.
     meets: meets.map((row) =>
-      meetSummary(row.meet, row.teams, {
-        events: row.eventCount,
-        entries: row.entryCount,
-        times: row.timedLanes,
-      }),
+      meetSummary(row.meet, row.teams, { events: 0, entries: 0, times: 0 }),
     ),
   };
 }
@@ -207,43 +197,10 @@ export async function listPublicMeets(
   options: { teamId?: string } = {},
 ): Promise<PublicMeetSummary[]> {
   const rows = await listMeets(db, options);
+  // See the comment on `publicTeamDetail`'s `meets` field above.
   return rows.map((row) =>
-    meetSummary(row.meet, row.teams, {
-      events: row.eventCount,
-      entries: row.entryCount,
-      times: row.timedLanes,
-    }),
+    meetSummary(row.meet, row.teams, { events: 0, entries: 0, times: 0 }),
   );
-}
-
-export async function publicMeetDetail(
-  db: D1Database,
-  meetId: string,
-): Promise<PublicMeetDetail | null> {
-  const detail = await meetDetail(db, meetId);
-  if (!detail) return null;
-
-  // Which team each swimmer was racing for, from the enrollments this meet
-  // already loaded. A visiting swimmer is on their own school's roster, not
-  // on the host's, which is the whole reason athletes are global.
-  const teams = new Map(detail.teams.map((t) => [t.id, teamRef(t)] as const));
-  const teamOf = (athleteId: string): TeamRef | null => {
-    const enrolled = detail.enrollments.find((e) => e.athleteId === athleteId);
-    return enrolled ? (teams.get(enrolled.teamId) ?? null) : null;
-  };
-
-  const entries = Object.values(detail.entries).reduce(
-    (n, ids) => n + ids.length,
-    0,
-  );
-  return {
-    ...meetSummary(detail.meet, detail.teams, {
-      events: detail.events.length,
-      entries,
-      times: recordedCount(detail),
-    }),
-    results: meetResults(detail, teamOf),
-  };
 }
 
 /* ---------------------------------------------------------------- athletes */
@@ -333,27 +290,14 @@ export async function publicAthleteDetail(
     teams.set(row.id, existing);
   }
 
-  // The meets they actually swam in, rather than every meet in the database.
-  const { results: meetIds } = await db
-    .prepare(
-      `SELECT DISTINCT meet_id FROM (
-         SELECT meet_id FROM entries WHERE athlete_id = ?1
-         UNION SELECT meet_id FROM swims WHERE athlete_id = ?1)`,
-    )
-    .bind(athleteId)
-    .all<{ meet_id: string }>();
-
-  const details = await Promise.all(
-    meetIds.map((row) => meetDetail(db, row.meet_id)),
-  );
-
   return {
     ...publicAthlete(athlete),
     teams: [...teams.values()],
-    swims: athleteSwims(
-      athleteId,
-      details.filter((d): d is NonNullable<typeof d> => d !== null),
-    ),
+    // Used to come from every meet's D1 `entries`/`swims` rows via
+    // `meetDetail`. That data lives only in each meet's own Durable Object
+    // now — no cross-meet D1 read to build this from until a meet
+    // completes and its swims land in `results`. See `meets2.tsx`.
+    swims: [],
   };
 }
 
