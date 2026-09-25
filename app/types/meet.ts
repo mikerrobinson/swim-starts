@@ -355,7 +355,6 @@ export interface MeetManifest {
 export interface Event {
   id: string;
   position: number;
-  eventNumber: number;
   distance: number;
   stroke: Stroke;
   gender: EventGender;
@@ -698,5 +697,37 @@ export function getNextHeat(
   }
 
   // Reached end of meet
+  return null;
+}
+
+export function getPreviousHeat(
+  meet: MeetManifest,
+  currentEventId: string,
+  currentHeat: number,
+): { eventId: string; heat: number } | null {
+  // Still earlier heats in the current event?
+  if (currentHeat > 1) {
+    return { eventId: currentEventId, heat: currentHeat - 1 };
+  }
+
+  // Move to the previous event in the schedule
+  const sortedEvents = getSortedEvents(meet);
+  const currentEventIdx = sortedEvents.findIndex(
+    (e) => e.id === currentEventId,
+  );
+
+  // Is there a prior event?
+  if (currentEventIdx > 0) {
+    const prevEvent = sortedEvents[currentEventIdx - 1];
+    // Land on the last heat of the previous event
+    const prevEventTotalHeats = getTotalHeatsForEvent(meet, prevEvent.id);
+
+    return {
+      eventId: prevEvent.id,
+      heat: Math.max(1, prevEventTotalHeats),
+    };
+  }
+
+  // Already at the very beginning of the meet (Event 1, Heat 1)
   return null;
 }

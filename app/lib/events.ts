@@ -83,7 +83,7 @@ export function makeEvent(
   stroke: Stroke,
   gender: EventGender = "Open",
 ): Event {
-  return { id: generateId(), position: 0, eventNumber: 0, distance, stroke, gender };
+  return { id: generateId(), position: 0, distance, stroke, gender };
 }
 
 /** Stamp array order onto `position`/`eventNumber`, ready to be written —

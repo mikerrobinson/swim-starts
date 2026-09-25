@@ -74,7 +74,6 @@ export async function readResultsManifest(
       events[row.event_id] = {
         id: row.event_id,
         position: row.event_number,
-        eventNumber: row.event_number,
         distance: row.distance,
         stroke: row.stroke as Stroke,
         gender: row.gender as Event["gender"],

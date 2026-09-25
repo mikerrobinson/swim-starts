@@ -65,6 +65,7 @@ export default [
       route("timer", "routes/timer-shell.tsx", [
         index("routes/timer-lanes.tsx"),
         route(":event/:heat/:lane", "routes/timer.tsx"),
+        route("alt/:event/:heat/:lane", "routes/timer2.tsx"),
       ]),
       route("admin", "routes/admin.tsx", [
         index("routes/admin-index.tsx"),

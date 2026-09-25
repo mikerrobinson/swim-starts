@@ -116,7 +116,6 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS events (
      id TEXT PRIMARY KEY,
      position INTEGER NOT NULL,
-     event_number INTEGER NOT NULL,
      distance INTEGER NOT NULL,
      stroke TEXT NOT NULL,
      gender TEXT NOT NULL,
@@ -247,7 +246,6 @@ interface LiveEventRow {
   [key: string]: SqlStorageValue;
   id: string;
   position: number;
-  event_number: number;
   distance: number;
   stroke: string;
   gender: string;
@@ -259,7 +257,6 @@ function liveEventFromRow(row: LiveEventRow): Event {
   return {
     id: row.id,
     position: row.position,
-    eventNumber: row.event_number,
     distance: row.distance,
     stroke: row.stroke as Stroke,
     gender: row.gender as Event["gender"],
@@ -546,11 +543,10 @@ export class MeetDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM events");
     for (const event of events) {
       this.ctx.storage.sql.exec(
-        `INSERT INTO events (id, position, event_number, distance, stroke, gender, name, total_heats)
+        `INSERT INTO events (id, position, distance, stroke, gender, name, total_heats)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         event.id,
         event.position,
-        event.eventNumber,
         event.distance,
         event.stroke,
         event.gender,

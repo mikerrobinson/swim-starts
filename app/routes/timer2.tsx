@@ -1,65 +1,17 @@
-import { useParams, Form, useNavigation, useNavigate } from "react-router";
+import {
+  useParams,
+  Form,
+  useNavigation,
+  useNavigate,
+  Link,
+} from "react-router";
 import { useState, useRef, useCallback } from "react";
 import type {
   ActionFunctionArgs,
   ClientActionFunctionArgs,
 } from "react-router";
-import { useMeet } from "~/routes/meets2";
-import { toSwimKey } from "~/types/meet";
-
-// Server action: executed on the Cloudflare Worker/DO
-export async function action({ request, params, context }: ActionFunctionArgs) {
-  const { id: meetId, heat, lane } = params;
-  // const formData = await request.formData();
-
-  // const timeMs = Number(formData.get("timeMs"));
-  // const deviceId = String(formData.get("deviceId"));
-
-  // const doId = context.env.MEET_DO.idFromName(meetId!);
-  // const stub = context.env.MEET_DO.get(doId);
-
-  // await stub.recordTime({
-  //   heatNumber: Number(heat),
-  //   laneNumber: Number(lane),
-  //   timeMs,
-  //   deviceId,
-  // });
-
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: {
-      "Content-Type": "application/json",
-      // Clear the disaster-recovery cookie once acknowledged by server
-      "Set-Cookie": `pending_time_${lane}=; Max-Age=0; Path=/; SameSite=Strict; Secure`,
-    },
-  });
-}
-
-// Client action: optimistic execution and local persistence
-export async function clientAction({
-  request,
-  params,
-  serverAction,
-}: ClientActionFunctionArgs) {
-  // const { heat, lane } = params;
-  // const formData = await request.clone().formData();
-  // const timeMs = Number(formData.get("timeMs"));
-  // const cacheKey = `heat:${heat}:lane:${lane}`;
-
-  // // 1. Optimistically commit to local cache
-  // meetCache.setOptimisticLocal(cacheKey, { timeMs, status: "valid" });
-
-  // // 2. Stage backup cookie directly in document.cookie for webview crash protection
-  // document.cookie = `pending_time_${lane}=${timeMs}; Path=/; SameSite=Strict; Secure`;
-
-  // // 3. Fire-and-forget server sync in background
-  // serverAction()
-  //   .then(() => meetCache.ackSync(cacheKey))
-  //   .catch(() =>
-  //     console.warn("Offline: time queued in local store and cookie."),
-  //   );
-
-  return { success: true };
-}
+import { getNextHeat, getPreviousHeat, toSwimKey } from "~/types/meet";
+import { useMeet } from "./meet-layout";
 
 export default function TimerLaneKiosk() {
   const params = useParams();
@@ -69,24 +21,38 @@ export default function TimerLaneKiosk() {
   // Read directly from the parent shell loader
   const meet = useMeet();
 
-  const currentEventNo = Number(params.event);
-  const currentHeat = Number(params.heat);
-  const currentLane = Number(params.lane);
+  const meetId = params.meetId!;
+  const eventId = params.event!;
+  const heat = Number(params.heat);
+  const lane = Number(params.lane);
 
   // O(1) direct slot lookup
   const swimKey = toSwimKey({
-    event: currentEventNo,
-    heat: currentHeat,
-    lane: currentLane,
+    eventId: eventId,
+    heat: heat,
+    lane: lane,
   });
-  const currentSwim = meet?.swims[swimKey];
-  const currentEvent = meet?.events[currentEventNo];
+  const swim = meet.swims[swimKey];
+  const event = meet.events[eventId];
+
+  console.log(JSON.stringify(meet, null, 2));
+
+  const nextHeat = getNextHeat(meet, eventId, heat);
+  const previousHeat = getPreviousHeat(meet, eventId, heat);
 
   // High-performance touch timing state
   const [stopwatchMs, setStopwatchMs] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const startTimestamp = useRef<number>(0);
   const animFrameRef = useRef<number>(0);
+  const nextHeatLink =
+    nextHeat == null
+      ? ""
+      : `/meets/${meetId}/timer/alt/${nextHeat.eventId}/${nextHeat?.heat}/${lane}`;
+  const previousHeatLink =
+    previousHeat == null
+      ? ""
+      : `/meets/${meetId}/timer/alt/${previousHeat.eventId}/${previousHeat?.heat}/${lane}`;
 
   const startStopwatch = useCallback(
     (e: React.TouchEvent | React.MouseEvent) => {
@@ -115,36 +81,18 @@ export default function TimerLaneKiosk() {
     },
     [],
   );
-
-  const handleNextHeat = () => {
-    const nextHeat = currentHeat + 1;
-    navigate(`/meets/${meet?.id}/timer/${nextHeat}/${currentLane}`);
-  };
+  console.log("=========", JSON.stringify(nextHeat, null, 2));
 
   return (
     <div className="flex h-dvh flex-col select-none touch-none overscroll-none p-4">
       {/* Header Info Banner */}
       <header className="flex justify-between items-center pb-4">
-        <div>
-          <span className="text-xs font-semibold tracking-wider uppercase">
-            {currentEvent?.name ?? "Event"}
-          </span>
-          <h1 className="text-2xl font-bold">
-            Heat {currentHeat} • Lane {currentLane}
-          </h1>
-          <p className="text-sm">
-            Swimmer:{" "}
-            <span className="font-medium">
-              {currentSwim?.athleteId ?? "Open Lane"}
-            </span>
-          </p>
-        </div>
-        <button
-          onClick={handleNextHeat}
-          className="px-3 py-1 text-sm border border-black rounded-md"
-        >
-          Skip Heat →
-        </button>
+        {previousHeatLink == null ? (
+          <p>at start</p>
+        ) : (
+          <Link to={previousHeatLink} />
+        )}
+        {nextHeatLink == null ? <p>at end</p> : <Link to={nextHeatLink} />}
       </header>
 
       {/* Main Display / Manual Override Box */}

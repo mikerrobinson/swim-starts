@@ -290,7 +290,8 @@ export default function Timer({ params }: Route.ComponentProps) {
       id: a.id,
       firstName: a.firstName,
       lastName: a.lastName,
-      team: teamLabel(a.teamId) || undefined,
+      gender: a.gender,
+      teamId: a.teamId,
     }));
     const seen = new Set(roster.map((a) => a.id));
     return [
@@ -612,7 +613,9 @@ export default function Timer({ params }: Route.ComponentProps) {
                   : "Empty lane"}
               </span>
               <span className="block truncate text-sm text-slate-500">
-                {swimmer ? (swimmer.team ?? ownTeam) : "Tap to say who's here"}
+                {swimmer
+                  ? (swimmer.teamId ?? ownTeam)
+                  : "Tap to say who's here"}
               </span>
             </span>
             <span className="shrink-0 text-sm font-semibold text-blue-600">
