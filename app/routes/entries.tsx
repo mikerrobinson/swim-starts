@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams, useSubmit } from "react-router";
+import {
+  Link,
+  useSearchParams,
+  useSubmit,
+  type ShouldRevalidateFunctionArgs,
+} from "react-router";
 import type { Route } from "./+types/entries";
 import { Button, EmptyState, TextInput } from "~/components/ui";
 import { whyNotEnter } from "~/lib/events";
 import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
-import { canEditMeet, canEnter, canRecordTime, type MeetFacts } from "~/lib/access";
+import {
+  canEditMeet,
+  canEnter,
+  canRecordTime,
+  type MeetFacts,
+} from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
 import {
@@ -55,8 +65,6 @@ function genderOptions(pathname: string, current: string): ToggleOption[] {
       title: active
         ? `${option.label} only — tap to show everyone`
         : `${option.label} only`,
-      // Tapping the active one clears the filter; tapping the other swaps to
-      // it. Either way only one can be on.
       to: active ? pathname : `${pathname}?g=${option.value}`,
     };
   });
@@ -125,6 +133,16 @@ async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
     }),
   );
   return perTeam.flat();
+}
+
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  return currentUrl.pathname === nextUrl.pathname
+    ? false
+    : defaultShouldRevalidate;
 }
 
 /**

@@ -2,88 +2,63 @@ import {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useState,
   type ReactNode,
 } from "react";
-import {
-  loadLaneLayout,
-  loadNameOrder,
-  loadTimerId,
-  saveLaneLayout,
-  saveNameOrder,
-} from "~/lib/storage";
-import type { LaneLayout } from "~/types/meet";
+import { local } from "~/lib/local";
 import type { NameOrder } from "~/types/preferences";
 
-/**
- * How this device likes to look at things, as opposed to what's true about a
- * meet. Lives here rather than in the meet document so it survives to the next
- * meet and doesn't sync — one coach's layout isn't another's.
- *
- * The controls for these sit in the header, centred, so they cost no vertical
- * space on the screens that need every pixel.
- */
 interface ViewPrefs {
-  laneLayout: LaneLayout;
-  //setLaneLayout: (layout: LaneLayout) => void;
-  /** This device's identity as a timer — every watch it takes is filed under it. */
-  timerId: string;
-  /** How names are written and sorted for whoever is holding this device. */
   nameOrder: NameOrder;
-  //setNameOrder: (order: NameOrder) => void;
 }
 
-const ViewPrefsContext = createContext<ViewPrefs | null>(null);
+interface ViewPrefsContextType {
+  viewPrefs: ViewPrefs;
+  updateViewPrefs: (updatedViewPrefs: Partial<ViewPrefs>) => void;
+}
+
+const DEFAULT_VIEWPREFS: ViewPrefs = {
+  nameOrder: "last",
+};
+
+const ViewPrefsContext = createContext<ViewPrefsContextType | undefined>(
+  undefined,
+);
+
+const VIEWPREFS_KEY = "swim-starts:view-prefs";
 
 export function ViewPrefsProvider({ children }: { children: ReactNode }) {
-  // Starts at the default and adopts the stored value once mounted: the
-  // server can't read localStorage, and guessing would mismatch on hydration.
-  const [laneLayout, setLayout] = useState<LaneLayout>("grid");
-  const [timerId, setTimerId] = useState("device");
-  const [nameOrder, setOrder] = useState<NameOrder>("last");
+  const [viewPrefs, setViewPrefs] = useState<ViewPrefs>(DEFAULT_VIEWPREFS);
 
   useEffect(() => {
-    setLayout(loadLaneLayout());
-    setTimerId(loadTimerId());
-    setOrder(loadNameOrder());
+    const stored = local.get(VIEWPREFS_KEY);
+    if (stored) {
+      try {
+        setViewPrefs(JSON.parse(stored));
+      } catch (e) {
+        console.error("Failed to parse user config from localStorage", e);
+      }
+    }
   }, []);
 
-  const value = useMemo<ViewPrefs>(
-    () => ({
-      laneLayout,
-      timerId,
-      nameOrder,
-      setLaneLayout: (next) => {
-        setLayout(next);
-        saveLaneLayout(next);
-      },
-      setNameOrder: (next) => {
-        setOrder(next);
-        saveNameOrder(next);
-      },
-    }),
-    [laneLayout, timerId, nameOrder],
-  );
+  // 3. Update state AND sync to localStorage
+  const updateViewPrefs = (updatedViewPrefs: Partial<ViewPrefs>) => {
+    setViewPrefs((prev) => {
+      const updated = { ...prev, ...updatedViewPrefs };
+      local.set(VIEWPREFS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  };
 
   return (
-    <ViewPrefsContext.Provider value={value}>
+    <ViewPrefsContext.Provider value={{ viewPrefs, updateViewPrefs }}>
       {children}
     </ViewPrefsContext.Provider>
   );
 }
 
-export function useViewPrefs(): ViewPrefs {
-  // const value = useContext(ViewPrefsContext);
-  // if (!value) throw new Error("useViewPrefs used outside ViewPrefsProvider");
-  // return value;
-  return {
-    laneLayout: "grid",
-    //setLaneLayout: (layout: LaneLayout) => void,
-    /** This device's identity as a timer — every watch it takes is filed under it. */
-    timerId: "",
-    /** How names are written and sorted for whoever is holding this device. */
-    nameOrder: "first",
-    //setNameOrder: (order: NameOrder) => void,
-  };
+export function useViewPrefs() {
+  const value = useContext(ViewPrefsContext);
+  if (!value) throw new Error("useViewPrefs used outside ViewPrefsProvider");
+  return value;
 }

@@ -112,26 +112,6 @@ export function isTimersPerLane(value: unknown): value is TimersPerLane {
   return TIMERS_PER_LANE.includes(value as TimersPerLane);
 }
 
-/**
- * How the lane buttons are arranged while running a heat. The two list
- * layouts put the lanes in a single column in pool order, so whoever is
- * watching from the side maps a finish straight onto a button without having
- * to work out which column it's in.
- *
- * A device preference rather than a meet option — it depends on where the
- * person holding the phone is standing, not on the meet — so it lives in
- * `storage.ts` and is never written to the server.
- */
-export type LaneLayout = "grid" | "list-asc" | "list-desc";
-
-export const LANE_LAYOUTS: LaneLayout[] = ["grid", "list-asc", "list-desc"];
-
-/** Lane numbers in the order they should be drawn for a layout. */
-export function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
-  const lanes = Array.from({ length: laneCount }, (_, i) => i + 1);
-  return layout === "list-desc" ? lanes.reverse() : lanes;
-}
-
 /* -------------------------------------------------------------------- meet */
 
 export type MeetType =

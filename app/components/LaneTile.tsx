@@ -1,7 +1,8 @@
 import type { MouseEvent, PointerEvent, RefObject } from "react";
 import { formatTime } from "~/lib/time";
 import type { SwimTime } from "~/lib/timing";
-import { displayName, type LaneLayout } from "~/types/meet";
+import { displayName } from "~/types/meet";
+import { type LaneLayout } from "../routes/splits-heat";
 import { type NameOrder } from "~/types/preferences";
 import type { Athlete } from "~/types/athlete";
 

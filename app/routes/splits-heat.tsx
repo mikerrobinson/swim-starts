@@ -1,12 +1,12 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Link, useNavigate, useSubmit } from "react-router";
+import {
+  Link,
+  useNavigate,
+  useSearchParams,
+  useSubmit,
+  type ShouldRevalidateFunctionArgs,
+} from "react-router";
 import type { Route } from "./+types/splits-heat";
 import type { SwimTime } from "~/lib/timing";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
@@ -41,11 +41,6 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import {
-  loadLaneLayout,
-  saveLaneLayout,
-  subscribeDevicePrefs,
-} from "~/lib/storage";
 import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
 import { useMeet } from "./meet-layout";
 import { useUser, useDeviceId } from "~/state/user";
@@ -58,7 +53,6 @@ import {
   getSortedEvents,
   isDiving,
   type Event,
-  type LaneLayout,
   type MeetAthlete,
   type Swim,
   type SwimSlot,
@@ -79,6 +73,18 @@ const EMPTY_MEET_FACTS: MeetFacts = {
   teamIds: [],
   athletesMayEnter: false,
 };
+
+const DEFAULT_LANE_LAYOUT: LaneLayout = "list-asc";
+
+/** How the lane buttons are arranged while running a heat. */
+export type LaneLayout = "grid" | "list-asc" | "list-desc";
+const LANE_LAYOUTS: LaneLayout[] = ["grid", "list-asc", "list-desc"];
+
+function parseLaneLayout(value: string | null): LaneLayout {
+  return LANE_LAYOUTS.includes(value as LaneLayout)
+    ? (value as LaneLayout)
+    : DEFAULT_LANE_LAYOUT;
+}
 
 /** Every racing team's roster, for the season the meet's date falls in —
  *  what `LaneAssignSheet`'s picker draws from. Same shape `entries.tsx`
@@ -116,6 +122,23 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     roster: rosterEntries.map((r) => r.athlete),
     enrollments: rosterEntries.map((r) => r.enrollment),
   };
+}
+
+/**
+ * The lane-layout toggle (`?layout=`) is read straight off the URL by the
+ * component, not through `loaderData` — so flipping it is a plain client-side
+ * URL change, not a fetch. Without this, React Router's default behavior
+ * would still re-run `loader` (a server round trip) on every tap since it
+ * revalidates on any URL change, search params included.
+ */
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  return currentUrl.pathname === nextUrl.pathname
+    ? false
+    : defaultShouldRevalidate;
 }
 
 /**
@@ -250,15 +273,11 @@ function orderedLanes(laneCount: number, layout: LaneLayout): number[] {
   return layout === "list-desc" ? lanes.reverse() : lanes;
 }
 
-/**
- * Grid vs. top-to-bottom vs. bottom-to-top — a property of the device, not
- * the URL (which lane is which doesn't change meet to meet, but which end of
- * the deck someone stands at does), so this reads and writes `storage.ts`
- * directly rather than routing through a search param the way `entries.tsx`'s
- * gender filter does.
- */
-function laneLayoutOptions(laneCount: number): ToggleOption[] {
-  const current = loadLaneLayout();
+function laneLayoutOptions(
+  pathname: string,
+  current: LaneLayout,
+  laneCount: number,
+): ToggleOption[] {
   return (
     [
       { value: "grid", label: "Grid" },
@@ -269,14 +288,19 @@ function laneLayoutOptions(laneCount: number): ToggleOption[] {
     value,
     label,
     active: current === value,
-    onSelect: () => saveLaneLayout(value),
+    to:
+      value === DEFAULT_LANE_LAYOUT ? pathname : `${pathname}?layout=${value}`,
   }));
 }
 
 export const handle: MeetRouteHandle = {
-  headerToggle: ({ meet }) => ({
+  headerToggle: ({ meet, pathname, searchParams }) => ({
     label: "Lane layout",
-    options: laneLayoutOptions(meet.details.laneCount),
+    options: laneLayoutOptions(
+      pathname,
+      parseLaneLayout(searchParams.get("layout")),
+      meet.details.laneCount,
+    ),
   }),
 };
 
@@ -297,40 +321,14 @@ export default function SplitsHeat({
   const deviceId = useDeviceId();
   const submit = useSubmit();
   const navigate = useNavigate();
-  const { timerId, nameOrder } = useViewPrefs();
-  // Not `useViewPrefs()` — that context's lane-layout slice is currently a
-  // dead stub (always "grid", no setter; see `state/view-prefs.tsx`). This
-  // reads `storage.ts` directly and re-renders when the header's toggle (see
-  // `handle` above) writes a new value, the same way the layout itself does.
-  const layout = useSyncExternalStore(
-    subscribeDevicePrefs,
-    loadLaneLayout,
-    () => "grid" as LaneLayout,
-  );
+  const {
+    viewPrefs: { nameOrder },
+  } = useViewPrefs();
+  const [searchParams] = useSearchParams();
+  const layout = parseLaneLayout(searchParams.get("layout"));
 
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const isAdmin = canEditMeet({ meet: meetFacts, userId: user?.id ?? null });
-
-  /**
-   * Who this screen's watches belong to.
-   *
-   * A watch's whole identity is the device that took it (`event/heat/lane/
-   * device/slot` — see `meet-do.server.ts`), so this device's own watches
-   * are always found by `deviceId`, signed in or not. `userId` still rides
-   * along on the row for attribution — it's just no longer what a watch is
-   * keyed by, the way `submittedBy` used to conflate the two.
-   */
-  const mine = deviceId || timerId;
-
-  /**
-   * What a watch taken on this screen is worth.
-   *
-   * The same screen serves an administrator who also holds a stopwatch and a
-   * coach who only does, and their readings are not weighed the same — so it
-   * follows whoever is looking rather than the screen they are on. The server
-   * decides it again from the session; this keeps the optimistic overlay in
-   * step until it answers.
-   */
   const myRole = isAdmin ? "admin" : user ? "coach" : "timer";
 
   /** Send a swim upsert/delete, or a watch upsert/delete — the four shapes
@@ -544,14 +542,14 @@ export default function SplitsHeat({
     for (const seed of seeds) {
       if (
         currentWatches({ watches }, seed).some(
-          (w) => w.deviceId === mine && w.timeMs !== undefined,
+          (w) => w.deviceId === deviceId && w.timeMs !== undefined,
         )
       ) {
         lanes.add(seed.lane);
       }
     }
     return lanes;
-  }, [watches, seeds, mine]);
+  }, [watches, seeds, deviceId]);
 
   const occupiedLanes = seeds.map((s) => s.lane);
 
@@ -714,9 +712,7 @@ export default function SplitsHeat({
                   }
                   suppressClickRef={suppressClickRef}
                   onDragStart={
-                    canDragLane(lane)
-                      ? (e) => startDrag(lane, e)
-                      : undefined
+                    canDragLane(lane) ? (e) => startDrag(lane, e) : undefined
                   }
                   onStop={() => {
                     if (!seed) return;
@@ -725,7 +721,7 @@ export default function SplitsHeat({
                       eventId: seed.eventId,
                       heat: seed.heat,
                       lane: seed.lane,
-                      deviceId: mine,
+                      deviceId: deviceId,
                       slot: 1,
                       role: myRole,
                       userId: user?.id ?? undefined,
@@ -775,7 +771,7 @@ export default function SplitsHeat({
                       eventId: seed.eventId,
                       heat: seed.heat,
                       lane: seed.lane,
-                      deviceId: mine,
+                      deviceId: deviceId,
                       slot: 1,
                     });
                   }
@@ -820,7 +816,7 @@ export default function SplitsHeat({
                     eventId: seed.eventId,
                     heat: seed.heat,
                     lane: seed.lane,
-                    deviceId: mine,
+                    deviceId: deviceId,
                     slot: 1,
                   });
                 }
@@ -913,7 +909,7 @@ export default function SplitsHeat({
               watches={currentWatches({ watches }, seed).filter(
                 (w) => w.timeMs !== undefined,
               )}
-              deviceId={mine}
+              deviceId={deviceId}
               exhibition={seed.exhibition ?? false}
               onToggleExhibition={() =>
                 sendSwim({ ...seed, exhibition: !seed.exhibition })
@@ -923,7 +919,7 @@ export default function SplitsHeat({
                   eventId: seed.eventId,
                   heat: seed.heat,
                   lane: seed.lane,
-                  deviceId: mine,
+                  deviceId: deviceId,
                   slot: 1,
                   role: myRole,
                   userId: user?.id ?? undefined,
