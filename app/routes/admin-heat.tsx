@@ -302,7 +302,9 @@ export default function AdminHeat({
   const deviceId = useDeviceId();
   const submit = useSubmit();
   const navigate = useNavigate();
-  const { nameOrder } = useViewPrefs();
+  const {
+    viewPrefs: { nameOrder },
+  } = useViewPrefs();
   const addHeat = useFetcher<{ ok: boolean; heat: number }>();
 
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;

@@ -352,7 +352,9 @@ export default function TeamDetail({ loaderData }: Route.ComponentProps) {
   const { team, access, coaches, currentSeasonId } = loaderData;
   const swimCounts = new Map(Object.entries(loaderData.swimCounts));
   const fetcher = useFetcher();
-  const { nameOrder } = useViewPrefs();
+  const {
+    viewPrefs: { nameOrder },
+  } = useViewPrefs();
 
   const [seasonId, setSeasonId] = useState<string | null>(null);
   const [search, setSearch] = useState("");

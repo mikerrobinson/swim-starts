@@ -60,7 +60,9 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
  */
 export default function EventDetail({ loaderData }: Route.ComponentProps) {
   const meet = useMeet();
-  const { nameOrder } = useViewPrefs();
+  const {
+    viewPrefs: { nameOrder },
+  } = useViewPrefs();
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
 
   const event = meet.events[loaderData.eventId];
@@ -75,7 +77,9 @@ export default function EventDetail({ loaderData }: Route.ComponentProps) {
   );
 
   if (!event) {
-    return <EmptyState title="No such event">It may have been removed.</EmptyState>;
+    return (
+      <EmptyState title="No such event">It may have been removed.</EmptyState>
+    );
   }
 
   // Same rule as entries.tsx: a lineup is competitive information before the

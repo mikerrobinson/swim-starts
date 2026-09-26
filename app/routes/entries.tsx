@@ -282,7 +282,9 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const meet = useMeet();
   const submit = useSubmit();
-  const { nameOrder } = useViewPrefs();
+  const {
+    viewPrefs: { nameOrder },
+  } = useViewPrefs();
 
   const isAdmin = canEditMeet({ meet: meetFacts, userId });
   // This meet's teams, narrowed to the ones the loader already found this

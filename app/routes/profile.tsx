@@ -158,7 +158,10 @@ interface ProfileResult {
 export default function ProfileScreen({ loaderData }: Route.ComponentProps) {
   const { profile } = loaderData;
   const session = useSession();
-  const { nameOrder, setNameOrder } = useViewPrefs();
+  const {
+    viewPrefs: { nameOrder },
+    updateViewPrefs,
+  } = useViewPrefs();
   const fetcher = useFetcher<ProfileResult>();
 
   const [name, setName] = useState(profile?.name ?? "");
@@ -260,7 +263,7 @@ export default function ProfileScreen({ loaderData }: Route.ComponentProps) {
         >
           <Segmented
             value={nameOrder}
-            onChange={(next) => setNameOrder(next as "first" | "last")}
+            onChange={(next) => updateViewPrefs({ nameOrder: next })}
             options={[
               { value: "last", label: "Aaronson, Avery" },
               { value: "first", label: "Avery Aaronson" },
