@@ -174,18 +174,22 @@ export async function clientAction({
   // deciding `entered_by` itself from the session (`declareEntry`).
   const enteredBy = String(form.get("enteredBy") ?? "");
 
-  meetCache.applyPatch(meetId, {
-    type: "ENTRY",
-    entry: {
-      eventId,
-      athleteId,
-      teamId,
-      exhibition: false,
-      enteredAt: Date.now(),
-      enteredBy,
+  meetCache.applyPatch(
+    meetId,
+    {
+      type: "ENTRY",
+      entry: {
+        eventId,
+        athleteId,
+        teamId,
+        exhibition: false,
+        enteredAt: Date.now(),
+        enteredBy,
+      },
+      isDelete: !entering,
     },
-    isDelete: !entering,
-  });
+    true,
+  );
 
   serverAction().catch((err) => {
     console.error("declareEntry failed", err);

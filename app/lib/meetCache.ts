@@ -65,7 +65,12 @@ class MeetCacheManager {
   // consumers a reference that actually changes.
   private dirty = new Map<
     string,
-    { watches?: boolean; swims?: boolean; athletes?: boolean; entries?: boolean }
+    {
+      watches?: boolean;
+      swims?: boolean;
+      athletes?: boolean;
+      entries?: boolean;
+    }
   >();
 
   /**
@@ -169,7 +174,11 @@ class MeetCacheManager {
    * Applies incoming socket patches directly to the in-memory object graph in O(1) time.
    * Batches downstream re-renders to the next tick and debounces disk writes.
    */
-  applyPatch(meetId: string, msg: LiveSocketMessage): boolean {
+  applyPatch(
+    meetId: string,
+    msg: LiveSocketMessage,
+    isLocal: boolean = false,
+  ): boolean {
     const meet = this.meets.get(meetId);
     if (!meet) return false;
 
@@ -227,7 +236,8 @@ class MeetCacheManager {
 
     if (!didMutate) return false;
 
-    this.scheduleNotify(meetId);
+    if (isLocal) this.flushNotify(meetId);
+    else this.scheduleNotify(meetId);
 
     // 2. Debounce serialization & disk write until pool action settles
     this.scheduleDiskPersist(meetId, meet);

@@ -396,13 +396,13 @@ export async function clientAction({
     const cached = meetCache.getMeet(meetId);
     if (cached) {
       const details = nextDetails(cached.details, intent, form);
-      meetCache.applyPatch(meetId, { type: "MEET_DETAILS", details });
+      meetCache.applyPatch(meetId, { type: "MEET_DETAILS", details }, true);
     }
   }
 
   if (intent === "events") {
     const events = JSON.parse(String(form.get("events"))) as Event[];
-    meetCache.applyPatch(meetId, { type: "EVENTS", events });
+    meetCache.applyPatch(meetId, { type: "EVENTS", events }, true);
   }
 
   return serverAction();
