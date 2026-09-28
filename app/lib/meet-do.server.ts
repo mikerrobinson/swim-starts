@@ -1045,6 +1045,7 @@ export class MeetDurableObject extends DurableObject<Env> {
     meet: Meet,
     userId: string | null,
   ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    console.log("declareEntry ", JSON.stringify(input, null, 2));
     const [teamsOf, athleteUserId, coachedTeamIds] = await Promise.all([
       this.teamsOfAthlete(input.athleteId),
       this.athleteUserId(input.athleteId),
@@ -1360,6 +1361,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    */
   private broadcast(message: LiveSocketMessage): void {
     const payload = JSON.stringify(message);
+    console.log("BROADCASTING: ", JSON.stringify(message, null, 2));
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.send(payload);

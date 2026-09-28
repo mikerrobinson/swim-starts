@@ -45,11 +45,28 @@ class MeetCacheManager {
   // In-memory heap cache of deserialized manifests
   private meets = new Map<string, MeetManifest>();
 
-  // Coalescing queue for high-frequency bursts
-  private isRevalidationPending = false;
+  // Components subscribed to a meet's live data — see `subscribe`/`notify`.
+  // This is the actual re-render trigger for `useMeet()`: the cache mutates
+  // a meet's manifest in place (see `applyPatch`), so nothing about React's
+  // own data flow (loaderData identity, router state) changes on its own.
+  // Notifying these listeners is what makes a mutation visible.
+  private listeners = new Map<string, Set<() => void>>();
+
+  // Coalescing queue for high-frequency bursts, one per meet.
   private diskSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private revalidateTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingCallback: (() => void) | null = null;
+  private notifyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Which of a meet's record collections were mutated in place since the
+  // last flush — what `notify` snapshots (shallow-copies) right before
+  // waking listeners. A whole heat's worth of watches landing in the same
+  // 50ms window all mutate `meet.watches` in place, O(1) each; this pays
+  // for exactly one shallow copy of `watches` per flush, not one per
+  // message, while still giving `useMemo(() => ..., [meet.watches])`
+  // consumers a reference that actually changes.
+  private dirty = new Map<
+    string,
+    { watches?: boolean; swims?: boolean; athletes?: boolean; entries?: boolean }
+  >();
 
   /**
    * Retrieves the manifest synchronously from memory if warm,
@@ -92,14 +109,67 @@ class MeetCacheManager {
   }
 
   /**
-   * Applies incoming socket patches directly to the in-memory object graph in O(1) time.
-   * Batches downstream Remix revalidation to next animation frame and debounces disk writes.
+   * Subscribe to a meet's live data — called once per mounted `useMeet()`.
+   * `applyPatch` writes straight into the cached manifest's collections in
+   * place — O(1) per message, no copying, so a burst of watches landing
+   * together doesn't cost O(n²) — so this notify callback, not a changed
+   * object reference, is what tells a component it's time to re-render.
+   * `notify` (below) is where a touched collection actually gets a fresh
+   * reference, once per flush no matter how many messages landed in it, so
+   * `useMemo(() => ..., [meet.watches])`-style consumers still see a real
+   * change without paying for it on every single write. Deliberately
+   * outside React Router's own loader/revalidation cycle:
+   * `meet-layout.tsx`'s route opts out of revalidation entirely (see its
+   * `shouldRevalidate`) so a live patch never races a full loader refetch
+   * and flashes stale-then-fresh — this is the only path that updates the
+   * screen for a mutation.
    */
-  applyPatch(
+  subscribe(meetId: string, listener: () => void): () => void {
+    let set = this.listeners.get(meetId);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(meetId, set);
+    }
+    set.add(listener);
+    return () => {
+      set!.delete(listener);
+      if (set!.size === 0) this.listeners.delete(meetId);
+    };
+  }
+
+  private notify(meetId: string): void {
+    const meet = this.meets.get(meetId);
+    const dirty = this.dirty.get(meetId);
+    if (meet && dirty) {
+      // One shallow copy per collection actually touched since the last
+      // flush, however many in-place writes landed against it in between.
+      if (dirty.watches) meet.watches = { ...meet.watches };
+      if (dirty.swims) meet.swims = { ...meet.swims };
+      if (dirty.athletes) meet.athletes = { ...meet.athletes };
+      if (dirty.entries) meet.entries = { ...meet.entries };
+      this.dirty.delete(meetId);
+    }
+
+    for (const listener of this.listeners.get(meetId) ?? []) listener();
+  }
+
+  private markDirty(
     meetId: string,
-    msg: LiveSocketMessage,
-    onRevalidate: () => void,
-  ): boolean {
+    collection: "watches" | "swims" | "athletes" | "entries",
+  ): void {
+    let flags = this.dirty.get(meetId);
+    if (!flags) {
+      flags = {};
+      this.dirty.set(meetId, flags);
+    }
+    flags[collection] = true;
+  }
+
+  /**
+   * Applies incoming socket patches directly to the in-memory object graph in O(1) time.
+   * Batches downstream re-renders to the next tick and debounces disk writes.
+   */
+  applyPatch(meetId: string, msg: LiveSocketMessage): boolean {
     const meet = this.meets.get(meetId);
     if (!meet) return false;
 
@@ -110,6 +180,7 @@ class MeetCacheManager {
         const key = toWatchKey(msg.watch);
         if (msg.isDelete) delete meet.watches[key];
         else meet.watches[key] = msg.watch;
+        this.markDirty(meetId, "watches");
         didMutate = true;
         break;
       }
@@ -118,6 +189,7 @@ class MeetCacheManager {
         const key = toSwimKey(msg.swim);
         if (msg.isDelete) delete meet.swims[key];
         else meet.swims[key] = msg.swim;
+        this.markDirty(meetId, "swims");
         didMutate = true;
         break;
       }
@@ -125,6 +197,7 @@ class MeetCacheManager {
       case "ATHLETE": {
         if (msg.isDelete) delete meet.athletes[msg.athlete.id];
         else meet.athletes[msg.athlete.id] = msg.athlete;
+        this.markDirty(meetId, "athletes");
         didMutate = true;
         break;
       }
@@ -133,6 +206,7 @@ class MeetCacheManager {
         const key = toEntryKey(msg.entry);
         if (msg.isDelete) delete meet.entries[key];
         else meet.entries[key] = msg.entry;
+        this.markDirty(meetId, "entries");
         didMutate = true;
         break;
       }
@@ -153,7 +227,7 @@ class MeetCacheManager {
 
     if (!didMutate) return false;
 
-    this.scheduleRevalidation(onRevalidate);
+    this.scheduleNotify(meetId);
 
     // 2. Debounce serialization & disk write until pool action settles
     this.scheduleDiskPersist(meetId, meet);
@@ -161,33 +235,30 @@ class MeetCacheManager {
     return true;
   }
 
-  hasPendingRevalidation(): boolean {
-    return this.isRevalidationPending;
+  hasPendingNotify(meetId: string): boolean {
+    return this.notifyTimers.has(meetId);
   }
 
-  flushRevalidation(): void {
-    if (this.revalidateTimer) {
-      clearTimeout(this.revalidateTimer);
-      this.revalidateTimer = null;
+  flushNotify(meetId: string): void {
+    const timer = this.notifyTimers.get(meetId);
+    if (timer) {
+      clearTimeout(timer);
+      this.notifyTimers.delete(meetId);
     }
-    this.isRevalidationPending = false;
-
-    if (this.pendingCallback) {
-      const cb = this.pendingCallback;
-      this.pendingCallback = null;
-      cb();
-    }
+    this.notify(meetId);
   }
 
-  scheduleRevalidation(callback: () => void): void {
-    this.pendingCallback = callback;
+  /** Coalesces a burst of patches (a whole heat's worth of watches landing
+   *  within the same tick, say) into a single re-render rather than one per
+   *  message. */
+  private scheduleNotify(meetId: string): void {
+    if (this.notifyTimers.has(meetId)) return;
 
-    if (this.isRevalidationPending) return;
-    this.isRevalidationPending = true;
-
-    this.revalidateTimer = setTimeout(() => {
-      this.flushRevalidation();
+    const timer = setTimeout(() => {
+      this.notifyTimers.delete(meetId);
+      this.notify(meetId);
     }, 50);
+    this.notifyTimers.set(meetId, timer);
   }
 
   private scheduleDiskPersist(meetId: string, meet: MeetManifest): void {
@@ -215,6 +286,10 @@ class MeetCacheManager {
       const timer = this.diskSaveTimers.get(meetId);
       if (timer) clearTimeout(timer);
       this.diskSaveTimers.delete(meetId);
+      const notifyTimer = this.notifyTimers.get(meetId);
+      if (notifyTimer) clearTimeout(notifyTimer);
+      this.notifyTimers.delete(meetId);
+      this.dirty.delete(meetId);
       if (typeof window !== "undefined") {
         localStorage.removeItem(`meet:${meetId}`);
       }
@@ -224,6 +299,11 @@ class MeetCacheManager {
         clearTimeout(timer);
       }
       this.diskSaveTimers.clear();
+      for (const timer of this.notifyTimers.values()) {
+        clearTimeout(timer);
+      }
+      this.notifyTimers.clear();
+      this.dirty.clear();
     }
   }
 }

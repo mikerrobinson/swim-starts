@@ -215,51 +215,35 @@ export async function clientAction({
 
   if (intent === "upsert-swim") {
     const swim = JSON.parse(String(form.get("swim"))) as Swim;
-    meetCache.applyPatch(
-      meetId,
-      { type: "SWIM", swim, isDelete: false },
-      () => {},
-    );
+    meetCache.applyPatch(meetId, { type: "SWIM", swim, isDelete: false });
   } else if (intent === "delete-swim") {
-    meetCache.applyPatch(
-      meetId,
-      {
-        type: "SWIM",
-        swim: {
-          eventId: String(form.get("eventId")),
-          heat: Number(form.get("heat")),
-          lane: Number(form.get("lane")),
-          exhibition: false,
-        },
-        isDelete: true,
+    meetCache.applyPatch(meetId, {
+      type: "SWIM",
+      swim: {
+        eventId: String(form.get("eventId")),
+        heat: Number(form.get("heat")),
+        lane: Number(form.get("lane")),
+        exhibition: false,
       },
-      () => {},
-    );
+      isDelete: true,
+    });
   } else if (intent === "upsert-watch") {
     const watch = JSON.parse(String(form.get("watch"))) as Watch;
-    meetCache.applyPatch(
-      meetId,
-      { type: "WATCH", watch, isDelete: false },
-      () => {},
-    );
+    meetCache.applyPatch(meetId, { type: "WATCH", watch, isDelete: false });
   } else if (intent === "delete-watch") {
-    meetCache.applyPatch(
-      meetId,
-      {
-        type: "WATCH",
-        watch: {
-          eventId: String(form.get("eventId")),
-          heat: Number(form.get("heat")),
-          lane: Number(form.get("lane")),
-          deviceId: String(form.get("deviceId")),
-          slot: Number(form.get("slot")),
-          role: "timer",
-          recordedAt: Date.now(),
-        },
-        isDelete: true,
+    meetCache.applyPatch(meetId, {
+      type: "WATCH",
+      watch: {
+        eventId: String(form.get("eventId")),
+        heat: Number(form.get("heat")),
+        lane: Number(form.get("lane")),
+        deviceId: String(form.get("deviceId")),
+        slot: Number(form.get("slot")),
+        role: "timer",
+        recordedAt: Date.now(),
       },
-      () => {},
-    );
+      isDelete: true,
+    });
   }
 
   return serverAction();

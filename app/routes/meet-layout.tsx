@@ -7,8 +7,6 @@ import {
   useLocation,
   useMatches,
   useNavigation,
-  useRevalidator,
-  useRouteLoaderData,
 } from "react-router";
 import { useEffect, useState } from "react";
 import { getMeet } from "~/lib/meets.server";
@@ -55,6 +53,10 @@ export async function clientLoader({
   return fresh;
 }
 clientLoader.hydrate = true;
+
+export function shouldRevalidate() {
+  return false;
+}
 
 export default function MeetRootLayout() {
   const { meet } = useLoaderData<typeof loader>();
@@ -215,8 +217,6 @@ function LiveMeetSync({
   meetId: string;
   onConnectedChange: (connected: boolean) => void;
 }) {
-  const revalidator = useRevalidator();
-
   useEffect(() => {
     let stopped = false;
     let ws: WebSocket | null = null;
@@ -224,14 +224,11 @@ function LiveMeetSync({
     let reconnectAttempt = 0;
 
     const handleVisibilityChange = () => {
+      // If mutations landed while backgrounded, flush the debounced
+      // re-render immediately rather than waiting out the coalescing
+      // window — the tab is back, so there's no more bursting to wait for.
       if (document.visibilityState === "visible") {
-        // If mutations happened while backgrounded, flush immediately
-        if (meetCache.hasPendingRevalidation()) {
-          meetCache.flushRevalidation();
-        } else {
-          // Optional safety net: nudge revalidator in case a socket message was dropped
-          revalidator.revalidate();
-        }
+        meetCache.flushNotify(meetId);
       }
     };
 
@@ -251,6 +248,7 @@ function LiveMeetSync({
       };
 
       socket.onmessage = (event) => {
+        console.log("GOT MESSAGE ", event.data);
         if (typeof event.data !== "string") return;
         let msg: LiveSocketMessage;
         try {
@@ -258,7 +256,7 @@ function LiveMeetSync({
         } catch {
           return; // Not something we sent; not something we can apply.
         }
-        meetCache.applyPatch(meetId, msg, () => revalidator.revalidate());
+        meetCache.applyPatch(meetId, msg);
       };
 
       socket.onclose = () => {
@@ -286,7 +284,7 @@ function LiveMeetSync({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [meetId, revalidator, onConnectedChange]);
+  }, [meetId, onConnectedChange]);
 
   return null;
 }

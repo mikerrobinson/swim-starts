@@ -48,6 +48,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return data({ session, user, deviceId: device }, { headers });
 }
 
+export function shouldRevalidate() {
+  return false;
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">

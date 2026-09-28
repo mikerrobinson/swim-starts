@@ -174,24 +174,23 @@ export async function clientAction({
   // deciding `entered_by` itself from the session (`declareEntry`).
   const enteredBy = String(form.get("enteredBy") ?? "");
 
-  meetCache.applyPatch(
-    meetId,
-    {
-      type: "ENTRY",
-      entry: {
-        eventId,
-        athleteId,
-        teamId,
-        exhibition: false,
-        enteredAt: Date.now(),
-        enteredBy,
-      },
-      isDelete: !entering,
+  meetCache.applyPatch(meetId, {
+    type: "ENTRY",
+    entry: {
+      eventId,
+      athleteId,
+      teamId,
+      exhibition: false,
+      enteredAt: Date.now(),
+      enteredBy,
     },
-    () => {},
-  );
+    isDelete: !entering,
+  });
 
-  return serverAction();
+  serverAction().catch((err) => {
+    console.error("declareEntry failed", err);
+  });
+  return { ok: true };
 }
 
 /**
@@ -357,8 +356,8 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   /** Registration lookup as a set of "eventId|athleteId" keys. */
   const registered = useMemo(() => {
     const keys = new Set<string>();
-    for (const [eventId, ids] of Object.entries(entriesByEvent)) {
-      for (const id of ids) keys.add(`${eventId}|${id}`);
+    for (const [eventId, entries] of Object.entries(entriesByEvent)) {
+      for (const entry of entries) keys.add(`${eventId}|${entry.athleteId}`);
     }
     return keys;
   }, [entriesByEvent]);
