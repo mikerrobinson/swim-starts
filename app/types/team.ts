@@ -14,12 +14,8 @@
 export interface Team {
   id: string;
   name: string;
-  /** Short code as it appears on a heat sheet or an SD3 file — "CHAP". */
   code: string;
-  /** Which season the app works in when nothing says otherwise. */
   currentSeasonId?: string;
-  /** Who set it up. Absent for the teams typed in as opponents before this
-   *  was recorded, and for the ones that predate accounts entirely. */
   createdBy?: string;
 } /**
  * A team's competitive year. Scoped to the team on purpose: a high-school

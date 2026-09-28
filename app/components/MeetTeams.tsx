@@ -20,7 +20,6 @@ export function MeetTeams({
   teams,
   hostTeamId,
   canEdit,
-  coachOf,
   saving,
   onChange,
 }: {
@@ -29,7 +28,6 @@ export function MeetTeams({
   /** Whether to draw the editing controls at all. The server re-checks. */
   canEdit: boolean;
   /** Racing teams this person coaches — labelled, so their own is obvious. */
-  coachOf: string[];
   saving: boolean;
   /** The complete resulting list, which is what `updateMeet` writes. */
   onChange: (next: { teamIds: string[]; hostTeamId: string }) => void;
@@ -130,9 +128,9 @@ export function MeetTeams({
                 {confirming === team.id && (
                   <div className="mt-2 space-y-2">
                     <Banner tone="warn">
-                      Remove {team.name} from this meet? Anyone already
-                      entered for them stays in the meet with nobody to show
-                      them against.
+                      Remove {team.name} from this meet? Anyone already entered
+                      for them stays in the meet with nobody to show them
+                      against.
                     </Banner>
                     <div className="grid grid-cols-2 gap-2">
                       <Button onClick={() => setConfirming(null)}>Keep</Button>

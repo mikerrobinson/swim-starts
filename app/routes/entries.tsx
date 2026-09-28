@@ -17,13 +17,6 @@ import {
 } from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
-import {
-  getTeam,
-  listSeasons,
-  roster as teamRoster,
-  seasonForDate,
-  type RosterEntry,
-} from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
 import { useMeet } from "~/hooks/useMeet";
 import { useViewPrefs } from "~/state/view-prefs";
@@ -37,7 +30,7 @@ import {
   type Event,
   type Stroke,
 } from "~/types/meet";
-import type { Entry, Meet } from "~/types/meet";
+import type { Entry } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
@@ -78,16 +71,19 @@ export const handle: MeetRouteHandle = {
 };
 
 /**
- * `userId`, `coachedTeamIds`, `meet`, and the racing teams' rosters — the
- * things this screen needs that aren't on `MeetManifest` (see `useMeet()`
- * in the component below). `meet` is what `access.ts`'s predicates need to
- * decide anything about *this* meet (`adminIds`/`teamIds`/
- * `athletesMayEnter` — see `canEnter`/`canRecordTime` below).
- * `coachedTeamIds` is every team `userId` coaches, resolved once here
- * (`teamsCoachedBy`, `coaches.server.ts`) because the grid below needs it
- * per cell, client-side — it's not a standing fact carried on `useUser()`.
- * A roster is a `teams`/`enrollments` join — "who's racing" stays D1's, not
- * the Durable Object's, same reasoning as `meet-info.tsx`'s `teams` read.
+ * `userId`, `coachedTeamIds`, and `meet` — the things this screen needs
+ * that aren't on `MeetManifest` (see `useMeet()` in the component below).
+ * `meet` is what `access.ts`'s predicates need to decide anything about
+ * *this* meet (`adminIds`/`teamIds`/`athletesMayEnter` — see
+ * `canEnter`/`canRecordTime` below). `coachedTeamIds` is every team
+ * `userId` coaches, resolved once here (`teamsCoachedBy`,
+ * `coaches.server.ts`) because the grid below needs it per cell,
+ * client-side — it's not a standing fact carried on `useUser()`.
+ *
+ * Who's racing and their per-athlete `teamId` come from `useMeet()`'s own
+ * `athletes` (a `MeetAthlete`, not a D1 `teams`/`enrollments` join) — the
+ * Durable Object's live copy, already hydrated and pushed over the
+ * WebSocket, so there's no separate roster fetch to keep in sync with it.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
@@ -100,15 +96,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const userId = user?.id ?? null;
   const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
 
-  const rosterEntries = meet ? await meetRoster(db, meet) : [];
-
-  return {
-    userId,
-    coachedTeamIds,
-    meet,
-    athletes: rosterEntries.map((r) => r.athlete),
-    enrollments: rosterEntries.map((r) => r.enrollment),
-  };
+  return { userId, coachedTeamIds, meet };
 }
 
 /** What `access.ts`'s predicates fall back to when the meet's own D1 row
@@ -118,21 +106,6 @@ const EMPTY_MEET_FACTS: MeetFacts = {
   teamIds: [],
   athletesMayEnter: false,
 };
-
-/** Every racing team's roster, for the season the meet's date falls in. */
-async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
-  const perTeam = await Promise.all(
-    meet.teamIds.map(async (teamId) => {
-      const [team, seasons] = await Promise.all([
-        getTeam(db, teamId),
-        listSeasons(db, teamId),
-      ]);
-      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
-      return teamRoster(db, teamId, season?.id);
-    }),
-  );
-  return perTeam.flat();
-}
 
 export function shouldRevalidate({
   currentUrl,
@@ -162,11 +135,12 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const form = await request.formData();
   const eventId = String(form.get("eventId") ?? "");
   const athleteId = String(form.get("athleteId") ?? "");
+  const teamId = String(form.get("teamId"));
   const entering = form.get("entering") === "true";
 
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
   const result = await stub.declareEntry(
-    { meetId, eventId, athleteId, entering },
+    { meetId, eventId, athleteId, teamId, entering },
     meet,
     user?.id ?? null,
   );
@@ -277,7 +251,7 @@ function eventFor(race: Race, athlete: Athlete): Event | undefined {
 }
 
 export default function Registration({ loaderData }: Route.ComponentProps) {
-  const { athletes, enrollments, userId, coachedTeamIds } = loaderData;
+  const { userId, coachedTeamIds } = loaderData;
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const meet = useMeet();
   const submit = useSubmit();
@@ -300,11 +274,6 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const param = params.get("g");
   const genderFilter: Gender | "all" =
     param === "f" ? "F" : param === "m" ? "M" : "all";
-
-  const enrollmentByAthlete = useMemo(
-    () => new Map(enrollments.map((e) => [e.athleteId, e] as const)),
-    [enrollments],
-  );
 
   /** `useMeet().entries` (`Record<EntryKey, Entry>`) regrouped by event —
    *  the shape `whyNotEnter`/the counts below already expect. */
@@ -334,13 +303,11 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
    * take away exactly the transparency that setting grants.
    */
   const roster = useMemo(() => {
-    const mine =
-      !isAdmin && myRacingTeams.length > 0
-        ? enrollments.filter((e) => myRacingTeams.includes(e.teamId))
-        : enrollments;
-    const onRoster = new Set(mine.map((e) => e.athleteId));
-    return athletes.filter((a) => onRoster.has(a.id));
-  }, [athletes, enrollments, isAdmin, myRacingTeams]);
+    const all = Object.values(meet.athletes);
+    return !isAdmin && myRacingTeams.length > 0
+      ? all.filter((a) => myRacingTeams.includes(a.teamId))
+      : all;
+  }, [meet.athletes, isAdmin, myRacingTeams]);
 
   const swimmers = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -439,19 +406,19 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   };
 
   /** Whose entries this person may change — see `canEnter` on the server. */
-  const mayEditFor = (athleteId: string): boolean =>
-    canEnter({
+  const mayEditFor = (athleteId: string): boolean => {
+    const athlete = meet.athletes[athleteId];
+    return canEnter({
       meet: meetFacts,
       userId,
       coachedTeamIds,
       athlete: {
         id: athleteId,
-        userId: athletes.find((a) => a.id === athleteId)?.userId ?? null,
-        teamIds: enrollments
-          .filter((e) => e.athleteId === athleteId)
-          .map((e) => e.teamId),
+        userId: athlete?.userId ?? null,
+        teamIds: athlete ? [athlete.teamId] : [],
       },
     });
+  };
 
   /**
    * One tap, one row, submitted. The tick moves immediately —
@@ -469,9 +436,8 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
     const form = new FormData();
     form.set("eventId", eventId);
     form.set("athleteId", athleteId);
-    form.set("teamId");
+    form.set("teamId", teamId);
     form.set("entering", String(entering));
-    // For `clientAction`'s optimistic patch only — see its doc comment.
     form.set("enteredBy", userId ?? "");
     submit(form, { method: "post", navigate: false });
   };
@@ -607,10 +573,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                       {displayName(athlete, nameOrder)}
                     </span>
                     <span className="block text-[11px] font-normal text-slate-500">
-                      {athlete.gender}
-                      {enrollmentByAthlete.get(athlete.id)?.year &&
-                        ` · ${enrollmentByAthlete.get(athlete.id)?.year}`}{" "}
-                      · {perAthlete.get(athlete.id) ?? 0} ev
+                      {athlete.gender} · {perAthlete.get(athlete.id) ?? 0} ev
                     </span>
                   </th>
                   {races.map((race) => {

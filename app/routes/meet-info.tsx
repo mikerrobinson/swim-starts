@@ -457,12 +457,7 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
 
       {/* Above seeding on purpose: assigning lanes needs to know which teams
           there are to assign them to. */}
-      <TeamsCard
-        teams={teams}
-        hostTeamId={hostTeamId}
-        canEdit={mayEdit}
-        coachOf={coachedTeamIds}
-      />
+      <TeamsCard teams={teams} hostTeamId={hostTeamId} canEdit={mayEdit} />
 
       {editing && <SeedingScoringEditor details={details} teams={teams} />}
 
@@ -514,12 +509,10 @@ function TeamsCard({
   teams,
   hostTeamId,
   canEdit,
-  coachOf,
 }: {
   teams: Team[];
   hostTeamId: string;
   canEdit: boolean;
-  coachOf: string[];
 }) {
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const error = fetcher.data?.ok === false ? fetcher.data.error : null;
@@ -531,7 +524,6 @@ function TeamsCard({
         teams={teams}
         hostTeamId={hostTeamId}
         canEdit={canEdit}
-        coachOf={coachOf}
         saving={fetcher.state !== "idle"}
         onChange={({ teamIds, hostTeamId }) => {
           const form = new FormData();
