@@ -519,7 +519,7 @@ export class MeetDurableObject extends DurableObject<Env> {
     for (const event of events) {
       this.ctx.storage.sql.exec(
         `INSERT INTO events (id, position, distance, stroke, gender, name, total_heats)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         event.id,
         event.position,
         event.distance,

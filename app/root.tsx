@@ -14,6 +14,7 @@ import { sessionPayload } from "./lib/auth.server";
 import { SIGNED_OUT } from "./state/session";
 import { deviceCookie, deviceId, existingDeviceId } from "./lib/device.server";
 import "./app.css";
+import { ViewPrefsProvider } from "./state/view-prefs";
 
 /**
  * The two facts read once here, from cookies, so no route below has to
@@ -89,7 +90,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  return (
+    <ViewPrefsProvider>
+      <Outlet />
+    </ViewPrefsProvider>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
