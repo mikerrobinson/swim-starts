@@ -54,7 +54,7 @@ export function eventPoints(ranked: RankedSwim[], table: number[]): number[] {
 /** Which contest an event's points belong to: one, or girls and boys apart. */
 export type ScoreGroup = EventGender | "all";
 
-export function scoreGroup(
+function scoreGroup(
   event: Pick<Event, "gender">,
   scoring: Pick<ScoringRules, "separateByGender">,
 ): ScoreGroup {
@@ -95,7 +95,7 @@ export function teamTotals(
 
     ranked.forEach((row, i) => {
       if (points[i] === 0) return;
-      const teamId = teamOf(row.swim.athleteId);
+      const teamId = teamOf(row.swim.athleteId || "");
       if (!teamId) return;
       groupTotals.set(teamId, (groupTotals.get(teamId) ?? 0) + points[i]);
     });

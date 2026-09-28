@@ -2,11 +2,11 @@ import { useMemo } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
 import type { Route } from "./+types/admin";
 import { Card, SectionTitle } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { canEditMeet } from "~/lib/access";
 import { getMeet } from "~/lib/meets.server";
 import { heatsOf, swimsComplete } from "~/lib/timing";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import {
   eventName,
   getEventSwims,
@@ -28,11 +28,10 @@ export function meta({}: Route.MetaArgs) {
  * running-order decision, not evidence.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const [rawUser, meet] = await Promise.all([
-    currentUser(request, env as SyncEnv),
+    currentUser(request, db),
     getMeet(db, meetId),
   ]);
   const userId = rawUser?.id ?? null;
@@ -43,7 +42,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   }
 
   const { eventId } = (await request.json()) as { eventId: string };
-  const stub = env.MEET_DO.getByName(meetId);
+  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
   const manifest = await stub.getMeetManifest(meetId);
   const heats = Object.values(manifest.swims)
     .filter((s: Swim) => s.eventId === eventId)

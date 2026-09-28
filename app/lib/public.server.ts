@@ -20,7 +20,6 @@ import {
   publicAthlete,
   teamRef,
   type PublicAthlete,
-  type PublicAthleteDetail,
   type PublicMeetSummary,
   type PublicTeam,
   type TeamRef,
@@ -192,7 +191,7 @@ export async function publicTeamDetail(
 
 /* ------------------------------------------------------------------- meets */
 
-export async function listPublicMeets(
+async function listPublicMeets(
   db: D1Database,
   options: { teamId?: string } = {},
 ): Promise<PublicMeetSummary[]> {
@@ -208,7 +207,7 @@ export async function listPublicMeets(
 export async function listPublicAthletes(
   db: D1Database,
   options: { q?: string; limit?: number } = {},
-): Promise<Array<PublicAthlete & { teams: TeamRef[] }>> {
+): Promise<Array<Athlete & { teams: TeamRef[] }>> {
   await ensureSchema(db);
   const limit = Math.min(options.limit ?? 200, 500);
   const q = options.q?.trim();
@@ -249,15 +248,12 @@ export async function listPublicAthletes(
   }
 
   return results.map((row) => ({
-    ...publicAthlete(athleteRow(row)),
+    ...athleteRow(row),
     teams: teamsOf.get(row.id) ?? [],
   }));
 }
 
-export async function publicAthleteDetail(
-  db: D1Database,
-  athleteId: string,
-): Promise<PublicAthleteDetail | null> {
+export async function publicAthleteDetail(db: D1Database, athleteId: string) {
   await ensureSchema(db);
   const row = await db
     .prepare("SELECT * FROM athletes WHERE id = ?")
@@ -291,7 +287,7 @@ export async function publicAthleteDetail(
   }
 
   return {
-    ...publicAthlete(athlete),
+    ...athlete,
     teams: [...teams.values()],
     // Used to come from every meet's D1 `entries`/`swims` rows via
     // `meetDetail`. That data lives only in each meet's own Durable Object

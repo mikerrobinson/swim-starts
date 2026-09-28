@@ -13,7 +13,7 @@ import {
 } from "~/components/ui";
 import { listPublicTeams } from "~/lib/public.server";
 import { useSession } from "~/state/session";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { normalizeTeamCode } from "~/types/team";
 
@@ -30,10 +30,10 @@ export function meta({}: Route.MetaArgs) {
  * sheet already.
  */
 export async function loader({ context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  if (!env.DB) return { teams: [], offline: true };
+  const db = context.cloudflare.env.DB;
+  if (!db) return { teams: [], offline: true };
   try {
-    return { teams: await listPublicTeams(env.DB), offline: false };
+    return { teams: await listPublicTeams(db), offline: false };
   } catch {
     return { teams: [], offline: true };
   }
@@ -55,9 +55,8 @@ export async function loader({ context }: Route.LoaderArgs) {
  * page meant to start a team and should find out that theirs already exists.
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, db);
   if (!user) throw new Response("Sign in to start a team", { status: 403 });
 
   const form = await request.formData();

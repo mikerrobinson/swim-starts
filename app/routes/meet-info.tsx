@@ -14,12 +14,7 @@ import {
 import { TimerAccess } from "~/components/TimerAccess";
 import { MeetTeams } from "~/components/MeetTeams";
 import { MeetAdmins } from "~/components/MeetAdmins";
-import {
-  appBaseUrl,
-  currentUser,
-  requireDb,
-  type SyncEnv,
-} from "~/lib/api.server";
+import { appBaseUrl, currentUser } from "~/lib/api.server";
 import { addMeetAdmin, meetAdmins, removeMeetAdmin } from "~/lib/admins.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { issueGrant, revokeGrants, grantFor } from "~/lib/grants.server";
@@ -36,8 +31,13 @@ import {
   seasonForDate,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meet-layout";
-import { distancesFor, makeEvent, RELAY_DISTANCES, renumber } from "~/lib/events";
+import { useMeet } from "~/hooks/useMeet";
+import {
+  distancesFor,
+  makeEvent,
+  RELAY_DISTANCES,
+  renumber,
+} from "~/lib/events";
 import {
   courseLabel,
   eventName,
@@ -76,9 +76,8 @@ import type { Team } from "~/types/team";
  * `MeetManifest.details` instead (see the action's doc comment).
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const rawUser = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const rawUser = await currentUser(request, db);
   const userId = rawUser?.id ?? null;
   const meetId = params.meetId!;
 
@@ -178,11 +177,10 @@ function nextDetails(
  * ever part of the `MeetDetail` read this page used to also do.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const [rawUser, meet] = await Promise.all([
-    currentUser(request, env),
+    currentUser(request, db),
     getMeet(db, meetId),
   ]);
   const userId = rawUser?.id ?? null;
@@ -252,7 +250,10 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       if (!team) continue;
       const season = seasonForDate(seasons, team.currentSeasonId, meet.date);
       const rosterEntries = await teamRoster(db, teamId, season?.id);
-      await stub.addTeam(team, rosterEntries.map((e) => e.athlete));
+      await stub.addTeam(
+        team,
+        rosterEntries.map((e) => e.athlete),
+      );
     }
 
     await updateMeet(db, meetId, {
@@ -328,7 +329,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       actor,
     );
     const link = `${appBaseUrl(request)}sign-in?invite=${encodeURIComponent(token)}`;
-    const delivery = await sendMeetInvite(env, parsed.contact, link);
+    const delivery = await sendMeetInvite(
+      context.cloudflare.env,
+      parsed.contact,
+      link,
+    );
 
     return {
       ok: true,
@@ -336,7 +341,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       detail: delivery.detail,
       // Local builds only, exactly as with login codes: without a provider
       // configured there is otherwise no way to follow your own invite.
-      ...(revealsCodes(env) ? { link } : {}),
+      ...(revealsCodes(context.cloudflare.env) ? { link } : {}),
     };
   }
 
@@ -446,7 +451,9 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
           change them. */}
       {editing && <DetailsEditor details={details} />}
 
-      {editing && <EventsCard course={details.course} leadGender={details.leadGender} />}
+      {editing && (
+        <EventsCard course={details.course} leadGender={details.leadGender} />
+      )}
 
       {/* Above seeding on purpose: assigning lanes needs to know which teams
           there are to assign them to. */}
@@ -471,8 +478,8 @@ export default function MeetInfo({ loaderData }: Route.ComponentProps) {
           {confirmDelete ? (
             <div className="space-y-2">
               <Banner tone="error">
-                Deleting <strong>{details.name}</strong> can&rsquo;t be
-                undone. The team rosters aren&rsquo;t touched.
+                Deleting <strong>{details.name}</strong> can&rsquo;t be undone.
+                The team rosters aren&rsquo;t touched.
               </Banner>
               <div className="grid grid-cols-2 gap-2">
                 <Form method="post">

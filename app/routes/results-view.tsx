@@ -3,7 +3,6 @@ import type { Route } from "./+types/results-view";
 import { Button, Card, EmptyState, SectionTitle } from "~/components/ui";
 import { downloadFile, resultsToCsv } from "~/lib/csv";
 import { formatTime } from "~/lib/time";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
 import { getMeet } from "~/lib/meets.server";
 import {
   getTeam,
@@ -21,7 +20,7 @@ import {
   type RankedSwim,
   type ScoreGroup,
 } from "~/lib/scoring";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import { eventName, getSortedEvents } from "~/types/meet";
 import type { Meet } from "~/types/meet";
 
@@ -57,8 +56,7 @@ async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
  * `useMeet()` in the component below.
  */
 export async function loader({ params, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const meet = await getMeet(db, meetId);
   const rosterEntries = meet ? await meetRoster(db, meet) : [];

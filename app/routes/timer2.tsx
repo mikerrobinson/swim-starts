@@ -6,12 +6,8 @@ import {
   Link,
 } from "react-router";
 import { useState, useRef, useCallback } from "react";
-import type {
-  ActionFunctionArgs,
-  ClientActionFunctionArgs,
-} from "react-router";
 import { getNextHeat, getPreviousHeat, toSwimKey } from "~/types/meet";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 
 export default function TimerLaneKiosk() {
   const params = useParams();

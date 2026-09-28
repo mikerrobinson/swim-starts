@@ -1,11 +1,5 @@
 import type { Route } from "./+types/api.teams";
-import {
-  currentUser,
-  errorResponse,
-  json,
-  requireDb,
-  type SyncEnv,
-} from "~/lib/api.server";
+import { currentUser, errorResponse, json } from "~/lib/api.server";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { listPublicTeams } from "~/lib/public.server";
 
@@ -26,16 +20,15 @@ import { listPublicTeams } from "~/lib/public.server";
  * `findOrCreateTeam`, which is the one rule all of them obey.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
   try {
-    const db = requireDb(env);
+    const db = context.cloudflare.env.DB;
     const teams = await listPublicTeams(db);
 
     if (new URL(request.url).searchParams.get("mine") !== "1") {
       return json({ teams });
     }
 
-    const user = await currentUser(request, env);
+    const user = await currentUser(request, db);
     if (!user) return json({ teams: [] });
 
     const mine = new Set(await teamsCoachedBy(db, user.id));

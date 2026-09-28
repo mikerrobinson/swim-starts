@@ -1,6 +1,6 @@
 import { redirect } from "react-router";
 import type { Route } from "./+types/session";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import {
   bearerToken,
   endAllSessions,
@@ -24,9 +24,8 @@ import {
  * from whatever device you still have.
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, db);
 
   // In the query rather than the body, so this reads nothing off the request
   // but the cookie. Signing out is the move most likely to be reached from a

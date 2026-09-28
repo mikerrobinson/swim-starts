@@ -11,7 +11,6 @@ import {
   useRouteLoaderData,
 } from "react-router";
 import { useEffect, useState } from "react";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
 import { getMeet } from "~/lib/meets.server";
 import { readResultsManifest } from "~/lib/results.server";
 import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
@@ -21,8 +20,7 @@ import type { MeetRouteHandle } from "~/lib/route-handle";
 import { meetSubtitle, type MeetManifest } from "~/types/meet";
 
 export async function loader({ params, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
 
   const [meetFacts] = await Promise.all([getMeet(db, meetId)]);
@@ -32,7 +30,7 @@ export async function loader({ params, context }: Route.LoaderArgs) {
     return { meet: await readResultsManifest(meetId, db) };
   }
 
-  const stub = env.MEET_DO.getByName(meetId);
+  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
   return { meet: await stub.getMeetManifest(meetId) };
 }
 
@@ -291,10 +289,4 @@ function LiveMeetSync({
   }, [meetId, revalidator, onConnectedChange]);
 
   return null;
-}
-
-export function useMeet(): MeetManifest {
-  const data = useRouteLoaderData<typeof loader>("routes/meet-layout");
-  if (!data?.meet) throw new Error("useMeet used outside a meet route");
-  return data.meet;
 }

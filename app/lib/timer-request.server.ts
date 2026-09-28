@@ -3,13 +3,8 @@
  * unexpired scan of this meet's code, and which device is this. Shared by
  * the timer shell's `loader` and the per-lane `action`/`loader`, since both
  * have to answer exactly the same question before touching anything.
- *
- * The meet's own live state — events, swims, watches, athletes — comes from
- * `useMeet()` (`meet-layout.tsx`'s shared manifest) like every other screen under
- * a meet now; this module is only about *who's asking*, not what they see.
  */
 
-import { requireDb } from "./api.server";
 import { grantToken, grantFor } from "~/lib/grants.server";
 import { deviceId, deviceCookie, existingDeviceId } from "./device.server";
 
@@ -26,11 +21,9 @@ export type TimerAccessResult =
 
 export async function resolveTimerAccess(
   request: Request,
-  env: Env,
+  db: D1Database,
   meetId: string,
 ): Promise<TimerAccessResult> {
-  const db = requireDb(env);
-
   const token = grantToken(request);
   if (!token) {
     return {

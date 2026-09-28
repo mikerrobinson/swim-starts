@@ -7,8 +7,6 @@
  * and how far it has got, neither of which the URL can say.
  */
 
-import { appBasePath } from "./http";
-import { A_WEEK, readCookie } from "./cookies";
 import { splitTypedName } from "./names";
 import { generateId } from "./id";
 import type { Event, MeetAthlete, Swim } from "~/types/meet";
@@ -31,9 +29,10 @@ import type { Gender } from "~/types/athlete";
  * is nobody else's progress it could be confused with.
  */
 const FURTHEST_COOKIE = "mr_timer_done";
+const A_WEEK = 60 * 60 * 24 * 7;
 
-function furthestPath(meetId: string): string {
-  return `${appBasePath()}meets/${encodeURIComponent(meetId)}/timer`;
+function meetPath(meetId: string): string {
+  return `/meets/${encodeURIComponent(meetId)}/timer`;
 }
 
 /**
@@ -67,7 +66,7 @@ export function saveRole(meetId: string, role: TimerRole): void {
   const secure = location.protocol === "https:" ? "; Secure" : "";
   document.cookie =
     `${ROLE_COOKIE}=${role}` +
-    `; Path=${furthestPath(meetId)}; SameSite=Lax` +
+    `; Path=${meetPath(meetId)}; SameSite=Lax` +
     `; Max-Age=${A_WEEK}${secure}`;
 }
 
@@ -100,7 +99,7 @@ export function saveFurthest(meetId: string, index: number): void {
   const secure = location.protocol === "https:" ? "; Secure" : "";
   document.cookie =
     `${FURTHEST_COOKIE}=${index}` +
-    `; Path=${furthestPath(meetId)}; SameSite=Lax` +
+    `; Path=${meetPath(meetId)}; SameSite=Lax` +
     `; Max-Age=${A_WEEK}${secure}`;
 }
 
@@ -199,4 +198,18 @@ export function timerPath(
     return `/meets/${meetId}/timer`;
   }
   return `/meets/${meetId}/timer/${event}/${heat}/${lane}`;
+}
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  for (const part of document.cookie.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name && rest.length) {
+      try {
+        return decodeURIComponent(rest.join("="));
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }

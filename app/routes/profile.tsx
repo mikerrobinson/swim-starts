@@ -11,7 +11,7 @@ import {
   Segmented,
   TextInput,
 } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import {
   addIdentity,
   consumeLoginCode,
@@ -31,9 +31,8 @@ export function meta({}: Route.MetaArgs) {
 
 /** Your name and your contacts, or null when nobody is signed in. */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, db);
   // Signed out is the ordinary state of a fresh device, not an error — so it
   // is an empty page rather than a 401 the screen has to catch.
   if (!user) return { profile: null };
@@ -55,9 +54,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
  * it to sign in as them.
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, db);
   if (!user) throw new Response("Sign in first.", { status: 401 });
 
   const form = await request.formData();
@@ -102,14 +100,19 @@ export async function action({ request, context }: Route.ActionArgs) {
         error: `A code has just been sent. Try again in ${Math.ceil(start.retryInMs / 1000)}s.`,
       };
     }
-    const delivery = await sendLoginCode(env, parsed.contact, start.code, "");
+    const delivery = await sendLoginCode(
+      context.cloudflare.env,
+      parsed.contact,
+      start.code,
+      "",
+    );
     return {
       ok: true,
       contact: parsed.contact.value,
       masked: maskContact(parsed.contact),
       detail: delivery.detail,
       // Only ever in development, where no provider is configured.
-      ...(revealsCodes(env) ? { code: start.code } : {}),
+      ...(revealsCodes(context.cloudflare.env) ? { code: start.code } : {}),
     };
   }
 

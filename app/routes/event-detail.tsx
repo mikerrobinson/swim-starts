@@ -1,13 +1,13 @@
 import { useMemo } from "react";
 import type { Route } from "./+types/event-detail";
 import { Card, EmptyState, SectionTitle } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { canRecordTime, type MeetFacts } from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
 import { heatsOf, swimsForHeat } from "~/lib/timing";
 import { formatTime } from "~/lib/time";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import { useViewPrefs } from "~/state/view-prefs";
 import { displayName, eventName } from "~/types/meet";
 
@@ -33,10 +33,9 @@ const EMPTY_MEET_FACTS: MeetFacts = {
  * rather than this route's own `useMeetLive` the way it used to be.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
-  const rawUser = await currentUser(request, env);
+  const rawUser = await currentUser(request, db);
   const userId = rawUser?.id ?? null;
 
   const [meet, coachedTeamIds] = await Promise.all([

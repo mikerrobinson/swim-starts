@@ -1,10 +1,10 @@
-export async function ensureGrantStore(db: D1Database): Promise<void> {
+async function ensureGrantStore(db: D1Database): Promise<void> {
   if (ready) return;
   for (const statement of SCHEMA) await db.prepare(statement).run();
   ready = true;
 }
 
-export const SCHEMA = [
+const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS meet_grants (
      token_hash TEXT PRIMARY KEY,
      meet_id TEXT NOT NULL,
@@ -15,7 +15,7 @@ export const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS grants_by_meet ON meet_grants (meet_id)`,
 ];
 
-export let ready = false;
+let ready = false;
 export interface Grant {
   meetId: string;
   expiresAt: number;
@@ -91,7 +91,7 @@ export function grantToken(request: Request): string | null {
   return null;
 }
 
-export const GRANT_COOKIE = "ss_timer";
+const GRANT_COOKIE = "ss_timer";
 
 export async function issueGrant(
   db: D1Database,
@@ -119,7 +119,7 @@ export async function issueGrant(
   return { token, expiresAt };
 }
 
-export function grantExpiry(meetDate: string, now = Date.now()): number {
+function grantExpiry(meetDate: string, now = Date.now()): number {
   const midnight = Date.parse(`${meetDate}T00:00:00Z`);
   const base = Number.isFinite(midnight) ? midnight : now;
   return Math.max(base + 2 * 24 * 60 * 60 * 1000, now + MINIMUM_LIFE_MS);

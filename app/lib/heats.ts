@@ -1,15 +1,5 @@
-import { generateId } from "./id";
 import { eventStarted, swimsForEvent, type TimingRows } from "./timing";
-import type { LaneAssignments, LaneCount, Swim } from "~/types/meet";
-
-/** Name/team to stamp on a newly created swim — see `Swim.athleteName`. */
-export type DisplayOf = (athleteId: string) => { name: string; team: string };
-const blankDisplay: DisplayOf = () => ({ name: "", team: "" });
-
-/** An entrant's exhibition flag, copied onto a swim only when it's created —
- *  see `Entry.exhibition` and `Swim.exhibition`. */
-export type ExhibitionOf = (athleteId: string) => boolean | undefined;
-const noExhibition: ExhibitionOf = () => undefined;
+import type { Entry, LaneAssignments, LaneCount, Swim } from "~/types/meet";
 
 /**
  * Lane assignment order, fastest lane first. Standard practice puts the top
@@ -17,7 +7,7 @@ const noExhibition: ExhibitionOf = () => undefined;
  * lanes seed 3-4-2-5-1-6, five lanes 3-2-4-1-5. An even pool has no true
  * centre, so its first pair leans to the high side.
  */
-export function laneOrder(laneCount: LaneCount): number[] {
+function laneOrder(laneCount: LaneCount): number[] {
   const middle = Math.floor((laneCount + 1) / 2);
   const even = laneCount % 2 === 0;
   const order = [middle];
@@ -31,54 +21,6 @@ export function laneOrder(laneCount: LaneCount): number[] {
   }
 
   return order;
-}
-
-/**
- * Split swimmers into heats and assign lanes.
- *
- * Heats are numbered in swum order, 1-based, and any short heat comes first —
- * that's how meets actually run it, so the last heat is full. Within a heat,
- * swimmers fill lanes from the middle outward.
- *
- * One swim per swimmer, and none for the lanes nobody is in: a lane with
- * nobody in it isn't a planned swim, and a heat is the distinct heats across
- * the swims rather than a row of its own.
- */
-export function buildSwims(
-  meetId: string,
-  eventId: string,
-  athleteIds: string[],
-  laneCount: LaneCount,
-): Swim[] {
-  if (athleteIds.length === 0) return [];
-
-  const order = laneOrder(laneCount);
-  const heatCount = Math.ceil(athleteIds.length / laneCount);
-  const remainder = athleteIds.length % laneCount;
-  const firstHeatSize = remainder === 0 ? laneCount : remainder;
-
-  const swims: Swim[] = [];
-  let cursor = 0;
-
-  for (let index = 0; index < heatCount; index++) {
-    const size = index === 0 ? firstHeatSize : laneCount;
-    const group = athleteIds.slice(cursor, cursor + size);
-    cursor += size;
-
-    group.forEach((athleteId, i) => {
-      swims.push({
-        id: generateId(),
-        eventId,
-        heat: index + 1,
-        lane: order[i],
-        athleteId,
-        athleteName: "",
-        athleteTeam: "",
-      });
-    });
-  }
-
-  return swims;
 }
 
 /**
@@ -106,20 +48,16 @@ export function buildSwims(
  * `exhibitionOf` are only consulted for a swim that's freshly created here —
  * moved or brand new — never for one that's kept as-is.
  */
-export function seedEvent(
+function seedEvent(
   rows: Pick<TimingRows, "swims">,
-  meetId: string,
   eventId: string,
-  entrants: string[],
-  teamOf: (athleteId: string) => string | undefined,
+  entries: Entry[],
   laneAssignments: LaneAssignments,
   laneCount: LaneCount,
-  displayOf: DisplayOf = blankDisplay,
-  exhibitionOf: ExhibitionOf = noExhibition,
 ): Swim[] {
-  if (entrants.length === 0) return [];
+  if (entries.length === 0) return [];
 
-  const heatCount = Math.ceil(entrants.length / laneCount);
+  const heatCount = Math.ceil(entries.length / laneCount);
   const globalOrder = laneOrder(laneCount);
 
   // Each team's own lanes, centre-out, and how many of that team's own
@@ -137,19 +75,19 @@ export function seedEvent(
   const placedByTeam = new Map<string, number>();
   const overflow: string[] = [];
 
-  for (const athleteId of entrants) {
-    const teamId = teamOf(athleteId);
+  for (const entry of entries) {
+    const teamId = entry.teamId;
     const order = teamId ? ownOrder.get(teamId) : undefined;
     const already = teamId ? (placedByTeam.get(teamId) ?? 0) : 0;
 
     if (order && order.length > 0 && already < (capacity.get(teamId!) ?? 0)) {
       const heat = Math.floor(already / order.length) + 1;
       const lane = order[already % order.length];
-      seatOf.set(athleteId, { heat, lane });
+      seatOf.set(entry.athleteId, { heat, lane });
       claimed.add(`${heat}/${lane}`);
       placedByTeam.set(teamId!, already + 1);
     } else {
-      overflow.push(athleteId);
+      overflow.push(entry.athleteId);
     }
   }
 
@@ -174,20 +112,16 @@ export function seedEvent(
     ),
   );
 
-  return entrants.map((athleteId) => {
-    const seat = seatOf.get(athleteId)!;
+  return entries.map((entry) => {
+    const seat = seatOf.get(entry.athleteId)!;
     const before = existing.get(`${seat.heat}/${seat.lane}`);
-    if (before && before.athleteId === athleteId) return { ...before };
-    const display = displayOf(athleteId);
+    if (before && before.athleteId === entry.athleteId) return { ...before };
     return {
-      id: generateId(),
       eventId,
       heat: seat.heat,
       lane: seat.lane,
-      athleteId,
-      athleteName: display.name,
-      athleteTeam: display.team,
-      exhibition: exhibitionOf(athleteId),
+      athleteId: entry.athleteId,
+      exhibition: entry.exhibition,
     };
   });
 }
@@ -204,25 +138,11 @@ export function seedEvent(
  */
 export function reseedEvent(
   rows: TimingRows,
-  meetId: string,
   eventId: string,
-  entrants: string[],
-  teamOf: (athleteId: string) => string | undefined,
+  entries: Entry[],
   laneAssignments: LaneAssignments,
   laneCount: LaneCount,
-  displayOf: DisplayOf = blankDisplay,
-  exhibitionOf: ExhibitionOf = noExhibition,
 ): Swim[] | null {
   if (eventStarted(rows, eventId)) return null;
-  return seedEvent(
-    rows,
-    meetId,
-    eventId,
-    entrants,
-    teamOf,
-    laneAssignments,
-    laneCount,
-    displayOf,
-    exhibitionOf,
-  );
+  return seedEvent(rows, eventId, entries, laneAssignments, laneCount);
 }

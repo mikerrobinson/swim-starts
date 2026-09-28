@@ -27,13 +27,11 @@ import { canEnter } from "./access";
 import { teamsCoachedBy } from "./coaches.server";
 import { whyNotEnter } from "./events";
 import { reseedEvent } from "./heats";
-import type { Write } from "./writes";
 import type { LiveSocketMessage } from "./meetCache";
 import type {
   Meet,
   Event,
   MeetDetails,
-  MeetSnapshot,
   ResultStatus,
   Swim,
   SwimSlot,
@@ -100,6 +98,7 @@ const SCHEMA = [
      meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
      athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
      seed_time_ms INTEGER,
      exhibition INTEGER NOT NULL DEFAULT 0,
      entered_at INTEGER NOT NULL DEFAULT 0,
@@ -203,10 +202,10 @@ interface WatchRow {
 }
 interface EntryRow {
   [key: string]: SqlStorageValue;
-  id: string;
   meet_id: string;
   event_id: string;
   athlete_id: string;
+  team_id: string;
   seed_time_ms: number | null;
   exhibition: number | null;
   entered_at: number;
@@ -215,7 +214,7 @@ interface EntryRow {
 
 /** This meet's own copy of a swimmer — `addTeam`'s roster rows and
  *  `addWalkupAthlete`'s. */
-interface LocalAthleteRow {
+interface MeetAthleteRow {
   [key: string]: SqlStorageValue;
   id: string;
   first_name: string;
@@ -227,7 +226,7 @@ interface LocalAthleteRow {
   is_walkup: number;
 }
 
-function athleteFromLocalRow(row: LocalAthleteRow): MeetAthlete {
+function meetAthleteFromRow(row: MeetAthleteRow): MeetAthlete {
   return {
     id: row.id,
     firstName: row.first_name,
@@ -301,8 +300,8 @@ function watchFromRow(row: WatchRow): Watch {
 }
 function entryFromRow(row: EntryRow): Entry {
   return {
-    id: row.id,
     athleteId: row.athlete_id,
+    teamId: row.team_id,
     eventId: row.event_id,
     seedTimeMs: row.seed_time_ms ?? undefined,
     exhibition: row.exhibition === 1 ? true : false,
@@ -310,12 +309,6 @@ function entryFromRow(row: EntryRow): Entry {
     enteredBy: row.entered_by,
   };
 }
-/** One RPC write method's input: the matching `Write` variant, kind dropped
- *  (the method name already says it). */
-type WriteOf<K extends Write["kind"]> = Omit<
-  Extract<Write, { kind: K }>,
-  "kind"
->;
 
 /** Who a live connection is, resolved by the Worker before the upgrade ever
  *  reaches the DO — see `api.meet.live.ts`. */
@@ -353,24 +346,6 @@ export class MeetDurableObject extends DurableObject<Env> {
   }
 
   /* --------------------------------------------------------------- reading */
-
-  async getSnapshot(meetId: string): Promise<MeetSnapshot> {
-    const swims = this.ctx.storage.sql
-      .exec<SwimRow>("SELECT * FROM swims WHERE meet_id = ?", meetId)
-      .toArray()
-      .map(swimFromRow);
-    const watches = this.ctx.storage.sql
-      .exec<WatchRow>("SELECT * FROM watches WHERE meet_id = ?", meetId)
-      .toArray()
-      .map(watchFromRow);
-    const entries = this.readEntries(meetId);
-    const athletes = this.ctx.storage.sql
-      .exec<LocalAthleteRow>("SELECT * FROM athletes")
-      .toArray()
-      .map(athleteFromLocalRow);
-
-    return { entries, swims, watches, athletes };
-  }
 
   /**
    * The full client-side `MeetManifest` — everything `meet-layout.tsx`'s loader
@@ -427,9 +402,9 @@ export class MeetDurableObject extends DurableObject<Env> {
       }, {});
 
     const athletes = this.ctx.storage.sql
-      .exec<LocalAthleteRow>("SELECT * FROM athletes")
+      .exec<MeetAthleteRow>("SELECT * FROM athletes")
       .toArray()
-      .map(athleteFromLocalRow)
+      .map(meetAthleteFromRow)
       .reduce<Record<string, MeetAthlete>>((record, athlete) => {
         record[athlete.id] = athlete;
         return record;
@@ -616,7 +591,7 @@ export class MeetDurableObject extends DurableObject<Env> {
     teamId: string,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const athletes = this.ctx.storage.sql
-      .exec<LocalAthleteRow>("SELECT * FROM athletes WHERE team_id = ?", teamId)
+      .exec<MeetAthleteRow>("SELECT * FROM athletes WHERE team_id = ?", teamId)
       .toArray();
     const athleteIds = athletes.map((a) => a.id);
     if (athleteIds.length === 0) {
@@ -668,7 +643,7 @@ export class MeetDurableObject extends DurableObject<Env> {
     for (const athlete of athletes) {
       this.broadcast({
         type: "ATHLETE",
-        athlete: athleteFromLocalRow(athlete),
+        athlete: meetAthleteFromRow(athlete),
         isDelete: true,
       });
     }
@@ -712,7 +687,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    */
   async completeMeet(meetId: string): Promise<void> {
     const walkups = this.ctx.storage.sql
-      .exec<LocalAthleteRow>("SELECT * FROM athletes WHERE is_walkup = 1")
+      .exec<MeetAthleteRow>("SELECT * FROM athletes WHERE is_walkup = 1")
       .toArray();
     for (const row of walkups) {
       const athlete = await putAthlete(this.env.DB, {
@@ -768,36 +743,17 @@ export class MeetDurableObject extends DurableObject<Env> {
 
   /** Every declared entry, by event — the DO's own, not D1's, now that
    *  `declareEntry` is the only place an entry is written. */
-  private readEntries(meetId: string): Record<string, string[]> {
+  private readEntries(meetId: string): Record<string, Entry[]> {
     const rows = this.ctx.storage.sql
       .exec<EntryRow>(
         "SELECT * FROM entries WHERE meet_id = ? ORDER BY entered_at",
         meetId,
       )
       .toArray();
-    const entries: Record<string, string[]> = {};
-    for (const row of rows) (entries[row.event_id] ??= []).push(row.athlete_id);
+    const entries: Record<string, Entry[]> = {};
+    for (const row of rows)
+      (entries[row.event_id] ??= []).push(entryFromRow(row));
     return entries;
-  }
-
-  /**
-   * Full entry rows for one event, keyed by athlete — what `reseedIfUntouched`
-   * needs to copy `exhibition` onto a swim it creates. Not part of
-   * `getSnapshot`'s public shape: nothing outside seeding needs a whole
-   * `Entry`, just the athlete list `readEntries` already gives it.
-   */
-  private readEntryRows(
-    meetId: string,
-    eventId: string,
-  ): Map<string, EntryRow> {
-    const rows = this.ctx.storage.sql
-      .exec<EntryRow>(
-        "SELECT * FROM entries WHERE meet_id = ? AND event_id = ?",
-        meetId,
-        eventId,
-      )
-      .toArray();
-    return new Map(rows.map((row) => [row.athlete_id, row]));
   }
 
   /* --------------------------------------------------------- write methods */
@@ -976,7 +932,7 @@ export class MeetDurableObject extends DurableObject<Env> {
     if (!athleteId) return { name: "", team: "" };
 
     const row = this.ctx.storage.sql
-      .exec<LocalAthleteRow & { code: string | null }>(
+      .exec<MeetAthleteRow & { code: string | null }>(
         `SELECT a.*, t.code
          FROM athletes a LEFT JOIN teams t ON t.id = a.team_id
          WHERE a.id = ?`,
@@ -985,7 +941,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       .toArray()[0];
     if (!row) return { name: "", team: "" };
     return {
-      name: athleteName(athleteFromLocalRow(row)),
+      name: athleteName(meetAthleteFromRow(row)),
       team: row.code ?? "",
     };
   }
@@ -1062,12 +1018,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   }
 
   /**
-   * Entering or scratching one swimmer — now with the auto-reseed
-   * `api.meet.writes.ts` used to do against D1 (the gap flagged since step
-   * 2/3): entries are DO-owned like the other three live tables, so
-   * whether an event is "touched" and what its lineup looks like are both
-   * read from here, never from a D1 snapshot that could be stale between
-   * checkpoints.
+   * Entering or scratching one swimmer
    *
    * `meet`/`userId` are resolved by the Worker from the session (and the
    * meet's own D1 row) before this is ever called — same separation as the
@@ -1082,7 +1033,15 @@ export class MeetDurableObject extends DurableObject<Env> {
    * status code to answer with.
    */
   async declareEntry(
-    input: WriteOf<"entry">,
+    input: {
+      meetId: string;
+      eventId: string;
+      athleteId: string;
+      teamId: string;
+      entering: boolean;
+      seedTimeMs?: number;
+      exhibition?: boolean;
+    },
     meet: Meet,
     userId: string | null,
   ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
@@ -1129,11 +1088,12 @@ export class MeetDurableObject extends DurableObject<Env> {
 
       enteredAt = Date.now();
       this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO entries (meet_id, event_id, athlete_id, seed_time_ms, exhibition, entered_at, entered_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO entries (meet_id, event_id, athlete_id, team_id, seed_time_ms, exhibition, entered_at, entered_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         input.meetId,
         input.eventId,
         input.athleteId,
+        input.teamId,
         input.seedTimeMs ?? null,
         input.exhibition ? 1 : 0,
         enteredAt,
@@ -1153,9 +1113,9 @@ export class MeetDurableObject extends DurableObject<Env> {
     this.broadcast({
       type: "ENTRY",
       entry: {
-        id: "",
         eventId: input.eventId,
         athleteId: input.athleteId,
+        teamId: input.teamId,
         seedTimeMs: input.seedTimeMs,
         exhibition: input.exhibition ?? false,
         enteredAt,
@@ -1224,31 +1184,14 @@ export class MeetDurableObject extends DurableObject<Env> {
       .toArray()
       .map(watchFromRow);
 
-    const entrants = this.readEntries(meetId)[eventId] ?? [];
-    const local =
-      entrants.length > 0
-        ? this.localAthleteInfo(entrants)
-        : new Map<string, { teamId: string; name: string; team: string }>();
-    const entryRows = this.readEntryRows(meetId, eventId);
-
-    const teamOf = (athleteId: string) => local.get(athleteId)?.teamId;
-    const displayOf = (athleteId: string) => {
-      const info = local.get(athleteId);
-      return { name: info?.name ?? "", team: info?.team ?? "" };
-    };
-    const exhibitionOf = (athleteId: string) =>
-      entryRows.get(athleteId)?.exhibition === 1 ? true : undefined;
+    const entries = this.readEntries(meetId)[eventId] ?? [];
 
     const nextSwims = reseedEvent(
       { swims, watches },
-      meetId,
       eventId,
-      entrants,
-      teamOf,
+      entries,
       meet.laneAssignments,
       meet.laneCount,
-      displayOf,
-      exhibitionOf,
     );
     // Only null when the event turned out to be touched.
     if (!nextSwims) return;
@@ -1256,10 +1199,6 @@ export class MeetDurableObject extends DurableObject<Env> {
     const before = new Map(swims.map((s) => [toSwimKey(s), s] as const));
     const after = new Map(nextSwims.map((s) => [toSwimKey(s), s] as const));
 
-    this.ctx.storage.sql.exec(
-      "DELETE FROM watches WHERE event_id = ?",
-      eventId,
-    );
     this.ctx.storage.sql.exec("DELETE FROM swims WHERE event_id = ?", eventId);
     for (const swim of nextSwims) {
       this.ctx.storage.sql.exec(
@@ -1287,35 +1226,6 @@ export class MeetDurableObject extends DurableObject<Env> {
       }
       this.broadcast({ type: "SWIM", swim, isDelete: false });
     }
-  }
-
-  /** `athleteId -> {teamId, name, team}`, straight off this DO's own
-   *  `athletes`/`teams` — what `reseedEvent` needs to know whose own lanes
-   *  an entrant reaches for and what to stamp on the `Swim` it seats them
-   *  into. Replaces what used to be two separate D1 queries (an
-   *  `enrollments` join for the team, a `teams` lookup for its code): both
-   *  facts are local now, copied in by `addTeam`/`addWalkupAthlete`. */
-  private localAthleteInfo(
-    athleteIds: string[],
-  ): Map<string, { teamId: string; name: string; team: string }> {
-    const placeholders = athleteIds.map(() => "?").join(",");
-    const rows = this.ctx.storage.sql
-      .exec<LocalAthleteRow & { code: string | null }>(
-        `SELECT a.*, t.code FROM athletes a LEFT JOIN teams t ON t.id = a.team_id
-         WHERE a.id IN (${placeholders})`,
-        ...athleteIds,
-      )
-      .toArray();
-    return new Map(
-      rows.map((row) => [
-        row.id,
-        {
-          teamId: row.team_id,
-          name: athleteName(athleteFromLocalRow(row)),
-          team: row.code ?? "",
-        },
-      ]),
-    );
   }
 
   /**

@@ -370,17 +370,6 @@ export function toWatchKey(k: WatchSlotKey): WatchKey {
   return `e${k.eventId}:h${k.heat}:l${k.lane}:d${k.deviceId}:s${k.slot}`;
 }
 
-export function parseWatchKey(key: WatchKey): WatchSlotKey {
-  const [eventId, h, l, d, s] = key.split(":");
-  return {
-    eventId: eventId.replace("e", ""),
-    heat: Number(h.replace("h", "")),
-    lane: Number(l.replace("l", "")),
-    deviceId: d.replace("d", ""),
-    slot: Number(s.replace("s", "")),
-  };
-}
-
 export type ResultStatus = "OK" | "DQ" | "NS";
 
 export interface Swim {
@@ -409,19 +398,10 @@ export function toSwimKey(slot: SwimSlot): SwimKey {
   return `e${slot.eventId}:h${slot.heat}:l${slot.lane}`;
 }
 
-export function parseSwimKey(key: SwimKey): SwimSlot {
-  const [e, h, l] = key.split(":");
-  return {
-    eventId: e.replace("e", ""),
-    heat: Number(h.replace("h", "")),
-    lane: Number(l.replace("l", "")),
-  };
-}
-
 export interface Entry {
-  id: string;
   eventId: string;
   athleteId: string;
+  teamId: string;
   seedTimeMs?: number; // null = NT
   exhibition: boolean;
   enteredAt: number;
@@ -436,68 +416,6 @@ export function toEntryKey({
   athleteId: string;
 }): EntryKey {
   return `${eventId}:${athleteId}`;
-}
-
-export interface MeetDetail {
-  meet: Meet;
-  teams: Team[];
-  events: Event[];
-  /** eventId -> athleteIds registered in it. */
-  entries: Record<string, string[]>;
-  /** Every measurement, including stopwatches that are still running. */
-  watches: Watch[];
-  /** Everyone these rows refer to, so no screen has to fetch people itself. */
-  athletes: Athlete[];
-  swims: Swim[];
-  /**
-   * The racing teams' rosters for this meet's season.
-   *
-   * What the registration grid draws its rows from, and where a swimmer's
-   * year and squad come from — as of this meet, not as of today.
-   */
-  enrollments: Enrollment[];
-}
-
-/**
- * The Meet Durable Object's live state: the four race-day tables it owns,
- * plus enough athletes to render names against them. Everything else in a
- * `MeetDetail` — the meet, events, teams, enrollments — is setup data,
- * decided before race day and read straight from D1 rather than pushed by
- * the DO.
- */
-export type MeetSnapshot = Pick<
-  MeetDetail,
-  "entries" | "swims" | "watches" | "athletes"
->;
-
-/**
- * Fold the Durable Object's live tables over a `MeetDetail` read from D1 —
- * what every workspace wired to the DO does with its loader's D1 read and
- * the live snapshot `useMeetLive` hands back.
- *
- * `entries` is included now that `declareEntry` (`MeetDurableObject`) is the
- * only place an entry is ever written — D1's `entries` table is just the
- * last checkpoint's copy, no more current than seeds/watches/results are.
- *
- * `athletes` is a union, not a replacement: `live.athletes` only covers
- * people the DO's live tables currently name (entries/seeds/walk-ins), while
- * `detail.athletes` carries the full team rosters from D1 — screens like the
- * registration grid need roster swimmers who haven't been entered yet. Live
- * copies win on id collisions since they can include a just-added walk-in
- * before D1's own read would.
- */
-export function withLiveTables(
-  detail: MeetDetail,
-  live: MeetSnapshot,
-): MeetDetail {
-  const athletes = new Map(detail.athletes.map((a) => [a.id, a]));
-  for (const athlete of live.athletes) athletes.set(athlete.id, athlete);
-  return {
-    ...detail,
-    entries: live.entries,
-    watches: live.watches,
-    athletes: [...athletes.values()],
-  };
 }
 
 /** How places turn into points. Nothing computes these yet. */
@@ -597,20 +515,6 @@ export function isEligible(
   event: Pick<Event, "gender">,
 ): boolean {
   return event.gender === "Open" || event.gender === athlete.gender;
-}
-
-/**
- * Someone by id, from anywhere in the team's history.
- *
- * Results from past meets point at people who may have left the roster since,
- * so this looks through everyone rather than just this season's.
- */
-export function findAthlete(
-  athletes: Athlete[],
-  id: string | null | undefined,
-): Athlete | undefined {
-  if (!id) return undefined;
-  return athletes.find((a) => a.id === id);
 }
 
 /*

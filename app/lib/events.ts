@@ -6,6 +6,7 @@ import type {
   MeetCourse,
   Event,
   Stroke,
+  Entry,
 } from "~/types/meet";
 import type { Gender } from "~/types/athlete";
 
@@ -15,8 +16,7 @@ import type { Gender } from "~/types/athlete";
  */
 export interface EntryContext {
   events: Event[];
-  /** eventId -> athleteIds registered in it. */
-  entries: Record<string, string[]>;
+  entries: Record<string, Entry[]>;
   limits: EntryLimits;
 }
 
@@ -49,7 +49,7 @@ function isYards(course: MeetCourse): boolean {
 }
 
 /** The standard order as plain races, for building a lineup or naming one. */
-export function standardOrder(
+function standardOrder(
   course: MeetCourse,
   includeDiving = true,
 ): Array<{ distance: number; stroke: Stroke }> {
@@ -60,13 +60,6 @@ export function standardOrder(
       ? { ...e, distance: 400 }
       : e,
   );
-}
-
-/** Races in the standard order — half the event count of a split lineup. */
-export function dualMeetRaceCount(includeDiving: boolean): number {
-  return includeDiving
-    ? DUAL_MEET_ORDER.length
-    : DUAL_MEET_ORDER.filter((e) => e.stroke !== "Diving").length;
 }
 
 /**
@@ -97,7 +90,7 @@ export function renumber(events: Event[]): Event[] {
   }));
 }
 
-export function otherGender(gender: Gender): Gender {
+function otherGender(gender: Gender): Gender {
   return gender === "F" ? "M" : "F";
 }
 
@@ -136,76 +129,6 @@ export function defaultEvents(
       makeEvent(meetId, e.distance, e.stroke, second),
     ]),
   );
-}
-
-/**
- * Whether a lineup is split by gender, so diving can be added to match. An
- * empty lineup counts as split — that's the high-school default everything
- * else here assumes.
- */
-function isSplitLineup(events: Event[]): boolean {
-  return events.length === 0 || events.some((e) => e.gender !== "Open");
-}
-
-/**
- * Add Diving to a lineup, in the place a program would put it: straight after
- * the 50 free, or at the end if there isn't one. Matches the lineup's own
- * shape — a gendered pair in a split meet, a single event otherwise.
- */
-export function withDiving(
-  meetId: string,
-  events: Event[],
-  leadGender: Gender,
-): Event[] {
-  if (events.some(isDiving)) return events;
-
-  const diving = isSplitLineup(events)
-    ? [
-        makeEvent(meetId, DIVING_DISTANCE, "Diving", leadGender),
-        makeEvent(meetId, DIVING_DISTANCE, "Diving", otherGender(leadGender)),
-      ]
-    : [makeEvent(meetId, DIVING_DISTANCE, "Diving", "Open")];
-
-  const lastFifty = events.reduce(
-    (found, e, i) => (e.distance === 50 && e.stroke === "Free" ? i : found),
-    -1,
-  );
-  const at = lastFifty >= 0 ? lastFifty + 1 : events.length;
-  return [...events.slice(0, at), ...diving, ...events.slice(at)];
-}
-
-export function withoutDiving(events: Event[]): Event[] {
-  return events.filter((e) => !isDiving(e));
-}
-
-/**
- * Reorder an existing lineup so `leadGender` swims first in every pair.
- *
- * Deliberately a reorder, not a rebuild: event ids are preserved, so entries
- * and recorded times come along. Runs of events sharing a race stay together
- * and keep their position in the meet; anything unpaired is left alone.
- */
-export function orderByLeadGender(
-  events: Event[],
-  leadGender: Gender,
-): Event[] {
-  const ordered: Event[] = [];
-
-  for (let i = 0; i < events.length; ) {
-    const key = raceKey(events[i]);
-    let end = i;
-    while (end < events.length && raceKey(events[end]) === key) end++;
-
-    const run = events.slice(i, end);
-    // Only a gendered pair has an order worth choosing.
-    const lead = run.filter((e) => e.gender === leadGender);
-    const rest = run.filter((e) => e.gender !== leadGender);
-    ordered.push(...lead, ...rest);
-
-    i = end;
-  }
-
-  return ordered;
 }
 
 /**
@@ -274,7 +197,7 @@ export interface EntryTally {
 }
 
 /** What a swimmer is already in, counted the way the limits are written. */
-export function tallyEntries(
+function tallyEntries(
   ctx: Pick<EntryContext, "entries" | "events">,
   athleteId: string,
 ): EntryTally {
@@ -283,7 +206,7 @@ export function tallyEntries(
   let relay = 0;
 
   for (const [eventId, ids] of Object.entries(ctx.entries)) {
-    if (!ids.includes(athleteId)) continue;
+    if (!ids.some((e) => e.athleteId == athleteId)) continue;
     const event = byId.get(eventId);
     // Diving holds a place in the running order but isn't a swim, so it
     // doesn't count against a swimming cap.
@@ -312,7 +235,8 @@ export function whyNotEnter(
 ): string | null {
   const event = ctx.events.find((e) => e.id === eventId);
   if (!event) return "That race isn't in this meet.";
-  if ((ctx.entries[eventId] ?? []).includes(athleteId)) return null;
+  if ((ctx.entries[eventId] ?? []).some((e) => e.athleteId == athleteId))
+    return null;
   if (isDiving(event)) return null;
 
   const { limits } = ctx;
@@ -338,40 +262,4 @@ export function whyNotEnter(
   }
 
   return null;
-}
-
-/**
- * Whether a team has filled its allowance in a race.
- *
- * Separate from the per-swimmer check because it's a different question with a
- * different answer: a swimmer under their own cap can still be turned away
- * because their team already has enough in that heat.
- */
-export function teamFullFor(
-  ctx: Pick<EntryContext, "entries" | "limits">,
-  eventId: string,
-  teamAthleteIds: Set<string>,
-): boolean {
-  const cap = ctx.limits.maxPerTeamPerEvent;
-  if (cap === undefined) return false;
-  const entered = (ctx.entries[eventId] ?? []).filter((id) =>
-    teamAthleteIds.has(id),
-  );
-  return entered.length >= cap;
-}
-
-/**
- * How many swimmers are in an event.
- *
- * This used to return an orphan count alongside it. Entries referenced
- * athletes by id, a roster re-import minted new ids, and the leftovers counted
- * without rendering — which is how a race read "9 entered" above three ticks.
- * With entries as rows and a loader that fetches exactly the people its rows
- * name, there is nothing left to be orphaned from.
- */
-export function enteredCount(
-  entries: Record<string, string[]>,
-  eventId: string,
-): number {
-  return (entries[eventId] ?? []).length;
 }

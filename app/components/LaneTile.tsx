@@ -28,7 +28,7 @@ const LIST_HEIGHT: Record<number, string> = {
   10: "h-12",
 };
 
-export function laneTileHeight(laneCount: number, layout: LaneLayout): string {
+function laneTileHeight(laneCount: number, layout: LaneLayout): string {
   const table = layout === "grid" ? GRID_HEIGHT : LIST_HEIGHT;
   return table[laneCount] ?? (layout === "grid" ? "h-28" : "h-16");
 }

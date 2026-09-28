@@ -2,7 +2,6 @@ import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/athletes";
 import { Card, EmptyState, SectionTitle, TextInput } from "~/components/ui";
 import { listPublicAthletes } from "~/lib/public.server";
-import type { SyncEnv } from "~/lib/api.server";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Athletes · Swim Starts" }];
@@ -18,12 +17,12 @@ export function meta({}: Route.MetaArgs) {
  * Filtering happens on the server so the whole set never has to come down.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
+  const db = context.cloudflare.env.DB;
   const q = new URL(request.url).searchParams.get("q") ?? "";
-  if (!env.DB) return { athletes: [], q, offline: true };
+  if (!db) return { athletes: [], q, offline: true };
   try {
     return {
-      athletes: await listPublicAthletes(env.DB, { q, limit: 200 }),
+      athletes: await listPublicAthletes(db, { q, limit: 200 }),
       q,
       offline: false,
     };

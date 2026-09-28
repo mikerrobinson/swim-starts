@@ -2,12 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { redirect, useFetcher, useSearchParams } from "react-router";
 import type { Route } from "./+types/sign-in";
 import { Banner, Button, Card, Field, TextInput } from "~/components/ui";
-import {
-  appBaseUrl,
-  currentUser,
-  requireDb,
-  type SyncEnv,
-} from "~/lib/api.server";
+import { appBaseUrl, currentUser } from "~/lib/api.server";
 import {
   createSession,
   inspectInvite,
@@ -40,12 +35,11 @@ export function meta({}: Route.MetaArgs) {
  * wait for them to do it.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const token = new URL(request.url).searchParams.get("invite");
 
   if (!token) {
-    const user = await currentUser(request, env);
+    const user = await currentUser(request, db);
     if (user) {
       const { openTeamId } = await sessionPayload(db, user);
       return redirect(openTeamId ? APP_HOME : "/join");
@@ -75,8 +69,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
  * and that is known here and nowhere earlier.
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
 
   const form = await request.formData();
   const parsed = parseContact(String(form.get("contact") ?? ""));
@@ -98,7 +91,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       parsed.contact.value,
     )}&code=${started.code}`;
     const delivery = await sendLoginCode(
-      env,
+      context.cloudflare.env,
       parsed.contact,
       started.code,
       link,
@@ -113,7 +106,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       detail: delivery.detail,
       // Only when the server is explicitly running in local mode. Everywhere
       // else the code exists solely in the message that was sent.
-      ...(revealsCodes(env) ? { code: started.code } : {}),
+      ...(revealsCodes(context.cloudflare.env) ? { code: started.code } : {}),
     };
   }
 

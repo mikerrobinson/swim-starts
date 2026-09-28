@@ -39,34 +39,11 @@ export function seasonForDate<
   );
 }
 
-export function findSeason(
-  seasons: Season[],
-  seasonId: string | undefined,
-): Season | undefined {
-  return seasons.find((s) => s.id === seasonId);
-}
-
-/** Enrollments by athlete id, for a screen that has the roster in hand. */
-export function enrollmentIndex(
-  enrollments: Enrollment[],
-): Map<string, Enrollment> {
-  return new Map(enrollments.map((e) => [e.athleteId, e] as const));
-}
-
 /** The day before an ISO date, for closing one season as the next opens. */
 export function dayBefore(isoDate: string): string {
   const date = new Date(`${isoDate}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() - 1);
   return date.toISOString().slice(0, 10);
-}
-
-export function makeSeason(
-  teamId: string,
-  name: string,
-  startDate?: string,
-  endDate?: string,
-): Season {
-  return { id: generateId(), teamId, name, startDate, endDate };
 }
 
 /**

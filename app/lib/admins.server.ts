@@ -27,7 +27,6 @@ const SCHEMA = [
      PRIMARY KEY (meet_id, user_id)
    )`,
   `CREATE INDEX IF NOT EXISTS admins_by_user ON meet_admins (user_id)`,
-
 ];
 
 let ready = false;
@@ -50,50 +49,6 @@ export async function meetAdminIds(
     .bind(meetId)
     .all<{ user_id: string }>();
   return results.map((row) => row.user_id);
-}
-
-/** Every meet this person administrates, for deciding a whole sync batch at once. */
-export async function meetsAdministeredBy(
-  db: D1Database,
-  userId: string | null | undefined,
-): Promise<Set<string>> {
-  if (!userId) return new Set();
-  await ensureAdminStore(db);
-  const { results } = await db
-    .prepare("SELECT meet_id FROM meet_admins WHERE user_id = ?")
-    .bind(userId)
-    .all<{ meet_id: string }>();
-  return new Set(results.map((row) => row.meet_id));
-}
-
-/**
- * Which of these meets already has somebody running it.
- *
- * The complement is what makes claiming possible at all: a meet nobody
- * administrates has to stay writable, or the first person to push it would be
- * refused for not being the administrator it doesn't yet have.
- */
-export async function administeredMeets(
-  db: D1Database,
-  meetIds: string[],
-): Promise<Set<string>> {
-  const wanted = [...new Set(meetIds)];
-  if (wanted.length === 0) return new Set();
-  await ensureAdminStore(db);
-
-  const found = new Set<string>();
-  for (let start = 0; start < wanted.length; start += 40) {
-    const slice = wanted.slice(start, start + 40);
-    const { results } = await db
-      .prepare(
-        `SELECT DISTINCT meet_id FROM meet_admins
-           WHERE meet_id IN (${slice.map(() => "?").join(", ")})`,
-      )
-      .bind(...slice)
-      .all<{ meet_id: string }>();
-    for (const row of results) found.add(row.meet_id);
-  }
-  return found;
 }
 
 export interface MeetAdmin {
@@ -188,28 +143,4 @@ export async function removeMeetAdmin(
     .bind(meetId, userId)
     .run();
   return { ok: true };
-}
-
-/**
- * Give a meet an administrator if it has none.
- *
- * Called when a meet arrives over sync. Whoever pushed it first is running it,
- * which is nearly always the coach who set it up on their own device — and
- * because it only fills a vacancy, a meet already being administrated is never
- * quietly taken over by the next person to sync it.
- */
-export async function claimUnadministeredMeet(
-  db: D1Database,
-  meetId: string,
-  userId: string | null | undefined,
-  now = Date.now(),
-): Promise<void> {
-  if (!userId) return;
-  await ensureAdminStore(db);
-  const existing = await db
-    .prepare("SELECT 1 AS ok FROM meet_admins WHERE meet_id = ? LIMIT 1")
-    .bind(meetId)
-    .first<{ ok: number }>();
-  if (existing) return;
-  await addMeetAdmin(db, meetId, userId, null, now);
 }

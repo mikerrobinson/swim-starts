@@ -1,4 +1,3 @@
-import { appBasePath } from "./http";
 import { runningOrder, timerPath, type Stop } from "./timer";
 import type { Event, Swim } from "~/types/meet";
 
@@ -10,7 +9,7 @@ import type { Event, Swim } from "~/types/meet";
  * pending rides along on any request under the timer workspace.
  */
 export function timerCookiePath(meetId: string): string {
-  return `${appBasePath()}${timerPath(meetId).slice(1)}`;
+  return `${timerPath(meetId).slice(1)}`;
 }
 
 export function stopPath(meetId: string, stop: Stop, lane: number): string {

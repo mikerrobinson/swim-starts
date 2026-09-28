@@ -131,29 +131,6 @@ export async function getMeet(
   );
 }
 
-/**
- * The one cheap read a route needs before it can decide where the rest of a
- * meet's data comes from: `status !== "complete"` means "ask the meet's
- * Durable Object", `"complete"` means "read D1's `results` table instead,
- * and don't wake the DO to do it." See `meet-layout.tsx`.
- */
-export async function getMeetGate(
-  db: D1Database,
-  id: string,
-): Promise<{ id: string; name: string; status: MeetStatus } | null> {
-  await ensureSchema(db);
-  const row = await db
-    .prepare("SELECT id, name, status FROM meets WHERE id = ?")
-    .bind(id)
-    .first<{ id: string; name: string; status: string }>();
-  if (!row) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    status: row.status === "complete" ? "complete" : "scheduled",
-  };
-}
-
 export interface MeetSummary {
   meet: Meet;
   teams: Team[];

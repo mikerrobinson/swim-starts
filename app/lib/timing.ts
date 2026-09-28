@@ -29,7 +29,7 @@ export interface TimingRows {
  * Swim times are truncated to hundredths, never rounded up: two watches
  * averaging 27.145 give 27.14. A time you didn't swim is not a time.
  */
-export function truncateToHundredths(ms: number): number {
+function truncateToHundredths(ms: number): number {
   return Math.floor(ms / 10) * 10;
 }
 
@@ -70,7 +70,7 @@ export function currentWatches(
  * and letting one reach `proposedTime` would put a phantom zero into a median.
  * Every reader that works out a time goes through here.
  */
-export function timedWatches(
+function timedWatches(
   rows: Pick<TimingRows, "watches">,
   slot: SwimSlot,
 ): Watch[] {
@@ -99,7 +99,7 @@ export interface ProposedTime {
  * dragging the average toward it. An even number above two is averaged across
  * the middle pair, for want of a single middle.
  */
-export function proposedTime(watches: Watch[]): ProposedTime | null {
+function proposedTime(watches: Watch[]): ProposedTime | null {
   const times = watches
     .filter((w) => w.timeMs !== undefined)
     .map((w) => w.timeMs!)
@@ -360,9 +360,4 @@ export function recordedCount(
     if (w.timeMs !== undefined) keys.add(toSwimKey(w));
   for (const s of rows.swims) if (s.status) keys.add(toSwimKey(s));
   return keys.size;
-}
-
-/** Events in the order they're swum. */
-export function orderedEvents(events: Event[]): Event[] {
-  return [...events].sort((a, b) => a.position - b.position);
 }

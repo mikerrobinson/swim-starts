@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/timer-lanes";
 import { loadRole, runningOrder, saveRole, type TimerRole } from "~/lib/timer";
 import { firstStopPath, stopPath } from "~/lib/timer-path";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 
 /**
  * Standing behind a lane is the first thing that happens.
@@ -112,18 +112,17 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
-        {Array.from(
-          { length: meet.details.laneCount },
-          (_, i) => i + 1,
-        ).map((lane) => (
-          <Link
-            key={lane}
-            to={laneHref(lane)}
-            className="flex min-h-24 touch-manipulation items-center justify-center rounded-2xl border-2 border-slate-300 text-4xl font-bold active:bg-blue-600 active:text-white dark:border-slate-700"
-          >
-            {lane}
-          </Link>
-        ))}
+        {Array.from({ length: meet.details.laneCount }, (_, i) => i + 1).map(
+          (lane) => (
+            <Link
+              key={lane}
+              to={laneHref(lane)}
+              className="flex min-h-24 touch-manipulation items-center justify-center rounded-2xl border-2 border-slate-300 text-4xl font-bold active:bg-blue-600 active:text-white dark:border-slate-700"
+            >
+              {lane}
+            </Link>
+          ),
+        )}
       </div>
     </main>
   );

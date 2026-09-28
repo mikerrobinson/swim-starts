@@ -34,7 +34,8 @@ export function parseContact(
   raw: string,
 ): { ok: true; contact: Contact } | { ok: false; error: string } {
   const trimmed = raw.trim();
-  if (!trimmed) return { ok: false, error: "Enter an email address or mobile number." };
+  if (!trimmed)
+    return { ok: false, error: "Enter an email address or mobile number." };
 
   if (trimmed.includes("@")) {
     const value = trimmed.toLowerCase();
@@ -66,7 +67,7 @@ export function parseContact(
  * Guessing a country for an arbitrary digit string is how a code gets sent
  * somewhere it can't be read.
  */
-export function normalizePhone(raw: string): string | null {
+function normalizePhone(raw: string): string | null {
   const trimmed = raw.trim();
   const digits = trimmed.replace(/\D/g, "");
   if (!digits) return null;
@@ -80,7 +81,7 @@ export function normalizePhone(raw: string): string | null {
 }
 
 /** The contact as a person would want to see it written back to them. */
-export function formatContact(contact: Contact): string {
+function formatContact(contact: Contact): string {
   if (contact.kind === "email") return contact.value;
   const digits = contact.value.replace(/\D/g, "");
   if (contact.value.startsWith("+1") && digits.length === 11) {
@@ -135,7 +136,7 @@ export const CODE_TTL_MS = 10 * 60 * 1000;
 
 /** Wrong guesses before a code is burnt. Six digits is a million
  *  possibilities, so this is about stopping a script, not a person. */
-export const MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS = 5;
 
 /** Quiet period between codes to one contact, so the endpoint can't be used
  *  to text someone repeatedly. */
@@ -188,8 +189,10 @@ export function checkChallenge(
   matches: boolean,
   now: number,
 ): ChallengeCheck {
-  if (now - challenge.createdAt > CODE_TTL_MS) return { ok: false, reason: "expired" };
-  if (challenge.attempts >= MAX_ATTEMPTS) return { ok: false, reason: "exhausted" };
+  if (now - challenge.createdAt > CODE_TTL_MS)
+    return { ok: false, reason: "expired" };
+  if (challenge.attempts >= MAX_ATTEMPTS)
+    return { ok: false, reason: "exhausted" };
   if (!matches) return { ok: false, reason: "wrong" };
   return { ok: true };
 }
@@ -211,8 +214,10 @@ export function timingSafeEqual(a: string, b: string): boolean {
 
 export function messageFor(check: ChallengeCheck): string {
   if (check.ok) return "";
-  if (check.reason === "expired") return "That code has expired. Ask for a new one.";
-  if (check.reason === "exhausted") return "Too many tries. Ask for a new code.";
+  if (check.reason === "expired")
+    return "That code has expired. Ask for a new one.";
+  if (check.reason === "exhausted")
+    return "Too many tries. Ask for a new code.";
   return "That code isn't right.";
 }
 

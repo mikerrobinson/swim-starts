@@ -11,7 +11,7 @@ import {
   SectionTitle,
 } from "~/components/ui";
 import { formatTime } from "~/lib/time";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { isTeamCoach } from "~/lib/coaches.server";
 import {
   athleteForUser,
@@ -40,8 +40,7 @@ export function meta({}: Route.MetaArgs) {
  * career from whatever meets happened to be on the device.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   await ensureSchema(db);
 
   const detail = await publicAthleteDetail(db, params.athleteId);
@@ -54,7 +53,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       teamId: null,
     };
 
-  const rawUser = await currentUser(request, env);
+  const rawUser = await currentUser(request, db);
   const userId = rawUser?.id ?? null;
 
   // Editing is a coach's job, and the team that matters is one this swimmer is
@@ -103,9 +102,8 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const rawUser = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const rawUser = await currentUser(request, db);
   const userId = rawUser?.id ?? null;
 
   const form = await request.formData();

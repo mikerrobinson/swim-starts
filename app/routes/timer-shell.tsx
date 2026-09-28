@@ -10,7 +10,7 @@ export function meta({}: Route.MetaArgs) {
 /**
  * One grant check for the whole timer workspace: is this a valid, unexpired
  * scan of this meet's code? The meet's own live state comes from `useMeet()`
- * (`meet-layout.tsx`'s shared manifest, kept live by its one shared socket) like
+ * (shared manifest, kept live by its one shared socket) like
  * every other screen under a meet now — this shell only decides whether a
  * phone gets to look at it at all.
  */
@@ -18,7 +18,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const meetId = params.meetId!;
   const resolved = await resolveTimerAccess(
     request,
-    context.cloudflare.env,
+    context.cloudflare.env.DB,
     meetId,
   );
   const headers = new Headers();
@@ -28,9 +28,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   return data({ error: resolved.ok ? undefined : resolved.error }, { headers });
 }
 
-export function shouldRevalidate({ actionResult, defaultShouldRevalidate }) {
-  // Return false to skip revalidating this parent's loader
-  // when a child action is triggered.
+export function shouldRevalidate() {
   return false;
 }
 

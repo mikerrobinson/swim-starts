@@ -116,39 +116,6 @@ export function canEnter({
   return meet.athletesMayEnter && userId != null && athlete.userId === userId;
 }
 
-/**
- * Which of a meet's screens somebody gets in the footer nav — coarser than
- * the predicates above (which decide one write at a time), because a tab
- * bar has to pick one thing to show, not describe every write it might
- * approve.
- *
- * `"spectator"` covers everyone who isn't running this meet or coaching a
- * team in it — a parent, another school's coach, a public visitor. They get
- * the same tabs as a coach (`meet-layout.tsx`'s `meetTabs`) because
- * entries/splits/results are read-only-by-default screens already (see
- * `public.ts`'s redaction, `entryVisibility`) — there's nothing here that
- * needs hiding, just editing controls those screens already gate on their
- * own for whoever they belong to.
- */
-export type MeetNavRole = "admin" | "coach" | "timer" | "spectator";
-
-export function meetNavRole({
-  meet,
-  userId,
-  coachedTeamIds,
-}: {
-  meet: Pick<MeetFacts, "adminIds" | "teamIds">;
-  userId: string | null;
-  coachedTeamIds: string[];
-}): MeetNavRole[] {
-  const roles: MeetNavRole[] = ["spectator"];
-  if (canEditMeet({ meet, userId })) roles.push("admin");
-  if (meet.teamIds.some((teamId) => coachedTeamIds.includes(teamId))) {
-    roles.push("coach");
-  }
-  return roles;
-}
-
 /** What `TeamMembers.tsx` reads: enough to gate editing and reveal contact
  *  info, assembled inline by the caller (`team-detail.tsx`/
  *  `athlete-detail.tsx`) from a direct `isTeamCoach` lookup rather than

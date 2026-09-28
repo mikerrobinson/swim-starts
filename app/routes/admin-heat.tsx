@@ -25,13 +25,12 @@ import {
   laneTime,
   OK_DISCREPANCY_MS,
   runningWatches,
-  swimsForHeat,
   stoppedWatches,
   swimTime,
   type LaneProgress,
   type LaneTime,
 } from "~/lib/timing";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import {
   canDecideMeet,
   canEditMeet,
@@ -48,7 +47,7 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
@@ -105,9 +104,8 @@ async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
  * this screen shows comes from `useMeet()`'s `MeetManifest` in the
  * component below.
  */
-export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+export async function loader({ params, context }: Route.LoaderArgs) {
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const meet = await getMeet(db, meetId);
   const rosterEntries = meet ? await meetRoster(db, meet) : [];
@@ -134,11 +132,10 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
  * desk's own effect proposed it) rather than trusted from the client.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const [rawUser, meet] = await Promise.all([
-    currentUser(request, env as SyncEnv),
+    currentUser(request, db),
     getMeet(db, meetId),
   ]);
   if (!meet) throw new Response("No such meet", { status: 404 });
@@ -146,7 +143,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
-  const stub = env.MEET_DO.getByName(meetId);
+  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
 
   if (intent === "upsert-swim") {
     const kind = String(form.get("kind") ?? "seat");

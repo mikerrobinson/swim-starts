@@ -13,12 +13,7 @@ import {
 } from "~/components/ui";
 import { TeamMembers } from "~/components/TeamMembers";
 import { AthleteSheet } from "~/components/AthleteSheet";
-import {
-  appBaseUrl,
-  currentUser,
-  requireDb,
-  type SyncEnv,
-} from "~/lib/api.server";
+import { appBaseUrl, currentUser } from "~/lib/api.server";
 import type { TeamAccess } from "~/lib/access";
 import { publicTeamDetail } from "~/lib/public.server";
 import {
@@ -63,8 +58,8 @@ const TEMPLATE = toCsv([
  * roster is what everyone else sees of it, plus the controls.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  if (!env.DB) {
+  const db = context.cloudflare.env.DB;
+  if (!db) {
     return {
       team: null,
       access: null,
@@ -76,15 +71,15 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
 
   try {
     const [rawUser, team, roll] = await Promise.all([
-      currentUser(request, env),
-      publicTeamDetail(env.DB, params.teamId),
-      teamCoaches(env.DB, params.teamId),
+      currentUser(request, db),
+      publicTeamDetail(db, params.teamId),
+      teamCoaches(db, params.teamId),
     ]);
     const userId = rawUser?.id ?? null;
     const access: TeamAccess = {
       signedIn: userId != null,
       userId,
-      coach: await isTeamCoach(env.DB, userId, params.teamId!),
+      coach: await isTeamCoach(db, userId, params.teamId!),
     };
 
     /**
@@ -102,7 +97,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     // Which season the team treats as current is a fact about running the
     // team, not about reading it, so the public projection leaves it out.
     // A coach needs it to say which one is current and to move it.
-    const record = access.coach ? await getTeam(env.DB, params.teamId) : null;
+    const record = access.coach ? await getTeam(db, params.teamId) : null;
 
     // How many completed meets each swimmer has a time in. One aggregate
     // rather than deriving every result on the client just to count them —
@@ -112,12 +107,14 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     // lives in its own Durable Object, not here, so this only ever counts
     // meets that have actually finished.
     const swims = access.coach
-      ? await env.DB.prepare(
-          `SELECT athlete_id AS id, COUNT(DISTINCT meet_id) AS n
+      ? await db
+          .prepare(
+            `SELECT athlete_id AS id, COUNT(DISTINCT meet_id) AS n
            FROM results
            WHERE time_ms IS NOT NULL AND athlete_id IS NOT NULL
            GROUP BY athlete_id`,
-        ).all<{ id: string; n: number }>()
+          )
+          .all<{ id: string; n: number }>()
       : null;
 
     return {
@@ -153,9 +150,8 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
  * coached team; here the team is the URL, so a coach of two can reach both.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const rawUser = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const rawUser = await currentUser(request, db);
   const userId = rawUser?.id ?? null;
 
   const access: TeamAccess = {
@@ -285,7 +281,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     const link = `${appBaseUrl(request)}sign-in?invite=${encodeURIComponent(token)}`;
     const team = await getTeam(db, params.teamId);
     const delivery = await sendTeamInvite(
-      env,
+      context.cloudflare.env,
       parsed.contact,
       team?.name ?? "a team",
       link,
@@ -297,7 +293,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
       detail: delivery.detail,
       // Local builds only, exactly as with login codes: without a provider
       // configured there is otherwise no way to follow your own invite.
-      ...(revealsCodes(env) ? { link } : {}),
+      ...(revealsCodes(context.cloudflare.env) ? { link } : {}),
     };
   }
 

@@ -1,4 +1,4 @@
-export const DEVICE_COOKIE = "mr_timer_id";
+const DEVICE_COOKIE = "mr_timer_id";
 
 /**
  * Who this phone says it is, if it has been here before.

@@ -12,7 +12,7 @@ import {
   Sheet,
   TextInput,
 } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { coachedTeamsFor } from "~/lib/auth.server";
 import { createMeet, listMeets } from "~/lib/meets.server";
@@ -52,13 +52,12 @@ type Filter = "upcoming" | "complete" | "all";
  * Every meet, from one place.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
 
   // The teams this person coaches, so the new-meet sheet can start with their
   // own school already racing. `coachedTeamsFor` carries the name and code
   // along, so naming them costs no second query.
-  const user = await currentUser(request, env);
+  const user = await currentUser(request, db);
   const myTeams = user
     ? (await coachedTeamsFor(db, user.id)).map((team) => ({
         id: team.teamId,
@@ -71,9 +70,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, db);
   if (!user) throw new Response("Sign in to create a meet", { status: 403 });
 
   const form = await request.formData();
@@ -178,7 +176,10 @@ export async function action({ request, context }: Route.ActionArgs) {
       if (!team) return;
       const season = seasonForDate(seasons, team.currentSeasonId, meet.date);
       const rosterEntries = await teamRoster(db, teamId, season?.id);
-      await stub.addTeam(team, rosterEntries.map((e) => e.athlete));
+      await stub.addTeam(
+        team,
+        rosterEntries.map((e) => e.athlete),
+      );
     }),
   );
 

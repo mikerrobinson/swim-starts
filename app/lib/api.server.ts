@@ -5,21 +5,7 @@
  */
 
 import { bearerToken, userForToken } from "./auth.server";
-import type { NotifyEnv } from "./notify.server";
 import type { User } from "~/types/user";
-
-export interface SyncEnv extends NotifyEnv {
-  DB?: D1Database;
-}
-
-export class SyncError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
 
 export function json(
   data: unknown,
@@ -33,45 +19,26 @@ export function json(
 }
 
 export function errorResponse(error: unknown): Response {
-  if (error instanceof SyncError) {
-    return json({ error: error.message }, error.status);
-  }
-  console.error("Sync failure:", error);
+  console.error("API failure:", error);
   return json({ error: "Server error" }, 500);
-}
-
-
-export function requireDb(env: SyncEnv): D1Database {
-  if (!env.DB) {
-    throw new SyncError(
-      "No D1 database is bound to this worker (expected a binding named DB)",
-      503,
-    );
-  }
-  return env.DB;
 }
 
 /** Whoever is signed in on this request, or null. */
 export async function currentUser(
   request: Request,
-  env: SyncEnv,
+  db: D1Database,
 ): Promise<User | null> {
-  if (!env.DB) return null;
-  return userForToken(env.DB, bearerToken(request));
+  if (!db) return null;
+  return userForToken(db, bearerToken(request));
 }
 
-export async function requireUser(request: Request, env: SyncEnv): Promise<User> {
-  const user = await currentUser(request, env);
-  if (!user) throw new SyncError("Sign in first", 401);
+export async function requireUser(
+  request: Request,
+  db: D1Database,
+): Promise<User> {
+  const user = await currentUser(request, db);
+  if (!user) throw new Error("Sign in first");
   return user;
-}
-
-export async function readJson<T>(request: Request): Promise<T> {
-  const body = (await request.json().catch(() => null)) as T | null;
-  if (!body || typeof body !== "object") {
-    throw new SyncError("Expected a JSON body", 400);
-  }
-  return body;
 }
 
 /**

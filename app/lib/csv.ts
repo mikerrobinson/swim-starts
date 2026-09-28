@@ -27,7 +27,7 @@ export interface RosterEntry {
 }
 
 /** RFC-4180-ish parser: handles quoted fields, embedded commas, and CRLF. */
-export function parseCsv(text: string): string[][] {
+function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
@@ -110,7 +110,7 @@ function parseGender(value: string): Gender | null {
  * or implausible is refused rather than guessed at. An empty cell is simply
  * absent, and reports an empty reason.
  */
-export function parseBirthDate(
+function parseBirthDate(
   value: string,
   today = new Date(),
 ): { date: string } | { error: string } {
@@ -347,7 +347,9 @@ export function resultsToCsv(
 
     for (const { seed, time } of ordered) {
       const athlete = seed.athleteId ? byId.get(seed.athleteId) : undefined;
-      const enrolled = seed.athleteId ? enrollments.get(seed.athleteId) : undefined;
+      const enrolled = seed.athleteId
+        ? enrollments.get(seed.athleteId)
+        : undefined;
       rows.push([
         eventIndex + 1,
         eventName(event),

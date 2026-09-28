@@ -43,7 +43,6 @@ export interface Session {
   /** The teams this person coaches. There is no other standing to have. */
   teams: SessionTeam[];
   openTeamId: string | null;
-  joinable: JoinableTeam[];
 }
 
 /** A signed-out session, so callers never have to handle a null of their own. */
@@ -51,7 +50,6 @@ export const SIGNED_OUT: Session = {
   user: null,
   teams: [],
   openTeamId: null,
-  joinable: [],
 };
 
 interface SessionState extends Session {

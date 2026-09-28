@@ -2,10 +2,9 @@ import { Link } from "react-router";
 import type { Route } from "./+types/user-detail";
 import { Card, EmptyState, SectionTitle } from "~/components/ui";
 import { formatTime } from "~/lib/time";
-import { publicAthleteDetail, userDashboard } from "~/lib/public.server";
+import { userDashboard } from "~/lib/public.server";
 import { currentUser } from "~/lib/api.server";
 import { meetTypeLabel } from "~/types/meet";
-import type { SyncEnv } from "~/lib/api.server";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "You · Swim Starts" }];
@@ -20,25 +19,22 @@ export function meta({}: Route.MetaArgs) {
  * version of somebody's business.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  if (!env.DB) return { dashboard: null, swims: null, mine: false };
+  const db = context.cloudflare.env.DB;
+  if (!db) return { dashboard: null, swims: null, mine: false };
 
   try {
-    const me = await currentUser(request, env);
+    const me = await currentUser(request, db);
     if (!me || me.id !== params.userId) {
       return { dashboard: null, swims: null, mine: false };
     }
 
-    const dashboard = await userDashboard(env.DB, params.userId);
+    const dashboard = await userDashboard(db, params.userId);
     // Their own times, when a coach has said which swimmer they are.
-    const swims = dashboard?.athlete
-      ? ((await publicAthleteDetail(env.DB, dashboard.athlete.id))?.swims ??
-        null)
-      : null;
+    const swims = [];
 
     return { dashboard, swims, mine: true };
   } catch {
-    return { dashboard: null, swims: null, mine: false };
+    return { dashboard: null, swims: [], mine: false };
   }
 }
 

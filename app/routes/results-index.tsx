@@ -1,7 +1,7 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/results-index";
 import { Card, SectionTitle } from "~/components/ui";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Results · Swim Starts" }];

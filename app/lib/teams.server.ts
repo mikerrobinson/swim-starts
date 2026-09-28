@@ -64,7 +64,7 @@ export interface EnrollmentRow {
   status: string;
 }
 
-export function enrollmentFrom(row: EnrollmentRow): Enrollment {
+function enrollmentFrom(row: EnrollmentRow): Enrollment {
   return {
     id: row.id,
     teamId: row.team_id,
@@ -88,14 +88,6 @@ export async function getTeam(
     .bind(id)
     .first<TeamRow>();
   return row ? teamRow(row) : null;
-}
-
-export async function listTeams(db: D1Database): Promise<Team[]> {
-  await ensureSchema(db);
-  const { results } = await db
-    .prepare("SELECT * FROM teams ORDER BY name")
-    .all<TeamRow>();
-  return results.map(teamRow);
 }
 
 export async function listSeasons(
@@ -314,18 +306,6 @@ export async function enrol(
     squad: input.squad,
     status: input.status ?? "active",
   };
-}
-
-export async function unenrol(
-  db: D1Database,
-  seasonId: string,
-  athleteId: string,
-): Promise<void> {
-  await ensureSchema(db);
-  await db
-    .prepare("DELETE FROM enrollments WHERE season_id = ? AND athlete_id = ?")
-    .bind(seasonId, athleteId)
-    .run();
 }
 
 /**

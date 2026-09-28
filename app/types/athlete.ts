@@ -30,7 +30,7 @@ export function ageOn(
   }
   return age >= 0 ? age : null;
 }
-export function parseIsoDate(
+function parseIsoDate(
   value: string | undefined,
 ): { year: number; month: number; day: number } | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? "");

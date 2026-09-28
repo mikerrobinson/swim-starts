@@ -154,6 +154,3 @@ export async function ensureSchema(db: D1Database): Promise<void> {
   for (const statement of SCHEMA) await db.prepare(statement).run();
   ready = true;
 }
-
-/** For tests and scripts that want the statements without the memoisation. */
-export const SCHEMA_STATEMENTS = SCHEMA;

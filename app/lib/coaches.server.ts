@@ -38,7 +38,7 @@ const SCHEMA = [
 
 let ready = false;
 
-export async function ensureCoachStore(db: D1Database): Promise<void> {
+async function ensureCoachStore(db: D1Database): Promise<void> {
   if (ready) return;
   for (const statement of SCHEMA) await db.prepare(statement).run();
   await adoptMemberships(db);
@@ -55,7 +55,9 @@ export async function ensureCoachStore(db: D1Database): Promise<void> {
  */
 async function adoptMemberships(db: D1Database): Promise<void> {
   const old = await db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memberships'")
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memberships'",
+    )
     .first<{ name: string }>();
   if (!old) return;
 
@@ -78,7 +80,9 @@ export async function isTeamCoach(
   if (!userId) return false;
   await ensureCoachStore(db);
   const row = await db
-    .prepare("SELECT 1 AS ok FROM team_coaches WHERE team_id = ? AND user_id = ?")
+    .prepare(
+      "SELECT 1 AS ok FROM team_coaches WHERE team_id = ? AND user_id = ?",
+    )
     .bind(teamId, userId)
     .first<{ ok: number }>();
   return row !== null;
@@ -92,7 +96,9 @@ export async function teamsCoachedBy(
   if (!userId) return [];
   await ensureCoachStore(db);
   const { results } = await db
-    .prepare("SELECT team_id FROM team_coaches WHERE user_id = ? ORDER BY added_at")
+    .prepare(
+      "SELECT team_id FROM team_coaches WHERE user_id = ? ORDER BY added_at",
+    )
     .bind(userId)
     .all<{ team_id: string }>();
   return results.map((row) => row.team_id);

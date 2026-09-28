@@ -14,7 +14,6 @@
  * for why that GET is allowed to mutate.
  */
 
-import { A_WEEK } from "./cookies";
 import {
   encodeSeedRecord,
   parseSeedCookieName,
@@ -38,6 +37,7 @@ export interface QueueState {
  * write checks what it would add on top of that.
  */
 const MAX_TOTAL_BYTES = 3000;
+const A_WEEK = 60 * 60 * 24 * 7;
 
 let overflow = false;
 

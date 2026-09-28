@@ -29,7 +29,7 @@ import {
 } from "~/lib/timing";
 
 import { formatClock, formatTime, parseTime } from "~/lib/time";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { canEditMeet, canRecordTime, type MeetFacts } from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
@@ -42,7 +42,7 @@ import {
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
 import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import { useUser, useDeviceId } from "~/state/user";
 import { useViewPrefs } from "~/state/view-prefs";
 import {
@@ -111,8 +111,7 @@ async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
  * shows comes from `useMeet()`'s `MeetManifest` in the component below.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const meet = await getMeet(db, meetId);
   const rosterEntries = meet ? await meetRoster(db, meet) : [];
@@ -149,11 +148,10 @@ export function shouldRevalidate({
  * of a racing team, or the administrator.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const [rawUser, meet] = await Promise.all([
-    currentUser(request, env as SyncEnv),
+    currentUser(request, db),
     getMeet(db, meetId),
   ]);
   if (!meet) throw new Response("No such meet", { status: 404 });
@@ -167,7 +165,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
-  const stub = env.MEET_DO.getByName(meetId);
+  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
 
   if (intent === "upsert-swim") {
     const swim = JSON.parse(String(form.get("swim"))) as Swim;

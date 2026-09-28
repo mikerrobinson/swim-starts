@@ -1,11 +1,5 @@
 import type { Route } from "./+types/api.users";
-import {
-  errorResponse,
-  json,
-  requireDb,
-  requireUser,
-  type SyncEnv,
-} from "~/lib/api.server";
+import { errorResponse, json, requireUser } from "~/lib/api.server";
 import { searchUsers } from "~/lib/auth.server";
 
 /**
@@ -23,10 +17,9 @@ import { searchUsers } from "~/lib/auth.server";
  * team — see `searchUsers` for why that forces the wider list.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
   try {
-    const db = requireDb(env);
-    await requireUser(request, env);
+    const db = context.cloudflare.env.DB;
+    await requireUser(request, db);
 
     const q = new URL(request.url).searchParams.get("q") ?? "";
     return json({ users: await searchUsers(db, q) });

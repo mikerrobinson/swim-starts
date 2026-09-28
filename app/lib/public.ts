@@ -20,17 +20,8 @@
  * depend on which route is asking.
  */
 
-import { swimsComplete, swimTime, type SwimTime } from "./timing";
-import { athleteName, eventName, getEventSwims, isDiving } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
-import type {
-  Meet,
-  MeetCourse,
-  MeetDetail,
-  MeetType,
-  ResultStatus,
-  Swim,
-} from "~/types/meet";
+import type { Meet, MeetCourse, MeetType, ResultStatus } from "~/types/meet";
 import type { Team } from "~/types/team";
 
 /* ------------------------------------------------------------------ people */
@@ -55,10 +46,6 @@ export function publicAthlete(athlete: Athlete): PublicAthlete {
     lastName: athlete.lastName,
     gender: athlete.gender,
   };
-}
-
-export function publicAthletes(athletes: Athlete[]): PublicAthlete[] {
-  return athletes.map(publicAthlete);
 }
 
 /* ------------------------------------------------------------------- teams */
@@ -133,140 +120,6 @@ export function meetSummary(
   };
 }
 
-/** One swim, as it would be read out: a place, a name, a time. */
-export interface PublicPlacing {
-  place: number | null;
-  athlete: PublicAthlete | null;
-  /** The team they were racing for, worked out from their enrollment. */
-  team: TeamRef | null;
-  lane: number;
-  heat: number;
-  timeMs: number;
-  status: ResultStatus;
-  /** How the time was arrived at — "median of three", and so on. */
-  watchCount: number;
-  /**
-   * Signed off by whoever is running the meet. Until then these numbers are
-   * what the watches worked out, and the meet isn't official.
-   */
-  final: boolean;
-  /** Swum outside the competition: a real time, but no place and no points. */
-  exhibition: boolean;
-}
-
-export interface PublicEventResults {
-  id: string;
-  name: string;
-  distance: number;
-  stroke: string;
-  gender: string;
-  /** Absent for diving, which holds its place in the order but isn't timed. */
-  placings: PublicPlacing[];
-  /**
-   * Every lane that swam has been signed off, so these results are official.
-   * Derived from the acceptances rather than stored, so it can't disagree with
-   * them.
-   */
-  official: boolean;
-}
-
-export interface PublicMeetDetail extends PublicMeetSummary {
-  results: PublicEventResults[];
-}
-
-/**
- * Four groups, in the order a results sheet reads them: swims that count,
- * fastest first; exhibition swims — real times, but never a place — also
- * fastest first, below every swim that counts; then DQs and no-shows, which
- * have no time to rank by, so sorted by name instead. Not for lack of an
- * order to put them in — it's so the page doesn't reshuffle two of them on
- * every reload.
- */
-function resultGroup(row: {
-  status: ResultStatus;
-  seed: Pick<Swim, "exhibition">;
-}): 0 | 1 | 2 | 3 {
-  if (row.status === "DQ") return 2;
-  if (row.status !== "OK") return 3;
-  return row.seed.exhibition ? 1 : 0;
-}
-
-/**
- * A meet's results, event by event, ranked across all of its heats.
- *
- * Ranking ignores heat: a slower heat can hold the fastest swim, and the
- * printed sheet has always been ordered by time rather than by when it was
- * swum. DQs and no-shows keep their line and lose their place, because
- * "who was disqualified" is part of the record.
- */
-export function meetResults(
-  detail: MeetDetail,
-  teamOf: (athleteId: string) => TeamRef | null,
-): PublicEventResults[] {
-  const byId = new Map(detail.athletes.map((a) => [a.id, a] as const));
-
-  /**
-   * Every swim that has a time, signed off or not.
-   *
-   * A seed with nothing against it is somebody who was in a lane and whose
-   * time never arrived — a hole rather than a result, and not something to
-   * publish a blank line for.
-   */
-  const swims = detail.swims
-    .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
-    .filter((row): row is { seed: Swim; time: SwimTime } => row.time !== null);
-
-  return detail.events.map((event) => {
-    const forEvent = swims
-      .filter(({ seed }) => seed.eventId === event.id)
-      .map(({ seed, time }) => ({ ...time, seed, athleteId: seed.athleteId }))
-      .sort((a, b) => {
-        const ga = resultGroup(a);
-        const gb = resultGroup(b);
-        if (ga !== gb) return ga - gb;
-        if (ga <= 1) return a.timeMs - b.timeMs;
-
-        const nameOf = (row: typeof a) => {
-          const athlete = byId.get(row.athleteId);
-          return athlete ? athleteName(athlete) : "";
-        };
-        return nameOf(a).localeCompare(nameOf(b));
-      });
-
-    let place = 0;
-    const placings: PublicPlacing[] = forEvent.map((row) => {
-      const athlete = byId.get(row.athleteId);
-      // An exhibition swim keeps its line, ranked by time same as any other,
-      // but takes no place — the swim behind it moves up to the one it would
-      // have held had the exhibition swim not been entered.
-      const ranked = row.status === "OK" && !row.seed.exhibition;
-      return {
-        place: ranked ? ++place : null,
-        athlete: athlete ? publicAthlete(athlete) : null,
-        team: teamOf(row.athleteId),
-        lane: row.seed.lane,
-        heat: row.seed.heat,
-        timeMs: row.timeMs,
-        status: row.status,
-        final: row.official,
-        exhibition: row.seed.exhibition === true,
-      };
-    });
-
-    return {
-      id: event.id,
-      name: eventName(event),
-      distance: event.distance,
-      stroke: event.stroke,
-      gender: event.gender,
-      placings: isDiving(event) ? [] : placings,
-      official: isDiving(event)
-        ? false
-        : swimsComplete(detail.swims.filter((s) => s.eventId === event.id)),
-    };
-  });
-}
-
 /* ---------------------------------------------------------------- athletes */
 
 /** One swim on an athlete's own page. */
@@ -286,84 +139,4 @@ export interface AthleteSwim {
   best: boolean;
   /** Swum outside the competition: a real time, but no place and no points. */
   exhibition: boolean;
-}
-
-export interface PublicAthleteDetail extends PublicAthlete {
-  teams: Array<TeamRef & { seasons: string[] }>;
-  swims: AthleteSwim[];
-}
-
-/**
- * Everything one person has swum, newest first, with their best marked.
- *
- * "Best" is per race *and* course: a 100 Free in a 25-yard pool and one in a
- * 50-metre pool are not the same swim, and calling either a personal best over
- * the other would be wrong in a way a swimmer would notice immediately.
- */
-export function athleteSwims(
-  athleteId: string,
-  meets: MeetDetail[],
-): AthleteSwim[] {
-  const swims: AthleteSwim[] = [];
-
-  for (const detail of meets) {
-    const meet = detail.meet;
-    const events = new Map(detail.events.map((e) => [e.id, e] as const));
-    const all = detail.swims
-      .map((seed) => ({ seed, time: swimTime(detail, seed.id) }))
-      .filter(
-        (row): row is { seed: Swim; time: SwimTime } => row.time !== null,
-      );
-
-    for (const { seed, time } of all) {
-      if (seed.athleteId !== athleteId) continue;
-      const event = events.get(seed.eventId);
-      if (!event || isDiving(event)) continue;
-
-      // Place is scored across the whole event, not within a heat — and an
-      // exhibition swim, this one included, never has one.
-      const ranked = all
-        .filter(
-          (r) =>
-            r.seed.eventId === event.id &&
-            r.time.status === "OK" &&
-            !r.seed.exhibition,
-        )
-        .sort((a, b) => a.time.timeMs - b.time.timeMs);
-      const at = ranked.findIndex((r) => r.seed.id === seed.id);
-      const result = { ...time, lane: seed.lane };
-
-      swims.push({
-        place: at >= 0 ? at + 1 : null,
-        meetId: meet.id,
-        meetName: meet.name,
-        date: meet.date,
-        course: meet.course,
-        eventName: eventName(event),
-        raceKey: `${event.distance}|${event.stroke}|${meet.course}`,
-        timeMs: result.timeMs,
-        status: result.status,
-        best: false,
-        exhibition: seed.exhibition === true,
-      });
-    }
-  }
-
-  const fastest = new Map<string, number>();
-  for (const swim of swims) {
-    if (swim.status !== "OK") continue;
-    const current = fastest.get(swim.raceKey);
-    if (current === undefined || swim.timeMs < current) {
-      fastest.set(swim.raceKey, swim.timeMs);
-    }
-  }
-  for (const swim of swims) {
-    swim.best =
-      swim.status === "OK" && fastest.get(swim.raceKey) === swim.timeMs;
-  }
-
-  return swims.sort(
-    (a, b) =>
-      b.date.localeCompare(a.date) || a.eventName.localeCompare(b.eventName),
-  );
 }

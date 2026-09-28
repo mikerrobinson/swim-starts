@@ -1,6 +1,5 @@
 import { data, redirect } from "react-router";
 import type { Route } from "./+types/timer-claim";
-import { requireDb, type SyncEnv } from "~/lib/api.server";
 import { deviceCookie, deviceId } from "~/lib/device.server";
 import { grantCookie } from "~/lib/grants.server";
 import { grantFor } from "~/lib/grants.server";
@@ -14,8 +13,7 @@ import { timerPath } from "~/lib/timer";
  * meet's lane picker — `/meets/{meetId}/timer`.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const grant = await grantFor(db, params.token);
 
   /**

@@ -42,33 +42,6 @@ export async function getAthlete(
   return row ? athleteRow(row) : null;
 }
 
-export async function listAthletes(
-  db: D1Database,
-  options: { search?: string; limit?: number } = {},
-): Promise<Athlete[]> {
-  await ensureSchema(db);
-  const limit = Math.min(options.limit ?? 200, 500);
-  const search = options.search?.trim();
-
-  const { results } = search
-    ? await db
-        .prepare(
-          `SELECT * FROM athletes
-           WHERE last_name LIKE ?1 OR first_name LIKE ?1
-           ORDER BY last_name, first_name LIMIT ?2`,
-        )
-        .bind(`%${search}%`, limit)
-        .all<AthleteRow>()
-    : await db
-        .prepare(
-          "SELECT * FROM athletes ORDER BY last_name, first_name LIMIT ?",
-        )
-        .bind(limit)
-        .all<AthleteRow>();
-
-  return results.map(athleteRow);
-}
-
 /** The roster entry an account is, if a coach has linked one. */
 export async function athleteForUser(
   db: D1Database,

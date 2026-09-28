@@ -115,7 +115,7 @@ const SCHEMA = [
 
 let ready = false;
 
-export async function ensureAuthStore(db: D1Database): Promise<void> {
+async function ensureAuthStore(db: D1Database): Promise<void> {
   if (ready) return;
   for (const statement of SCHEMA) await db.prepare(statement).run();
   ready = true;
@@ -319,16 +319,6 @@ export async function verifyChallenge(
     .run();
 
   return { ok: true, user, isNew: true };
-}
-
-/** Sweep expired codes and sessions. Cheap, and called on sign-in. */
-export async function tidy(db: D1Database, now = Date.now()): Promise<void> {
-  await ensureAuthStore(db);
-  await db
-    .prepare("DELETE FROM login_codes WHERE created_at < ?")
-    .bind(now - CODE_TTL_MS)
-    .run();
-  await db.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(now).run();
 }
 
 /* ---------------------------------------------------------------- sessions */
@@ -559,7 +549,7 @@ export async function userForToken(
 
 /** The bearer token on a request, from the header the client sends. */
 /** The cookie a browser sends on its own, including on a plain navigation. */
-export const SESSION_COOKIE = "mr_session";
+const SESSION_COOKIE = "mr_session";
 
 /**
  * The session token on a request, from either place it can be.
@@ -587,7 +577,7 @@ export function bearerToken(request: Request): string | null {
   return cookieToken(request);
 }
 
-export function cookieToken(request: Request): string | null {
+function cookieToken(request: Request): string | null {
   const jar = request.headers.get("cookie");
   if (!jar) return null;
   for (const part of jar.split(";")) {
@@ -652,28 +642,6 @@ export async function setName(
   await db
     .prepare("UPDATE users SET name = ? WHERE id = ?")
     .bind(trimmed || null, userId)
-    .run();
-}
-
-/**
- * Remember where someone was.
- *
- * On the user rather than the device, so signing in on the phone at the pool
- * opens the same team and season the laptop was left on — and off the team
- * document, which is shared and has no business carrying one person's view.
- */
-export async function setLastPlace(
-  db: D1Database,
-  userId: string,
-  teamId: string,
-  seasonId: string | null,
-): Promise<void> {
-  await ensureAuthStore(db);
-  await db
-    .prepare(
-      "UPDATE users SET last_team_id = ?, last_season_id = ? WHERE id = ?",
-    )
-    .bind(teamId, seasonId, userId)
     .run();
 }
 
@@ -751,34 +719,6 @@ export interface JoinableTeam extends TeamFacts {
   teamId: string;
   /** False when nobody coaches it yet — which is what makes it claimable. */
   claimed: boolean;
-}
-
-/**
- * Teams somebody could take on.
- *
- * Names and sizes only. That's deliberately more than nothing — you have to be
- * able to recognise your own school in the list — and deliberately not the
- * roster. The unclaimed ones are the point: every team an opponent typed in
- * during meet setup is sitting here waiting for the coach it belongs to.
- */
-export async function joinableTeams(
-  db: D1Database,
-  userId: string,
-): Promise<JoinableTeam[]> {
-  const [facts, claimed, mine] = await Promise.all([
-    teamFacts(db),
-    coachedTeams(db),
-    teamsCoachedBy(db, userId),
-  ]);
-
-  return [...facts.entries()]
-    .filter(([teamId]) => !mine.includes(teamId))
-    .map(([teamId, fact]) => ({
-      teamId,
-      ...fact,
-      claimed: claimed.has(teamId),
-    }))
-    .sort((a, b) => b.athletes - a.athletes || a.name.localeCompare(b.name));
 }
 
 /**
@@ -1005,8 +945,6 @@ export interface SessionPayload {
   teams: CoachedTeam[];
   /** Which team to open. Null means there's nothing this person can open yet. */
   openTeamId: string | null;
-  /** Teams to offer, and only when there's no team to open. */
-  joinable: JoinableTeam[];
 }
 
 /**
@@ -1047,7 +985,6 @@ export async function sessionPayload(
     },
     teams,
     openTeamId,
-    joinable: openTeamId ? [] : await joinableTeams(db, user.id),
   };
 }
 

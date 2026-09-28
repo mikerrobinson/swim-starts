@@ -35,7 +35,7 @@ import {
   clearSeedCookies,
   resolveTimerAccess,
 } from "~/lib/timer-request.server";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import { useDeviceId } from "~/state/user";
 
 /**
@@ -51,7 +51,11 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const env = context.cloudflare.env;
   const headers = new Headers();
 
-  const resolved = await resolveTimerAccess(request, env, meetId);
+  const resolved = await resolveTimerAccess(
+    request,
+    context.cloudflare.env.DB,
+    meetId,
+  );
   if (!resolved.ok) {
     return data({ error: resolved.error }, { status: 400, headers });
   }

@@ -8,7 +8,7 @@ import {
 import type { Route } from "./+types/entries";
 import { Button, EmptyState, TextInput } from "~/components/ui";
 import { whyNotEnter } from "~/lib/events";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import {
   canEditMeet,
   canEnter,
@@ -25,7 +25,7 @@ import {
   type RosterEntry,
 } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
-import { useMeet } from "./meet-layout";
+import { useMeet } from "~/hooks/useMeet";
 import { useViewPrefs } from "~/state/view-prefs";
 import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
 import {
@@ -37,7 +37,7 @@ import {
   type Event,
   type Stroke,
 } from "~/types/meet";
-import type { Meet } from "~/types/meet";
+import type { Entry, Meet } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
@@ -90,12 +90,11 @@ export const handle: MeetRouteHandle = {
  * the Durable Object's, same reasoning as `meet-info.tsx`'s `teams` read.
  */
 export async function loader({ params, request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
 
   const [user, meet] = await Promise.all([
-    currentUser(request, env),
+    currentUser(request, db),
     getMeet(db, meetId),
   ]);
   const userId = user?.id ?? null;
@@ -152,11 +151,10 @@ export function shouldRevalidate({
  * client's own read of either.
  */
 export async function action({ params, request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env;
-  const db = requireDb(env as SyncEnv);
+  const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const [user, meet] = await Promise.all([
-    currentUser(request, env as SyncEnv),
+    currentUser(request, db),
     getMeet(db, meetId),
   ]);
   if (!meet) throw new Response("No such meet", { status: 404 });
@@ -166,7 +164,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const athleteId = String(form.get("athleteId") ?? "");
   const entering = form.get("entering") === "true";
 
-  const stub = env.MEET_DO.getByName(meetId);
+  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
   const result = await stub.declareEntry(
     { meetId, eventId, athleteId, entering },
     meet,
@@ -195,6 +193,7 @@ export async function clientAction({
   const form = await request.clone().formData();
   const eventId = String(form.get("eventId") ?? "");
   const athleteId = String(form.get("athleteId") ?? "");
+  const teamId = String(form.get("teamId") ?? "");
   const entering = form.get("entering") === "true";
   // Set by the component from `useUser()` — see `toggle` below. Only for
   // this optimistic patch's own accuracy; the server never trusts it,
@@ -206,9 +205,9 @@ export async function clientAction({
     {
       type: "ENTRY",
       entry: {
-        id: "",
         eventId,
         athleteId,
+        teamId,
         exhibition: false,
         enteredAt: Date.now(),
         enteredBy,
@@ -310,9 +309,9 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   /** `useMeet().entries` (`Record<EntryKey, Entry>`) regrouped by event —
    *  the shape `whyNotEnter`/the counts below already expect. */
   const entriesByEvent = useMemo(() => {
-    const grouped: Record<string, string[]> = {};
+    const grouped: Record<string, Entry[]> = {};
     for (const entry of Object.values(meet.entries)) {
-      (grouped[entry.eventId] ??= []).push(entry.athleteId);
+      (grouped[entry.eventId] ??= []).push(entry);
     }
     return grouped;
   }, [meet.entries]);
@@ -399,8 +398,9 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
 
   const perAthlete = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const ids of Object.values(entriesByEvent)) {
-      for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+    for (const entries of Object.values(entriesByEvent)) {
+      for (const entry of entries)
+        counts.set(entry.athleteId, (counts.get(entry.athleteId) ?? 0) + 1);
     }
     return counts;
   }, [entriesByEvent]);
@@ -426,8 +426,9 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const rosterIds = new Set(roster.map((a) => a.id));
   const entryCount = (event?: Event) =>
     event
-      ? (entriesByEvent[event.id] ?? []).filter((id) => rosterIds.has(id))
-          .length
+      ? (entriesByEvent[event.id] ?? []).filter((event) =>
+          rosterIds.has(event.athleteId),
+        ).length
       : 0;
 
   /** What the limit checks read. Assembled once rather than per cell. */
@@ -459,10 +460,16 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
    * than a page transition, so tapping ten cells in a row doesn't queue ten
    * history entries.
    */
-  const toggle = (eventId: string, athleteId: string, entering: boolean) => {
+  const toggle = (
+    eventId: string,
+    athleteId: string,
+    teamId: string,
+    entering: boolean,
+  ) => {
     const form = new FormData();
     form.set("eventId", eventId);
     form.set("athleteId", athleteId);
+    form.set("teamId");
     form.set("entering", String(entering));
     // For `clientAction`'s optimistic patch only — see its doc comment.
     form.set("enteredBy", userId ?? "");
@@ -642,7 +649,8 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                           // refusing.
                           title={blocked ?? undefined}
                           onClick={() =>
-                            event && toggle(event.id, athlete.id, !isIn)
+                            event &&
+                            toggle(event.id, athlete.id, athlete.teamId, !isIn)
                           }
                           className={`flex h-12 w-full touch-manipulation items-center justify-center text-xl font-bold transition-colors ${
                             event === undefined

@@ -9,7 +9,7 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
-import { currentUser, type SyncEnv } from "./lib/api.server";
+import { currentUser } from "./lib/api.server";
 import { sessionPayload } from "./lib/auth.server";
 import { SIGNED_OUT } from "./state/session";
 import { deviceCookie, deviceId, existingDeviceId } from "./lib/device.server";
@@ -29,8 +29,8 @@ import "./app.css";
  * loaded), not a standing property of the person to carry around.
  */
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const user = env.DB ? await currentUser(request, env) : null;
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, context.cloudflare.env.DB);
   const device = deviceId(request);
 
   // Minted once, on whatever request happens to be first — every timer, and
@@ -42,8 +42,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
   // A phone with no cookie — every timer, and every first visit — costs
   // nothing here: there is no token to look up.
-  const session =
-    env.DB && user ? await sessionPayload(env.DB, user) : SIGNED_OUT;
+  const session = db && user ? await sessionPayload(db, user) : SIGNED_OUT;
 
   return data({ session, user, deviceId: device }, { headers });
 }

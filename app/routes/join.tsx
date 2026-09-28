@@ -9,7 +9,7 @@ import {
   SectionTitle,
   TextInput,
 } from "~/components/ui";
-import { currentUser, requireDb, type SyncEnv } from "~/lib/api.server";
+import { currentUser } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { APP_HOME } from "./home";
 import { describeContact } from "~/lib/identity";
@@ -28,9 +28,8 @@ export function meta({}: Route.MetaArgs) {
  * for. If nobody coaches it they can take it on from the list above.
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  const env = context.cloudflare.env as SyncEnv;
-  const db = requireDb(env);
-  const user = await currentUser(request, env);
+  const db = context.cloudflare.env.DB;
+  const user = await currentUser(request, db);
   if (!user) throw new Response("Sign in to start a team", { status: 403 });
 
   const name = String((await request.formData()).get("name") ?? "").trim();
@@ -117,10 +116,6 @@ export default function Join() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newTeam.state, newTeam.data]);
 
-  // Only the unclaimed ones can be acted on from here. A team with a coach is
-  // theirs to hand out, so it isn't offered.
-  const offered = session.joinable.filter((team) => !team.claimed);
-
   if (!session.user) {
     return (
       <main className="flex min-h-screen items-center justify-center text-slate-400">
@@ -157,52 +152,6 @@ export default function Join() {
       {carried && <Banner tone="warn">{carried}</Banner>}
       {(error ?? claimError ?? startError) && (
         <Banner tone="error">{error ?? claimError ?? startError}</Banner>
-      )}
-
-      {offered.length > 0 && (
-        <Card>
-          <SectionTitle
-            action={
-              <Button size="sm" onClick={() => void session.refresh()}>
-                Check again
-              </Button>
-            }
-          >
-            Teams nobody coaches
-          </SectionTitle>
-          <ul className="divide-y divide-slate-200 dark:divide-slate-800">
-            {offered.map((team) => (
-              <li
-                key={team.teamId}
-                className="flex items-center justify-between gap-3 py-3"
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-semibold">
-                    {team.name}
-                    {team.code && ` (${team.code})`}
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {team.athletes} athlete{team.athletes === 1 ? "" : "s"} ·{" "}
-                    {team.meets} meet{team.meets === 1 ? "" : "s"}
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  disabled={claiming.state !== "idle"}
-                  onClick={() => claim(team.teamId)}
-                >
-                  This is mine
-                </Button>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-            These are teams somebody raced without anyone from the school ever
-            signing in. Taking one on makes you its coach, and from then on
-            everyone else has to be added by a coach.
-          </p>
-        </Card>
       )}
 
       <Card>
