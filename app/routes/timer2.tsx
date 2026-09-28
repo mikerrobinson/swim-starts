@@ -31,8 +31,6 @@ export default function TimerLaneKiosk() {
   const swim = meet.swims[swimKey];
   const event = meet.events[eventId];
 
-  console.log(JSON.stringify(meet, null, 2));
-
   const nextHeat = getNextHeat(meet, eventId, heat);
   const previousHeat = getPreviousHeat(meet, eventId, heat);
 
@@ -77,7 +75,6 @@ export default function TimerLaneKiosk() {
     },
     [],
   );
-  console.log("=========", JSON.stringify(nextHeat, null, 2));
 
   return (
     <div className="flex h-dvh flex-col select-none touch-none overscroll-none p-4">

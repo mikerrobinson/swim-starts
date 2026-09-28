@@ -248,7 +248,6 @@ function LiveMeetSync({
       };
 
       socket.onmessage = (event) => {
-        console.log("GOT MESSAGE ", event.data);
         if (typeof event.data !== "string") return;
         let msg: LiveSocketMessage;
         try {
