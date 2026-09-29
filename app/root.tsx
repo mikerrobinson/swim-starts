@@ -16,19 +16,6 @@ import { deviceCookie, deviceId, existingDeviceId } from "./lib/device.server";
 import "./app.css";
 import { ViewPrefsProvider } from "./state/view-prefs";
 
-/**
- * The two facts read once here, from cookies, so no route below has to
- * re-derive them: who's signed in (`User | null`, `auth.server.ts`) and
- * which device this is — the identity a phone with nobody signed into it
- * still has, same cookie the timer workspace already used. `useUser()`/
- * `useDeviceId()` (`state/user.tsx`) are the client-side reads of what's
- * resolved here.
- *
- * Deliberately just those two. Whether someone may administer meet X, or
- * coaches team Y, is never resolved here — it's a fact about meet X or team
- * Y (`access.ts`'s predicates, checked against whatever the route already
- * loaded), not a standing property of the person to carry around.
- */
 export async function loader({ request, context }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
   const user = await currentUser(request, context.cloudflare.env.DB);
@@ -46,6 +33,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const session = db && user ? await sessionPayload(db, user) : SIGNED_OUT;
 
   return data({ session, user, deviceId: device }, { headers });
+}
+
+export function shouldRevalidate() {
+  return false;
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

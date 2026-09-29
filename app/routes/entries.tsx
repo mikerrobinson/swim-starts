@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
+  useRevalidator,
   useSearchParams,
   useSubmit,
   type ShouldRevalidateFunctionArgs,
@@ -17,7 +18,7 @@ import {
 } from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
-import { meetCache } from "~/lib/meetCache";
+import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
 import { useMeet } from "~/hooks/useMeet";
 import { useViewPrefs } from "~/state/view-prefs";
 import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
@@ -27,11 +28,13 @@ import {
   getSortedEvents,
   raceKey,
   shortStroke,
+  toEntryKey,
   type Event,
   type Stroke,
 } from "~/types/meet";
 import type { Entry } from "~/types/meet";
 import type { Athlete, Gender } from "~/types/athlete";
+import { cookieOutbox as outbox } from "~/lib/cookieOutbox";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Entries · Swim Starts" }];
@@ -112,9 +115,7 @@ export function shouldRevalidate({
   nextUrl,
   defaultShouldRevalidate,
 }: ShouldRevalidateFunctionArgs) {
-  return currentUrl.pathname === nextUrl.pathname
-    ? false
-    : defaultShouldRevalidate;
+  return currentUrl.pathname !== nextUrl.pathname || defaultShouldRevalidate;
 }
 
 /**
@@ -139,14 +140,14 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const entering = form.get("entering") === "true";
 
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
-  const result = await stub.declareEntry(
-    { meetId, eventId, athleteId, teamId, entering },
-    meet,
-    user?.id ?? null,
-  );
-  if (!result.ok) {
-    throw new Response(result.error, { status: result.status });
-  }
+  // const result = await stub.declareEntry(
+  //   { meetId, eventId, athleteId, teamId, entering },
+  //   meet,
+  //   user?.id ?? null,
+  // );
+  // if (!result.ok) {
+  //   throw new Response(result.error, { status: result.status });
+  // }
   return { ok: true };
 }
 
@@ -174,24 +175,28 @@ export async function clientAction({
   // deciding `entered_by` itself from the session (`declareEntry`).
   const enteredBy = String(form.get("enteredBy") ?? "");
 
-  meetCache.applyPatch(
-    meetId,
-    {
-      type: "ENTRY",
-      entry: {
-        eventId,
-        athleteId,
-        teamId,
-        exhibition: false,
-        enteredAt: Date.now(),
-        enteredBy,
-      },
-      isDelete: !entering,
+  const msg: LiveSocketMessage = {
+    type: "ENTRY",
+    entry: {
+      eventId,
+      athleteId,
+      teamId,
+      exhibition: false,
+      enteredAt: Date.now(),
+      enteredBy,
     },
-    () => {},
-  );
+    isDelete: !entering,
+  };
 
-  return serverAction();
+  meetCache.applyPatch(meetId, msg);
+
+  void outbox.enqueue(meetId, msg);
+  try {
+    return await serverAction();
+  } catch {
+    // Suppress network error so UI doesn't trip error boundaries while offline
+    return { ok: true };
+  }
 }
 
 /**
@@ -255,6 +260,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const meet = useMeet();
   const submit = useSubmit();
+  const revalidator = useRevalidator();
   const {
     viewPrefs: { nameOrder },
   } = useViewPrefs();
@@ -275,17 +281,12 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   const genderFilter: Gender | "all" =
     param === "f" ? "F" : param === "m" ? "M" : "all";
 
-  /** `useMeet().entries` (`Record<EntryKey, Entry>`) regrouped by event —
-   *  the shape `whyNotEnter`/the counts below already expect. */
-  const entriesByEvent = useMemo(() => {
-    const grouped: Record<string, Entry[]> = {};
-    for (const entry of Object.values(meet.entries)) {
-      (grouped[entry.eventId] ??= []).push(entry);
-    }
-    return grouped;
-  }, [meet.entries]);
+  const entriesByEvent: Record<string, Entry[]> = {};
+  for (const entry of Object.values(meet.entries)) {
+    (entriesByEvent[entry.eventId] ??= []).push(entry);
+  }
 
-  const meetEvents = useMemo(() => getSortedEvents(meet), [meet]);
+  const meetEvents = getSortedEvents(meet);
 
   /**
    * Everyone enterable in this meet, before the screen's own filters.
@@ -302,24 +303,22 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
    * the meet's entries to the public — narrowing their view by team would
    * take away exactly the transparency that setting grants.
    */
-  const roster = useMemo(() => {
-    const all = Object.values(meet.athletes);
-    return !isAdmin && myRacingTeams.length > 0
-      ? all.filter((a) => myRacingTeams.includes(a.teamId))
-      : all;
-  }, [meet.athletes, isAdmin, myRacingTeams]);
+  const roster =
+    !isAdmin && myRacingTeams.length > 0
+      ? Object.values(meet.athletes).filter((a) =>
+          myRacingTeams.includes(a.teamId),
+        )
+      : Object.values(meet.athletes);
 
-  const swimmers = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return roster
-      .filter((s) => genderFilter === "all" || s.gender === genderFilter)
-      .filter(
-        (s) =>
-          !query ||
-          `${s.firstName} ${s.lastName}`.toLowerCase().includes(query),
-      )
-      .sort(byAthlete(nameOrder));
-  }, [roster, genderFilter, search, nameOrder]);
+  const query = search.trim().toLowerCase();
+
+  const swimmers = roster
+    .filter((s) => genderFilter === "all" || s.gender === genderFilter)
+    .filter(
+      (s) =>
+        !query || `${s.firstName} ${s.lastName}`.toLowerCase().includes(query),
+    )
+    .sort(byAthlete(nameOrder));
 
   // Changing the filter changes which rows exist. Holding the old scroll
   // offset would leave you looking at an arbitrary slice of the new list
@@ -331,37 +330,26 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   }, [genderFilter]);
 
   /** Collapse the lineup into races, keeping the order they're first swum in. */
-  const races = useMemo(() => {
-    const byKey = new Map<string, Race>();
-    meetEvents.forEach((event, index) => {
-      const key = raceKey(event);
-      let race = byKey.get(key);
-      if (!race) {
-        race = {
-          key,
-          distance: event.distance,
-          stroke: event.stroke,
-          numbers: [],
-        };
-        byKey.set(key, race);
-      }
-      race.numbers.push(index + 1);
-      // First one wins, so a lineup with accidental duplicates stays sane.
-      if (event.gender === "F") race.girls ??= event;
-      else if (event.gender === "M") race.boys ??= event;
-      else race.open ??= event;
-    });
-    return [...byKey.values()];
-  }, [meetEvents]);
-
-  /** Registration lookup as a set of "eventId|athleteId" keys. */
-  const registered = useMemo(() => {
-    const keys = new Set<string>();
-    for (const [eventId, ids] of Object.entries(entriesByEvent)) {
-      for (const id of ids) keys.add(`${eventId}|${id}`);
+  const byKey = new Map<string, Race>();
+  meetEvents.forEach((event, index) => {
+    const key = raceKey(event);
+    let race = byKey.get(key);
+    if (!race) {
+      race = {
+        key,
+        distance: event.distance,
+        stroke: event.stroke,
+        numbers: [],
+      };
+      byKey.set(key, race);
     }
-    return keys;
-  }, [entriesByEvent]);
+    race.numbers.push(index + 1);
+    // First one wins, so a lineup with accidental duplicates stays sane.
+    if (event.gender === "F") race.girls ??= event;
+    else if (event.gender === "M") race.boys ??= event;
+    else race.open ??= event;
+  });
+  const races = [...byKey.values()];
 
   const perAthlete = useMemo(() => {
     const counts = new Map<string, number>();
@@ -421,13 +409,14 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   };
 
   /**
-   * One tap, one row, submitted. The tick moves immediately —
-   * `clientAction` above patches the cache before the request even leaves —
+   * One tap, one row, submitted. The tick moves immediately — this patches
+   * the cache and forces a revalidation before the request even leaves —
    * and `submit`'s `navigate: false` keeps this a background write rather
    * than a page transition, so tapping ten cells in a row doesn't queue ten
    * history entries.
    */
   const toggle = (
+    meetId: string,
     eventId: string,
     athleteId: string,
     teamId: string,
@@ -439,6 +428,29 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
     form.set("teamId", teamId);
     form.set("entering", String(entering));
     form.set("enteredBy", userId ?? "");
+
+    // const entry = {
+    //   eventId,
+    //   athleteId,
+    //   teamId,
+    //   exhibition: false,
+    //   enteredAt: Date.now(),
+    //   enteredBy: userId || "",
+    // };
+
+    // meetCache.applyPatch(
+    //   meetId,
+    //   {
+    //     type: "ENTRY",
+    //     entry,
+    //     isDelete: !entering,
+    //   },
+    //   {
+    //     onRevalidate: () => revalidator.revalidate(),
+    //     immediate: true,
+    //   },
+    // );
+
     submit(form, { method: "post", navigate: false });
   };
 
@@ -582,7 +594,15 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                     const event = eventFor(race, athlete);
                     const isIn =
                       event !== undefined &&
-                      registered.has(`${event.id}|${athlete.id}`);
+                      meet.entries[
+                        toEntryKey({
+                          eventId: event?.id,
+                          athleteId: athlete.id,
+                        })
+                      ] != null;
+                    // const isIn =
+                    //   event !== undefined &&
+                    //   registered.has(`${event.id}|${athlete.id}`);
                     // Who may change this cell is a per-swimmer question: an
                     // administrator may change any, a coach only their own
                     // team's, a swimmer only their own and only when the meet
@@ -613,7 +633,13 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                           title={blocked ?? undefined}
                           onClick={() =>
                             event &&
-                            toggle(event.id, athlete.id, athlete.teamId, !isIn)
+                            toggle(
+                              meet.id,
+                              event.id,
+                              athlete.id,
+                              athlete.teamId,
+                              !isIn,
+                            )
                           }
                           className={`flex h-12 w-full touch-manipulation items-center justify-center text-xl font-bold transition-colors ${
                             event === undefined

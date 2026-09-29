@@ -1,6 +1,7 @@
 import type { Route } from "./+types/meet-layout";
 
 import {
+  data,
   NavLink,
   Outlet,
   useLoaderData,
@@ -8,7 +9,6 @@ import {
   useMatches,
   useNavigation,
   useRevalidator,
-  useRouteLoaderData,
 } from "react-router";
 import { useEffect, useState } from "react";
 import { getMeet } from "~/lib/meets.server";
@@ -17,21 +17,51 @@ import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
 import { AccountMenu } from "~/components/AccountMenu";
 import { HeaderToggles } from "~/components/HeaderToggles";
 import type { MeetRouteHandle } from "~/lib/route-handle";
-import { meetSubtitle, type MeetManifest } from "~/types/meet";
+import { meetSubtitle } from "~/types/meet";
+import { drainOutboxCookies } from "~/lib/cookieDrain.server";
+import { currentUser } from "~/lib/api.server";
 
-export async function loader({ params, context }: Route.LoaderArgs) {
+export async function loader({ params, context, request }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
+  const user = await currentUser(request, db);
 
+  console.log("SERVER LOADER meet-layout", Date.now());
   const [meetFacts] = await Promise.all([getMeet(db, meetId)]);
   if (!meetFacts) throw new Response("Meet Not Found", { status: 404 });
 
   if (meetFacts.status === "complete") {
     return { meet: await readResultsManifest(meetId, db) };
   }
-
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
-  return { meet: await stub.getMeetManifest(meetId) };
+
+  const { mutations, clearHeaders } = drainOutboxCookies(request, meetId);
+  // if (mutations.length > 0) {
+  //   await stub.batchProcessMutations(mutations);
+  // }
+
+  if (mutations.length > 0 && mutations.some((m) => m.type === "ENTRY")) {
+    const meet = await getMeet(db, meetId);
+    if (meet) {
+      for (const mutation of mutations) {
+        if (mutation.type === "ENTRY") {
+          const eventId = mutation.entry.eventId;
+          const athleteId = mutation.entry.athleteId;
+          const teamId = mutation.entry.teamId;
+          const entering = !mutation.isDelete;
+          const result = await stub.declareEntry(
+            { meetId, eventId, athleteId, teamId, entering },
+            meet,
+            user?.id ?? null,
+          );
+        }
+      }
+    }
+  }
+  return data(
+    { meet: await stub.getMeetManifest(meetId) },
+    { headers: clearHeaders },
+  );
 }
 
 export async function clientLoader({
@@ -41,15 +71,29 @@ export async function clientLoader({
   const meetId = params.meetId!;
   const cached = meetCache.getMeet(meetId);
 
+  console.log("meet-layout CLIENTLOADER");
+
+  // 1. If we have local memory AND it's not marked stale, return immediately (0ms)
+  if (cached && !meetCache.isStale(meetId)) {
+    console.log("RETURNING CACHED VERSION");
+    return { meet: cached };
+  }
+
+  // 2. Stale while revalidate
   if (cached) {
+    console.log("stale while revalidate");
+
     serverLoader()
       .then((fresh) => {
+        console.log("GOT meet-layout serverLoader response");
         meetCache.saveMeet(meetId, fresh.meet);
       })
       .catch(() => {});
     return { meet: cached };
   }
 
+  console.log("no cache");
+  // 3. No cache - need to await server
   const fresh = await serverLoader();
   meetCache.saveMeet(meetId, fresh.meet);
   return fresh;
@@ -247,6 +291,9 @@ function LiveMeetSync({
 
       socket.onopen = () => {
         reconnectAttempt = 0;
+        // if (meetCache.isStale(meetId)) {
+        //   revalidator.revalidate();
+        // }
         onConnectedChange(true);
       };
 
@@ -258,13 +305,20 @@ function LiveMeetSync({
         } catch {
           return; // Not something we sent; not something we can apply.
         }
-        meetCache.applyPatch(meetId, msg, () => revalidator.revalidate());
+        meetCache.applyPatch(meetId, msg, {
+          onRevalidate: () => revalidator.revalidate(),
+        });
       };
+
+      // socket.onerror = () => {
+      //   meetCache.markStale(meetId);
+      // };
 
       socket.onclose = () => {
         // A reconnect already in flight replaced `ws` with a newer socket
         // before this one's own close event caught up — its retry is the
         // one that should run, not a second one from this stale handler.
+        meetCache.markStale(meetId);
         if (stopped || ws !== socket) return;
         onConnectedChange(false);
         const delay =

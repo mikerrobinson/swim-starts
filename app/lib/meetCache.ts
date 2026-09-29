@@ -41,9 +41,20 @@ export type LiveSocketMessage =
       events: Event[];
     };
 
+interface CacheEntry {
+  manifest: MeetManifest;
+  lastSyncedAt: number;
+  isExplicitlyStale: boolean;
+}
+
+interface PatchOptions {
+  onRevalidate?: () => void;
+  immediate?: boolean; // Defaults to false (batched). Set to true for local client updates
+}
+
 class MeetCacheManager {
   // In-memory heap cache of deserialized manifests
-  private meets = new Map<string, MeetManifest>();
+  private meets = new Map<string, CacheEntry>();
 
   // Coalescing queue for high-frequency bursts
   private isRevalidationPending = false;
@@ -51,27 +62,33 @@ class MeetCacheManager {
   private revalidateTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingCallback: (() => void) | null = null;
 
+  private readonly STALE_TTL_MS = 60 * 1000;
+
   /**
    * Retrieves the manifest synchronously from memory if warm,
    * falling back to localStorage during initial bootstrap.
    */
   getMeet(meetId: string): MeetManifest | null {
     if (this.meets.has(meetId)) {
-      return this.meets.get(meetId)!;
+      return this.meets.get(meetId)?.manifest!;
     }
 
-    if (typeof window !== "undefined") {
-      try {
-        const raw = localStorage.getItem(`meet:${meetId}`);
-        if (raw) {
-          const parsed = JSON.parse(raw) as MeetManifest;
-          this.meets.set(meetId, parsed);
-          return parsed;
-        }
-      } catch (err) {
-        console.warn("Failed to load meet from storage", err);
-      }
-    }
+    // if (typeof window !== "undefined") {
+    //   try {
+    //     const raw = localStorage.getItem(`meet:${meetId}`);
+    //     if (raw) {
+    //       const parsed = JSON.parse(raw) as MeetManifest;
+    //       this.meets.set(meetId, {
+    //         manifest: parsed,
+    //         lastSyncedAt: Date.now(),
+    //         isExplicitlyStale: false,
+    //       });
+    //       return parsed;
+    //     }
+    //   } catch (err) {
+    //     console.warn("Failed to load meet from storage", err);
+    //   }
+    // }
 
     return null;
   }
@@ -80,15 +97,19 @@ class MeetCacheManager {
    * Stores fresh manifest from initial SSR/loader hydration in RAM and disk.
    */
   saveMeet(meetId: string, manifest: MeetManifest): void {
-    this.meets.set(meetId, manifest);
+    this.meets.set(meetId, {
+      manifest,
+      lastSyncedAt: Date.now(),
+      isExplicitlyStale: false,
+    });
 
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem(`meet:${meetId}`, JSON.stringify(manifest));
-      } catch (err) {
-        console.warn("Failed to persist meet manifest to storage", err);
-      }
-    }
+    // if (typeof window !== "undefined") {
+    //   try {
+    //     localStorage.setItem(`meet:${meetId}`, JSON.stringify(manifest));
+    //   } catch (err) {
+    //     console.warn("Failed to persist meet manifest to storage", err);
+    //   }
+    // }
   }
 
   /**
@@ -98,9 +119,9 @@ class MeetCacheManager {
   applyPatch(
     meetId: string,
     msg: LiveSocketMessage,
-    onRevalidate: () => void,
+    options?: PatchOptions,
   ): boolean {
-    const meet = this.meets.get(meetId);
+    const meet = this.meets.get(meetId)?.manifest;
     if (!meet) return false;
 
     let didMutate = false;
@@ -153,12 +174,45 @@ class MeetCacheManager {
 
     if (!didMutate) return false;
 
-    this.scheduleRevalidation(onRevalidate);
+    this.touch(meetId);
+
+    // If a revalidation callback is supplied (client-side only):
+    if (typeof window !== "undefined" && options?.onRevalidate) {
+      if (options.immediate) {
+        // Local touch: bypass debounce timer and paint immediately
+        this.pendingCallback = options.onRevalidate;
+        this.flushRevalidation();
+      } else {
+        // WebSocket packet: batch into 50ms window
+        this.scheduleRevalidation(options.onRevalidate);
+      }
+    }
 
     // 2. Debounce serialization & disk write until pool action settles
     this.scheduleDiskPersist(meetId, meet);
 
     return true;
+  }
+
+  isStale(meetId: string): boolean {
+    const entry = this.meets.get(meetId);
+    if (!entry) return true;
+    if (entry.isExplicitlyStale) return true;
+    return Date.now() - entry.lastSyncedAt > this.STALE_TTL_MS;
+  }
+
+  markStale(meetId: string): void {
+    const entry = this.meets.get(meetId);
+    if (entry) {
+      entry.isExplicitlyStale = true;
+    }
+  }
+
+  touch(meetId: string): void {
+    const entry = this.meets.get(meetId);
+    if (entry) {
+      entry.lastSyncedAt = Date.now();
+    }
   }
 
   hasPendingRevalidation(): boolean {
