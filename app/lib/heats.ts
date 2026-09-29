@@ -1,5 +1,7 @@
 import { eventStarted, swimsForEvent, type TimingRows } from "./timing";
-import type { Entry, LaneAssignments, LaneCount, Swim } from "~/types/meet";
+import type { LaneAssignments, LaneCount } from "~/types/meet";
+import type { Entry } from "~/types/entry";
+import type { Swim } from "~/types/swim";
 
 /**
  * Lane assignment order, fastest lane first. Standard practice puts the top

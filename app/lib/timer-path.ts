@@ -1,5 +1,6 @@
 import { runningOrder, timerPath, type Stop } from "./timer";
-import type { Event, Swim } from "~/types/meet";
+import type { Event } from "~/types/meet";
+import type { Swim } from "~/types/swim";
 
 /**
  * The same address, but as an absolute cookie `Path` rather than a route to

@@ -19,8 +19,11 @@
  */
 
 import type { Athlete, Gender } from "./athlete";
+import type { Entry, EntryKey } from "./entry";
 import type { NameOrder } from "./preferences";
-import type { Enrollment, Team } from "./team";
+import type { Swim, SwimKey } from "./swim";
+import type { Team } from "./team";
+import type { Watch } from "./watch";
 
 /** Events can be restricted to one gender, or open to everyone. */
 export type EventGender = Gender | "Open";
@@ -340,82 +343,6 @@ export interface Event {
   gender: EventGender;
   name?: string; // optional - if not set, app concatenates gender, distance, and stroke
   totalHeats?: number; // optional - can be calculated from swims
-}
-
-export type WatchRole = "timer" | "coach" | "admin";
-export interface Watch {
-  eventId: string;
-  heat: number;
-  lane: number;
-  deviceId: string;
-  slot: number;
-  role: WatchRole;
-  userId?: string;
-  startedAt?: number;
-  stoppedAt?: number;
-  timeMs?: number;
-  recordedAt: number;
-}
-export type WatchKey = `e${string}:h${number}:l${number}:d${string}:s${number}`;
-
-export interface WatchSlotKey {
-  eventId: string;
-  heat: number;
-  lane: number;
-  deviceId: string;
-  slot: number; // 0 for direct timing, 1/2/3 for multi-watch clipboard transcription
-}
-
-export function toWatchKey(k: WatchSlotKey): WatchKey {
-  return `e${k.eventId}:h${k.heat}:l${k.lane}:d${k.deviceId}:s${k.slot}`;
-}
-
-export type ResultStatus = "OK" | "DQ" | "NS";
-
-export interface Swim {
-  eventId: string;
-  heat: number; // 1-based (Heat 1, 2, 3)
-  lane: number; // 1-based (Lane 1, 2, 3, 4, 5, 6)
-  athleteId?: string; // Optional for open lanes
-  athleteName?: string;
-  athleteTeam?: string;
-  exhibition: boolean;
-  status?: ResultStatus;
-  officialTimeMs?: number;
-  decidedAt?: number;
-  decidedBy?: string;
-}
-
-export type SwimKey = `e${string}:h${number}:l${number}`;
-
-export interface SwimSlot {
-  eventId: string;
-  heat: number;
-  lane: number;
-}
-
-export function toSwimKey(slot: SwimSlot): SwimKey {
-  return `e${slot.eventId}:h${slot.heat}:l${slot.lane}`;
-}
-
-export interface Entry {
-  eventId: string;
-  athleteId: string;
-  teamId: string;
-  seedTimeMs?: number; // null = NT
-  exhibition: boolean;
-  enteredAt: number;
-  enteredBy: string;
-}
-export type EntryKey = `${string}:${string}`; // `${eventId}:${athleteId}`
-export function toEntryKey({
-  eventId,
-  athleteId,
-}: {
-  eventId: string;
-  athleteId: string;
-}): EntryKey {
-  return `${eventId}:${athleteId}`;
 }
 
 /** How places turn into points. Nothing computes these yet. */

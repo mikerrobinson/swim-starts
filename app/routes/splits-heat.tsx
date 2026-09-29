@@ -54,11 +54,11 @@ import {
   isDiving,
   type Event,
   type MeetAthlete,
-  type Swim,
-  type SwimSlot,
-  type Watch,
-  type WatchSlotKey,
 } from "~/types/meet";
+import { type Swim } from "~/types/swim";
+import { type SwimIdentity } from "~/types/swim";
+import { type Watch } from "~/types/watch";
+import { type WatchIdentity } from "~/types/watch";
 import type { Meet } from "~/types/meet";
 import { type NameOrder } from "~/types/preferences";
 
@@ -337,7 +337,7 @@ export default function SplitsHeat({
     form.set("swim", JSON.stringify(swim));
     submit(form, { method: "post", navigate: false });
   };
-  const removeSwim = (slot: SwimSlot) => {
+  const removeSwim = (slot: SwimIdentity) => {
     const form = new FormData();
     form.set("intent", "delete-swim");
     form.set("eventId", slot.eventId);
@@ -351,7 +351,7 @@ export default function SplitsHeat({
     form.set("watch", JSON.stringify(watch));
     submit(form, { method: "post", navigate: false });
   };
-  const removeWatch = (key: WatchSlotKey) => {
+  const removeWatch = (key: WatchIdentity) => {
     const form = new FormData();
     form.set("intent", "delete-watch");
     form.set("eventId", key.eventId);

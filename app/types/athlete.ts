@@ -1,9 +1,12 @@
-export type AthleteId = string;
+export type AthleteKey = string;
 
 export type Gender = "M" | "F";
 
-export interface Athlete {
+export interface AthleteIdentity {
   id: string;
+}
+
+export interface Athlete extends AthleteIdentity {
   firstName: string;
   lastName: string;
   gender: Gender;

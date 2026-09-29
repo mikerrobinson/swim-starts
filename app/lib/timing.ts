@@ -16,8 +16,13 @@
  * Everything here is pure and takes plain arrays. No document, no store.
  */
 
-import type { Event, Swim, SwimSlot, Watch, WatchRole } from "~/types/meet";
-import { toSwimKey, type SwimKey } from "~/types/meet";
+import type { Event } from "~/types/meet";
+import type { Swim } from "~/types/swim";
+import type { SwimIdentity } from "~/types/swim";
+import type { Watch } from "~/types/watch";
+import type { WatchRole } from "~/types/watch";
+import { toSwimKey } from "~/types/swim";
+import { type SwimKey } from "~/types/swim";
 
 /** The rows these functions read. Anything holding both will do. */
 export interface TimingRows {
@@ -52,7 +57,7 @@ function meanOf(times: number[]): number {
  */
 export function currentWatches(
   rows: Pick<TimingRows, "watches">,
-  slot: SwimSlot,
+  slot: SwimIdentity,
 ): Watch[] {
   return rows.watches.filter(
     (w) =>
@@ -72,7 +77,7 @@ export function currentWatches(
  */
 function timedWatches(
   rows: Pick<TimingRows, "watches">,
-  slot: SwimSlot,
+  slot: SwimIdentity,
 ): Watch[] {
   return currentWatches(rows, slot)
     .filter((w) => w.timeMs !== undefined)
@@ -218,7 +223,7 @@ export type LaneProgress = "none" | "waiting" | "complete";
  */
 export function laneProgress(
   rows: Pick<TimingRows, "watches">,
-  slot: SwimSlot,
+  slot: SwimIdentity,
 ): LaneProgress {
   const timers = currentWatches(rows, slot).filter((w) => w.role === "timer");
   if (timers.length === 0) return "none";
@@ -228,7 +233,7 @@ export function laneProgress(
 /** Stopwatches still running on a swim: started, not stopped, no time sent yet. */
 export function runningWatches(
   rows: Pick<TimingRows, "watches">,
-  slot: SwimSlot,
+  slot: SwimIdentity,
 ): Watch[] {
   return currentWatches(rows, slot).filter(
     (w) =>
@@ -247,7 +252,7 @@ export function runningWatches(
  */
 export function stoppedWatches(
   rows: Pick<TimingRows, "watches">,
-  slot: SwimSlot,
+  slot: SwimIdentity,
 ): Watch[] {
   return currentWatches(rows, slot).filter(
     (w) => w.timeMs === undefined && w.stoppedAt !== undefined,
@@ -271,7 +276,10 @@ export interface SwimTime {
   official: boolean;
 }
 
-export function swimTime(rows: TimingRows, slot: SwimSlot): SwimTime | null {
+export function swimTime(
+  rows: TimingRows,
+  slot: SwimIdentity,
+): SwimTime | null {
   const swim = rows.swims.find(
     (s) =>
       s.eventId === slot.eventId &&

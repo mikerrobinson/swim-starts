@@ -6,8 +6,8 @@ import type {
   MeetCourse,
   Event,
   Stroke,
-  Entry,
 } from "~/types/meet";
+import type { Entry } from "~/types/entry";
 import type { Gender } from "~/types/athlete";
 
 /**

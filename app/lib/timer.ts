@@ -9,7 +9,8 @@
 
 import { splitTypedName } from "./names";
 import { generateId } from "./id";
-import type { Event, MeetAthlete, Swim } from "~/types/meet";
+import type { Event, MeetAthlete } from "~/types/meet";
+import type { Swim } from "~/types/swim";
 import type { Gender } from "~/types/athlete";
 
 /**

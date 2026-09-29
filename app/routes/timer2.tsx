@@ -6,7 +6,8 @@ import {
   Link,
 } from "react-router";
 import { useState, useRef, useCallback } from "react";
-import { getNextHeat, getPreviousHeat, toSwimKey } from "~/types/meet";
+import { getNextHeat, getPreviousHeat } from "~/types/meet";
+import { toSwimKey } from "~/types/swim";
 import { useMeet } from "~/hooks/useMeet";
 
 export default function TimerLaneKiosk() {

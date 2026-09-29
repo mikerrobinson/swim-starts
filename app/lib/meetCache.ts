@@ -1,15 +1,15 @@
 import {
-  toEntryKey,
-  toSwimKey,
-  toWatchKey,
-  type Entry,
   type Event,
   type MeetAthlete,
   type MeetDetails,
   type MeetManifest,
-  type Swim,
-  type Watch,
 } from "~/types/meet";
+import { toEntryKey } from "~/types/entry";
+import { type Entry } from "~/types/entry";
+import { toSwimKey } from "~/types/swim";
+import { type Swim } from "~/types/swim";
+import { toWatchKey } from "~/types/watch";
+import { type Watch } from "~/types/watch";
 
 export type LiveSocketMessage =
   | {

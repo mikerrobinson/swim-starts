@@ -58,12 +58,12 @@ import {
   getSortedEvents,
   type Event,
   type Meet,
-  type ResultStatus,
-  type Swim,
-  type Watch,
-  type WatchRole,
-  type WatchSlotKey,
 } from "~/types/meet";
+import { type Swim } from "~/types/swim";
+import { type ResultStatus } from "~/types/swim";
+import { type Watch } from "~/types/watch";
+import { type WatchIdentity } from "~/types/watch";
+import { type WatchRole } from "~/types/watch";
 import type { Athlete } from "~/types/athlete";
 
 export function meta({}: Route.MetaArgs) {
@@ -385,7 +385,7 @@ export default function AdminHeat({
     form.set("watch", JSON.stringify(watch));
     submit(form, { method: "post", navigate: false });
   };
-  const removeWatch = (key: WatchSlotKey) => {
+  const removeWatch = (key: WatchIdentity) => {
     const form = new FormData();
     form.set("intent", "delete-watch");
     form.set("eventId", key.eventId);
@@ -523,7 +523,7 @@ function HeatCard({
   deviceId: string;
   sendSwim: (swim: Swim, kind?: "seat" | "decide", auto?: boolean) => void;
   sendWatch: (watch: Watch) => void;
-  removeWatch: (key: WatchSlotKey) => void;
+  removeWatch: (key: WatchIdentity) => void;
   onAssign: (lane: number) => void;
 }) {
   const closed = swimsComplete(swims);
@@ -849,7 +849,7 @@ function LaneRow({
   closed: boolean;
   sendSwim: (swim: Swim, kind?: "seat" | "decide", auto?: boolean) => void;
   sendWatch: (watch: Watch) => void;
-  removeWatch: (key: WatchSlotKey) => void;
+  removeWatch: (key: WatchIdentity) => void;
   onAssign: (lane: number) => void;
   registerField: (
     lane: number,

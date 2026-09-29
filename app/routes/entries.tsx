@@ -28,11 +28,11 @@ import {
   getSortedEvents,
   raceKey,
   shortStroke,
-  toEntryKey,
   type Event,
   type Stroke,
 } from "~/types/meet";
-import type { Entry } from "~/types/meet";
+import { toEntryKey } from "~/types/entry";
+import type { Entry } from "~/types/entry";
 import type { Athlete, Gender } from "~/types/athlete";
 import { cookieOutbox as outbox } from "~/lib/cookieOutbox";
 

@@ -21,7 +21,8 @@
  */
 
 import type { Athlete, Gender } from "~/types/athlete";
-import type { Meet, MeetCourse, MeetType, ResultStatus } from "~/types/meet";
+import type { Meet, MeetCourse, MeetType } from "~/types/meet";
+import type { ResultStatus } from "~/types/swim";
 import type { Team } from "~/types/team";
 
 /* ------------------------------------------------------------------ people */

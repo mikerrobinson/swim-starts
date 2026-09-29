@@ -23,7 +23,9 @@ import {
   type SeedRecord,
   type WatchSlot,
 } from "./seed-cookie";
-import { TIMERS_PER_LANE, toSwimKey, type MeetManifest, type Swim } from "~/types/meet";
+import { TIMERS_PER_LANE, type MeetManifest } from "~/types/meet";
+import { toSwimKey } from "~/types/swim";
+import { type Swim } from "~/types/swim";
 
 function readSeedCookies(
   request: Request,
@@ -131,7 +133,9 @@ async function createWalkup(
   // A client running before the toggle existed sends none — fall back rather
   // than refuse the walk-up over a field it didn't know to send.
   const gender = record.gender ?? "F";
-  const team = Object.values(manifest.teams).find((t) => t.code === record.team);
+  const team = Object.values(manifest.teams).find(
+    (t) => t.code === record.team,
+  );
   if (!team) return; // No team named — nothing to enrol this walk-up into.
   await stub.addWalkupAthlete({
     teamId: team.id,

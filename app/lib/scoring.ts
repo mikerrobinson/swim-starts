@@ -15,8 +15,8 @@ import {
   type EventGender,
   type Event,
   type ScoringRules,
-  type Swim,
 } from "~/types/meet";
+import { type Swim } from "~/types/swim";
 
 export interface RankedSwim {
   swim: Swim;

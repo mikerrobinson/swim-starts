@@ -12,8 +12,8 @@ import {
   getEventSwims,
   getSortedEvents,
   type Event,
-  type Swim,
 } from "~/types/meet";
+import { type Swim } from "~/types/swim";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Admin · Swim Starts" }];

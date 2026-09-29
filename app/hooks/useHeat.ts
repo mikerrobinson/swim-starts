@@ -1,7 +1,7 @@
 // app/hooks/useHeat.ts
 import { useMemo } from "react";
 import { useMeet } from "~/hooks/useMeet";
-import { toSwimKey } from "~/types/meet";
+import { toSwimKey } from "~/types/swim";
 
 export function useHeat(eventId: string, heat: number) {
   const { events, details, athletes, swims, watches } = useMeet();

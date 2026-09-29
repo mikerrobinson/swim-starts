@@ -9,15 +9,12 @@
 
 import { ensureSchema } from "./schema.server";
 import { getMeet } from "./meets.server";
-import { DEFAULT_MEET_DETAILS, meetDetailsFrom, toSwimKey } from "~/types/meet";
-import type {
-  Event,
-  MeetManifest,
-  ResultStatus,
-  Stroke,
-  Swim,
-  SwimKey,
-} from "~/types/meet";
+import { DEFAULT_MEET_DETAILS, meetDetailsFrom } from "~/types/meet";
+import { toSwimKey } from "~/types/swim";
+import type { Event, MeetManifest, Stroke } from "~/types/meet";
+import type { Swim } from "~/types/swim";
+import type { SwimKey } from "~/types/swim";
+import type { ResultStatus } from "~/types/swim";
 
 interface ResultRow {
   event_id: string;

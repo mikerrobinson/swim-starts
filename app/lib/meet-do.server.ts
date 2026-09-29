@@ -32,25 +32,22 @@ import type {
   Meet,
   Event,
   MeetDetails,
-  ResultStatus,
-  Swim,
-  SwimSlot,
   Stroke,
-  Watch,
-  WatchSlotKey,
-  SwimKey,
   MeetManifest,
   MeetAthlete,
-  Entry,
-  EntryKey,
 } from "~/types/meet";
-import {
-  athleteName,
-  DEFAULT_MEET_DETAILS,
-  toEntryKey,
-  toSwimKey,
-  toWatchKey,
-} from "~/types/meet";
+import type { Entry } from "~/types/entry";
+import type { EntryKey } from "~/types/entry";
+import type { Swim } from "~/types/swim";
+import type { SwimIdentity } from "~/types/swim";
+import type { SwimKey } from "~/types/swim";
+import type { ResultStatus } from "~/types/swim";
+import type { Watch } from "~/types/watch";
+import type { WatchIdentity } from "~/types/watch";
+import { athleteName, DEFAULT_MEET_DETAILS } from "~/types/meet";
+import { toEntryKey } from "~/types/entry";
+import { toSwimKey } from "~/types/swim";
+import { toWatchKey } from "~/types/watch";
 import type { Team } from "~/types/team";
 import type { Athlete, Gender } from "~/types/athlete";
 
@@ -864,7 +861,7 @@ export class MeetDurableObject extends DurableObject<Env> {
 
   /** Empties a lane — the swim, and whatever's been recorded against it.
    *  What used to be `unseat`. */
-  async deleteSwim(meetId: string, slot: SwimSlot): Promise<void> {
+  async deleteSwim(meetId: string, slot: SwimIdentity): Promise<void> {
     const existing = this.ctx.storage.sql
       .exec<SwimRow>(
         "SELECT * FROM swims WHERE event_id = ? AND heat = ? AND lane = ?",
@@ -904,7 +901,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    * and an empty one appearing is exactly the state `LaneRow`'s "no name
    * yet" rendering already expects.
    */
-  private ensureSwimRow(meetId: string, slot: SwimSlot): void {
+  private ensureSwimRow(meetId: string, slot: SwimIdentity): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO swims (meet_id, event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
        VALUES (?, ?, ?, ?, '', '', '', 0)
@@ -989,7 +986,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   /** Clears a slot's whole history — "this clock claim shouldn't exist," not
    *  a correction (that's a fresh `upsertWatch`). What used to be
    *  `dropWatch`. */
-  async deleteWatch(meetId: string, key: WatchSlotKey): Promise<void> {
+  async deleteWatch(meetId: string, key: WatchIdentity): Promise<void> {
     const existing = this.ctx.storage.sql
       .exec<WatchRow>(
         "SELECT * FROM watches WHERE event_id = ? AND heat = ? AND lane = ? AND device_id = ? AND slot = ?",

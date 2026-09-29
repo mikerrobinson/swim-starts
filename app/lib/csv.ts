@@ -6,13 +6,9 @@ import {
   currentWatches,
   type SwimTime,
 } from "./timing";
-import {
-  eventName,
-  getSortedEvents,
-  toSwimKey,
-  type MeetManifest,
-  type Swim,
-} from "~/types/meet";
+import { eventName, getSortedEvents, type MeetManifest } from "~/types/meet";
+import { toSwimKey } from "~/types/swim";
+import { type Swim } from "~/types/swim";
 import { type Enrollment } from "~/types/team";
 import type { Athlete, Gender } from "~/types/athlete";
 
