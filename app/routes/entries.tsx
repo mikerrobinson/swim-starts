@@ -26,6 +26,7 @@ import {
   byAthlete,
   displayName,
   getSortedEvents,
+  isDiving,
   raceKey,
   shortStroke,
   type Event,
@@ -35,6 +36,7 @@ import { toEntryKey } from "~/types/entry";
 import type { Entry } from "~/types/entry";
 import type { Athlete, Gender } from "~/types/athlete";
 import { cookieOutbox as outbox } from "~/lib/cookieOutbox";
+import type { EntityMutation } from "~/types/mutations";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Entries · Swim Starts" }];
@@ -188,9 +190,24 @@ export async function clientAction({
     isDelete: !entering,
   };
 
-  meetCache.applyPatch(meetId, msg);
+  const mutation: EntityMutation = {
+    entity: "entry",
+    op: !entering ? "delete" : "upsert",
+    key: {
+      eventId,
+      athleteId,
+    },
+    patch: {
+      teamId,
+      exhibition: false,
+      enteredAt: Date.now(),
+      enteredBy,
+    },
+  };
 
-  void outbox.enqueue(meetId, msg);
+  meetCache.applyPatch(meetId, mutation);
+
+  void outbox.enqueue(meetId, mutation);
   try {
     return await serverAction();
   } catch {

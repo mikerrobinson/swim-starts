@@ -131,11 +131,6 @@ export async function getMeet(
   );
 }
 
-export interface MeetSummary {
-  meet: Meet;
-  teams: Team[];
-}
-
 /**
  * The meets list. D1-only, on purpose: a meet's event/entry/timing counts now
  * live in its Durable Object, and waking every meet's DO just to render a
@@ -145,7 +140,7 @@ export interface MeetSummary {
 export async function listMeets(
   db: D1Database,
   options: { teamId?: string } = {},
-): Promise<MeetSummary[]> {
+) {
   await Promise.all([ensureSchema(db), ensureAdminStore(db)]);
 
   const where = options.teamId
@@ -370,11 +365,5 @@ export async function deleteMeet(
   meetId: string,
 ): Promise<void> {
   await ensureSchema(db);
-  await db.batch(
-    ["results", "meet_teams"]
-      .map((table) =>
-        db.prepare(`DELETE FROM ${table} WHERE meet_id = ?`).bind(meetId),
-      )
-      .concat(db.prepare("DELETE FROM meets WHERE id = ?").bind(meetId)),
-  );
+  await db.prepare("DELETE FROM meets WHERE id = ?").bind(meetId).run();
 }

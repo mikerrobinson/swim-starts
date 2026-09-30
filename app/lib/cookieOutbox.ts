@@ -1,12 +1,49 @@
 // app/lib/cookieOutbox.ts
+import type { EntityMutation } from "~/types/mutations";
 import type { LiveSocketMessage } from "./meetCache";
 
-const COOKIE_PREFIX = "__mb_";
+export const COOKIE_PREFIX = "__mb_";
 
 export interface OutboxCookieItem {
   cookieName: string;
   meetId: string;
   message: LiveSocketMessage;
+}
+
+export function serializeCookieMutation(
+  meetId: string,
+  mutation: EntityMutation,
+) {
+  let cookieName = "";
+
+  switch (mutation.entity) {
+    case "watch": {
+      const k = mutation.key;
+      cookieName = `__mb_w_${k.eventId}_${k.heat}_${k.lane}_${k.deviceId}_${k.slot}`;
+      break;
+    }
+    case "swim": {
+      const k = mutation.key;
+      cookieName = `__mb_s_${k.eventId}_${k.heat}_${k.lane}`;
+      break;
+    }
+    case "athlete": {
+      cookieName = `__mb_a_${mutation.key.id}`;
+      break;
+    }
+    case "entry": {
+      cookieName = `__mb_e_${mutation.key.eventId}_${mutation.key.athleteId}`;
+      break;
+    }
+  }
+
+  // Tombstone representation
+  const value =
+    mutation.op === "delete"
+      ? encodeURIComponent(JSON.stringify({ _del: 1 }))
+      : encodeURIComponent(JSON.stringify(mutation.patch));
+
+  return { name, value };
 }
 
 /**
@@ -51,10 +88,10 @@ class CookieOutboxManager {
    * Sets a mutation cookie scoped to the active meet path.
    * Runs synchronously in document.cookie (0ms).
    */
-  enqueue(meetId: string, message: LiveSocketMessage): void {
+  enqueue(meetId: string, message: EntityMutation): void {
     if (typeof document === "undefined") return;
 
-    const { name, value } = serializeMutation(meetId, message);
+    const { name, value } = serializeCookieMutation(meetId, message);
     const path = `/meets/${meetId}`;
 
     // Non-HttpOnly so client JS can write; 7-day TTL; SameSite=Lax

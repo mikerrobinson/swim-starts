@@ -12,12 +12,17 @@ export interface Athlete extends AthleteIdentity {
   gender: Gender;
   birthDate?: string;
   userId?: string; // optional, if the athlete is linked to a user account
-} /**
+}
+
+export function toAthleteKey(athlete: AthleteIdentity): AthleteKey {
+  return athlete.id;
+}
+
+/**
  * Age on a given date — what age-group entries are seeded by, and what an
  * export has to state. Returns null when the birth date is missing or
  * unparseable rather than guessing at one.
  */
-
 export function ageOn(
   athlete: Pick<Athlete, "birthDate">,
   isoDate: string,

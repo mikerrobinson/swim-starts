@@ -40,20 +40,35 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   //   await stub.batchProcessMutations(mutations);
   // }
 
-  if (mutations.length > 0 && mutations.some((m) => m.type === "ENTRY")) {
-    const meet = await getMeet(db, meetId);
+  if (mutations.length > 0 && mutations.some((m) => m.entity === "entry")) {
+    const meet = await stub.getMeetManifest(meetId);
     if (meet) {
       for (const mutation of mutations) {
-        if (mutation.type === "ENTRY") {
-          const eventId = mutation.entry.eventId;
-          const athleteId = mutation.entry.athleteId;
-          const teamId = mutation.entry.teamId;
-          const entering = !mutation.isDelete;
-          const result = await stub.declareEntry(
-            { meetId, eventId, athleteId, teamId, entering },
-            meet,
-            user?.id ?? null,
-          );
+        if (mutation.entity === "entry") {
+          const result =
+            mutation.op === "delete"
+              ? await stub.declareEntry(
+                  {
+                    meetId,
+                    eventId: mutation.key.eventId,
+                    athleteId: mutation.key.athleteId,
+                    teamId: "",
+                    entering: false,
+                  },
+                  meet,
+                  user?.id ?? null,
+                )
+              : await stub.declareEntry(
+                  {
+                    meetId,
+                    eventId: mutation.key.eventId,
+                    athleteId: mutation.key.athleteId,
+                    teamId: mutation.patch.teamId || "",
+                    entering: true,
+                  },
+                  meet,
+                  user?.id ?? null,
+                );
         }
       }
     }

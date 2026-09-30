@@ -23,6 +23,7 @@ import type { Entry, EntryKey } from "./entry";
 import type { NameOrder } from "./preferences";
 import type { Swim, SwimKey } from "./swim";
 import type { Team } from "./team";
+import type { User } from "./user";
 import type { Watch } from "./watch";
 
 /** Events can be restricted to one gender, or open to everyone. */
@@ -333,6 +334,7 @@ export interface MeetManifest {
   watches: Record<string, Watch>;
   athletes: Record<string, MeetAthlete>;
   teams: Record<string, Team>;
+  adminIds: string[];
 }
 
 export interface Event {

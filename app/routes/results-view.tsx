@@ -3,14 +3,6 @@ import type { Route } from "./+types/results-view";
 import { Button, Card, EmptyState, SectionTitle } from "~/components/ui";
 import { downloadFile, resultsToCsv } from "~/lib/csv";
 import { formatTime } from "~/lib/time";
-import { getMeet } from "~/lib/meets.server";
-import {
-  getTeam,
-  listSeasons,
-  roster as teamRoster,
-  seasonForDate,
-  type RosterEntry,
-} from "~/lib/teams.server";
 import { recordedCount, swimTime } from "~/lib/timing";
 import {
   eventPoints,
@@ -22,49 +14,9 @@ import {
 } from "~/lib/scoring";
 import { useMeet } from "~/hooks/useMeet";
 import { eventName, getSortedEvents } from "~/types/meet";
-import type { Meet } from "~/types/meet";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Results · Swim Starts" }];
-}
-
-/** Every racing team's roster, for the season the meet's date falls in —
- *  what the CSV export's "Gender" column and the scoring's team totals
- *  read from. Same shape `entries.tsx`/`splits-heat.tsx` build. */
-async function meetRoster(db: D1Database, meet: Meet): Promise<RosterEntry[]> {
-  const perTeam = await Promise.all(
-    meet.teamIds.map(async (teamId) => {
-      const [team, seasons] = await Promise.all([
-        getTeam(db, teamId),
-        listSeasons(db, teamId),
-      ]);
-      const season = seasonForDate(seasons, team?.currentSeasonId, meet.date);
-      return teamRoster(db, teamId, season?.id);
-    }),
-  );
-  return perTeam.flat();
-}
-
-/**
- * `roster`/`enrollments` — D1's, for the one thing `useMeet()`'s
- * `MeetManifest` can't answer once a meet's `results` are archived:
- * `readResultsManifest` empties `athletes`/`teams` on a completed meet on
- * purpose (its own doc comment), so gender, year and squad have to come
- * from D1's season roster instead — the same read regardless of whether
- * the meet is still live or long since closed. Everything else this
- * screen shows — events, swims, the meet's own scoring rules — comes from
- * `useMeet()` in the component below.
- */
-export async function loader({ params, context }: Route.LoaderArgs) {
-  const db = context.cloudflare.env.DB;
-  const meetId = params.meetId!;
-  const meet = await getMeet(db, meetId);
-  const rosterEntries = meet ? await meetRoster(db, meet) : [];
-
-  return {
-    roster: rosterEntries.map((r) => r.athlete),
-    enrollments: rosterEntries.map((r) => r.enrollment),
-  };
 }
 
 /** Girls, then boys, then whatever an Open event's points fell under. */
@@ -110,12 +62,6 @@ export default function ResultsView({
   const watches = useMemo(() => Object.values(meet.watches), [meet.watches]);
   const events = useMemo(() => getSortedEvents(meet), [meet]);
 
-  // Squad and team-of-record as of this meet's season, not as of today.
-  const enrollments = useMemo(
-    () => new Map(loaderData.enrollments.map((e) => [e.athleteId, e] as const)),
-    [loaderData.enrollments],
-  );
-
   /**
    * A team's display name, for `TeamScores` — grouped by team id, which
    * needs a name from *somewhere* regardless of whether the meet is live
@@ -127,14 +73,9 @@ export default function ResultsView({
    */
   const teamNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const seed of swims) {
-      if (!seed.athleteId || !seed.athleteTeam) continue;
-      const teamId = enrollments.get(seed.athleteId)?.teamId;
-      if (teamId) map.set(teamId, seed.athleteTeam);
-    }
     for (const team of Object.values(meet.teams)) map.set(team.id, team.name);
     return map;
-  }, [swims, enrollments, meet.teams]);
+  }, [meet.teams]);
 
   /**
    * Every swim that has a time, grouped by event and ranked across all heats.
@@ -182,9 +123,9 @@ export default function ResultsView({
         events,
         byEvent,
         meet.details.scoring,
-        (athleteId) => enrollments.get(athleteId)?.teamId,
+        (athleteId) => meet.athletes[athleteId]?.teamId,
       ),
-    [events, byEvent, meet.details.scoring, enrollments],
+    [events, byEvent, meet.details.scoring],
   );
 
   const slug = `${meet.name.replace(/[^\w-]+/g, "-").toLowerCase()}-${meet.details.date}`;
@@ -230,7 +171,7 @@ export default function ResultsView({
             onClick={() =>
               downloadFile(
                 `${slug}-results.csv`,
-                resultsToCsv(meet, loaderData.roster, enrollments),
+                resultsToCsv(meet),
                 "text/csv",
               )
             }
@@ -296,9 +237,6 @@ export default function ResultsView({
                     // behind it, the same rule `eventPoints` scores by.
                     let place = 0;
                     return results.map(({ swim: seed, time }, index) => {
-                      const enrollment = seed.athleteId
-                        ? enrollments.get(seed.athleteId)
-                        : undefined;
                       const ranked = time.status === "OK" && !seed.exhibition;
                       const shownPlace = ranked ? ++place : null;
                       const pts = points[index] ?? 0;
@@ -323,7 +261,6 @@ export default function ResultsView({
                             <span className="block truncate text-xs text-slate-500 dark:text-slate-400">
                               {seed.athleteTeam && `${seed.athleteTeam} · `}
                               Lane {seed.lane}
-                              {enrollment?.squad && ` · ${enrollment.squad}`}
                               {seed.exhibition && " · exhibition"}
                             </span>
                           </span>

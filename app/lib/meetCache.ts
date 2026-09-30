@@ -10,6 +10,8 @@ import { toSwimKey } from "~/types/swim";
 import { type Swim } from "~/types/swim";
 import { toWatchKey } from "~/types/watch";
 import { type Watch } from "~/types/watch";
+import type { EntityMutation } from "~/types/mutations";
+import { toAthleteKey } from "~/types/athlete";
 
 export type LiveSocketMessage =
   | {
@@ -118,7 +120,7 @@ class MeetCacheManager {
    */
   applyPatch(
     meetId: string,
-    msg: LiveSocketMessage,
+    mutation: EntityMutation,
     options?: PatchOptions,
   ): boolean {
     const meet = this.meets.get(meetId)?.manifest;
@@ -126,47 +128,64 @@ class MeetCacheManager {
 
     let didMutate = false;
 
-    switch (msg.type) {
-      case "WATCH": {
-        const key = toWatchKey(msg.watch);
-        if (msg.isDelete) delete meet.watches[key];
-        else meet.watches[key] = msg.watch;
+    switch (mutation.entity) {
+      case "watch": {
+        const k = toWatchKey(mutation.key);
+        if (mutation.op === "delete") {
+          delete meet.watches[k];
+        } else {
+          const existing = meet.watches[k] || { ...mutation.key };
+          meet.watches[k] = { ...existing, ...mutation.patch };
+        }
         didMutate = true;
         break;
       }
 
-      case "SWIM": {
-        const key = toSwimKey(msg.swim);
-        if (msg.isDelete) delete meet.swims[key];
-        else meet.swims[key] = msg.swim;
+      case "entry": {
+        const k = toEntryKey(mutation.key);
+        if (mutation.op === "delete") {
+          delete meet.entries[k];
+        } else {
+          const existing = meet.entries[k] || { ...mutation.key };
+          meet.entries[k] = { ...existing, ...mutation.patch };
+        }
         didMutate = true;
         break;
       }
 
-      case "ATHLETE": {
-        if (msg.isDelete) delete meet.athletes[msg.athlete.id];
-        else meet.athletes[msg.athlete.id] = msg.athlete;
+      case "swim": {
+        const k = toSwimKey(mutation.key);
+        if (mutation.op === "delete") {
+          delete meet.swims[k];
+        } else {
+          const existing = meet.swims[k] || { ...mutation.key };
+          meet.swims[k] = { ...existing, ...mutation.patch };
+        }
         didMutate = true;
         break;
       }
 
-      case "ENTRY": {
-        const key = toEntryKey(msg.entry);
-        if (msg.isDelete) delete meet.entries[key];
-        else meet.entries[key] = msg.entry;
+      case "athlete": {
+        const k = toAthleteKey(mutation.key);
+        if (mutation.op === "delete") {
+          delete meet.athletes[k];
+        } else {
+          const existing = meet.athletes[k] || { ...mutation.key };
+          meet.athletes[k] = { ...existing, ...mutation.patch };
+        }
         didMutate = true;
         break;
       }
 
       case "MEET_DETAILS": {
-        meet.details = msg.details;
-        meet.name = msg.details.name;
+        meet.details = mutation.details;
+        meet.name = mutation.details.name;
         didMutate = true;
         break;
       }
 
       case "EVENTS": {
-        meet.events = Object.fromEntries(msg.events.map((e) => [e.id, e]));
+        meet.events = Object.fromEntries(mutation.events.map((e) => [e.id, e]));
         didMutate = true;
         break;
       }

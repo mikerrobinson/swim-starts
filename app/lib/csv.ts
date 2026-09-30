@@ -280,21 +280,10 @@ export function toCsv(rows: Array<Array<string | number>>): string {
  * Results export: one row per recorded swim, ordered by event, then heat, then
  * finish place.
  */
-export function resultsToCsv(
-  meet: MeetManifest,
-  /**
-   * This meet's season roster, D1's — for `Gender` only. Every other
-   * column reads straight off the swim (`athleteName`/`athleteTeam` are
-   * already what it names), which works whether the meet's still live or
-   * long archived: `readResultsManifest` empties `meet.athletes`/
-   * `meet.teams` on purpose once a meet completes — see its own doc
-   * comment — so nothing here can lean on either.
-   */
-  roster: Athlete[] = [],
-  /** Year and squad as of this meet, keyed by athlete. Empty is fine. */
-  enrollments: Map<string, Enrollment> = new Map(),
-): string {
-  const byId = new Map(roster.map((a) => [a.id, a] as const));
+export function resultsToCsv(meet: MeetManifest): string {
+  const byId = new Map(
+    Object.values(meet.athletes).map((a) => [a.id, a] as const),
+  );
   const swims = Object.values(meet.swims);
   const watches = Object.values(meet.watches);
 
@@ -343,9 +332,6 @@ export function resultsToCsv(
 
     for (const { seed, time } of ordered) {
       const athlete = seed.athleteId ? byId.get(seed.athleteId) : undefined;
-      const enrolled = seed.athleteId
-        ? enrollments.get(seed.athleteId)
-        : undefined;
       rows.push([
         eventIndex + 1,
         eventName(event),
@@ -353,8 +339,6 @@ export function resultsToCsv(
         seed.lane,
         seed.athleteName || (seed.athleteId ? "(unknown)" : ""),
         athlete?.gender ?? "",
-        enrolled?.year ?? "",
-        enrolled?.squad ?? "",
         time.status === "OK" ? formatTime(time.timeMs) : time.status,
         time.status === "OK" ? time.timeMs : "",
         time.status,

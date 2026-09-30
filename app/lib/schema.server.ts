@@ -99,8 +99,8 @@ const SCHEMA = [
 
   /** Which teams are racing. A meet belongs to none of them. */
   `CREATE TABLE IF NOT EXISTS meet_teams (
-     meet_id TEXT NOT NULL,
-     team_id TEXT NOT NULL,
+     meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
      PRIMARY KEY (meet_id, team_id)
    )`,
   `CREATE INDEX IF NOT EXISTS meet_teams_by_team ON meet_teams (team_id)`,

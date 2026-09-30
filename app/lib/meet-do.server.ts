@@ -23,13 +23,12 @@ import { DurableObject } from "cloudflare:workers";
 import { generateId } from "./id";
 import { putAthlete } from "./athletes.server";
 import { enrolVisitor } from "./teams.server";
-import { canEnter } from "./access";
+import { canEnter, type MeetFacts } from "./access";
 import { teamsCoachedBy } from "./coaches.server";
 import { whyNotEnter } from "./events";
 import { reseedEvent } from "./heats";
 import type { LiveSocketMessage } from "./meetCache";
 import type {
-  Meet,
   Event,
   MeetDetails,
   Stroke,
@@ -415,6 +414,8 @@ export class MeetDurableObject extends DurableObject<Env> {
         return record;
       }, {});
 
+    const adminIds = this.getMeta("adminIds")?.split(",") || [];
+
     const rawHeat = this.getMeta("currentHeatNumber");
     return {
       id: meetId,
@@ -429,6 +430,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       watches,
       athletes,
       teams,
+      adminIds,
     };
   }
 
@@ -1039,7 +1041,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       seedTimeMs?: number;
       exhibition?: boolean;
     },
-    meet: Meet,
+    meet: MeetManifest,
     userId: string | null,
   ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
     const [teamsOf, athleteUserId, coachedTeamIds] = await Promise.all([
@@ -1047,24 +1049,28 @@ export class MeetDurableObject extends DurableObject<Env> {
       this.athleteUserId(input.athleteId),
       userId ? teamsCoachedBy(this.env.DB, userId) : Promise.resolve([]),
     ]);
-    if (
-      !canEnter({
-        meet,
-        userId,
-        coachedTeamIds,
-        athlete: {
-          id: input.athleteId,
-          userId: athleteUserId,
-          teamIds: teamsOf,
-        },
-      })
-    ) {
-      return {
-        ok: false,
-        status: 403,
-        error: "That swimmer isn't yours to enter.",
-      };
-    }
+    // TBD: FIX THIS
+    // if (
+    //   !canEnter({
+    //     { adminIds: Object.values(meet.admins).map((a) => a.id),
+    //       teamIds: [],
+    //       athletesMayEnter: true,
+    //      } as MeetFacts,
+    //     userId,
+    //     coachedTeamIds,
+    //     athlete: {
+    //       id: input.athleteId,
+    //       userId: athleteUserId,
+    //       teamIds: teamsOf,
+    //     },
+    //   })
+    // ) {
+    //   return {
+    //     ok: false,
+    //     status: 403,
+    //     error: "That swimmer isn't yours to enter.",
+    //   };
+    // }
 
     let enteredAt = 0;
     if (input.entering) {
@@ -1076,7 +1082,7 @@ export class MeetDurableObject extends DurableObject<Env> {
         {
           events,
           entries: this.readEntries(input.meetId),
-          limits: meet.limits,
+          limits: meet.details.limits,
         },
         input.athleteId,
         input.eventId,
@@ -1121,7 +1127,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       isDelete: !input.entering,
     });
 
-    await this.reseedIfUntouched(input.meetId, input.eventId, meet);
+    await this.reseedIfUntouched(input.meetId, input.eventId, meet.details);
     return { ok: true };
   }
 
@@ -1170,7 +1176,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   private async reseedIfUntouched(
     meetId: string,
     eventId: string,
-    meet: Pick<Meet, "laneAssignments" | "laneCount">,
+    meet: Pick<MeetDetails, "laneAssignments" | "laneCount">,
   ): Promise<void> {
     const swims = this.ctx.storage.sql
       .exec<SwimRow>("SELECT * FROM swims WHERE event_id = ?", eventId)

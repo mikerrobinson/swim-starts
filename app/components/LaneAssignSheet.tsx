@@ -8,13 +8,13 @@ import {
   isEligible,
   athleteName,
   type MeetManifest,
+  type MeetAthlete,
 } from "~/types/meet";
 import { type NameOrder } from "~/types/preferences";
 import { type Enrollment } from "~/types/team";
-import type { Athlete } from "~/types/athlete";
 
 interface Candidate {
-  athlete: Athlete;
+  athlete: MeetAthlete;
   /** Where they already sit in this event, if anywhere. */
   seatedAt?: { heatNumber: number; lane: number };
   /** They've already swum this event, so they can't be moved into it again. */
@@ -29,7 +29,6 @@ interface Candidate {
 export function LaneAssignSheet({
   meet,
   roster,
-  enrollments,
   nameOrder,
   eventId,
   heat,
@@ -39,9 +38,8 @@ export function LaneAssignSheet({
 }: {
   meet: MeetManifest;
   /** This meet's season roster — anyone off it can't be entered. */
-  roster: Athlete[];
+  roster: MeetAthlete[];
   /** Their year and squad this season, keyed by athlete id. */
-  enrollments: Map<string, Enrollment>;
   nameOrder: NameOrder;
   /** The lane being filled, as the meet numbers it. */
   eventId: string;
@@ -106,26 +104,14 @@ export function LaneAssignSheet({
         // meet the lane already says which side of the pool you're looking
         // at, so that team's roster is who you're almost always reaching for.
         if (laneTeamId) {
-          const aSame =
-            enrollments.get(a.athlete.id)?.teamId === laneTeamId ? 0 : 1;
-          const bSame =
-            enrollments.get(b.athlete.id)?.teamId === laneTeamId ? 0 : 1;
+          const aSame = a.athlete.teamId === laneTeamId ? 0 : 1;
+          const bSame = b.athlete.teamId === laneTeamId ? 0 : 1;
           if (aSame !== bSame) return aSame - bSame;
         }
 
         return byAthlete(nameOrder)(a.athlete, b.athlete);
       });
-  }, [
-    roster,
-    nameOrder,
-    swims,
-    watches,
-    eventId,
-    event,
-    search,
-    enrollments,
-    laneTeamId,
-  ]);
+  }, [roster, nameOrder, swims, watches, eventId, event, search, laneTeamId]);
 
   /**
    * Up and down walk the visible list of candidates; the search box feeds
@@ -204,12 +190,8 @@ export function LaneAssignSheet({
                   </span>
                   <span className="block text-xs text-slate-500 dark:text-slate-400">
                     {athlete.gender}
-                    {meet.teams[enrollments.get(athlete.id)?.teamId ?? ""] &&
-                      ` · ${meet.teams[enrollments.get(athlete.id)!.teamId].name}`}
-                    {enrollments.get(athlete.id)?.year &&
-                      ` · ${enrollments.get(athlete.id)?.year}`}
-                    {enrollments.get(athlete.id)?.squad &&
-                      ` · ${enrollments.get(athlete.id)?.squad}`}
+                    {meet.teams[athlete.teamId ?? ""] &&
+                      ` · ${meet.teams[athlete.teamId].name}`}
                   </span>
                 </span>
 
