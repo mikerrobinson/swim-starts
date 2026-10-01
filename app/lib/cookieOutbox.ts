@@ -1,19 +1,8 @@
-// app/lib/cookieOutbox.ts
 import type { EntityMutation } from "~/types/mutations";
-import type { LiveSocketMessage } from "./meetCache";
 
 export const COOKIE_PREFIX = "__mb_";
 
-export interface OutboxCookieItem {
-  cookieName: string;
-  meetId: string;
-  message: LiveSocketMessage;
-}
-
-export function serializeCookieMutation(
-  meetId: string,
-  mutation: EntityMutation,
-) {
+export function serializeCookieMutation(mutation: EntityMutation) {
   let name = "";
 
   switch (mutation.entity) {
@@ -54,7 +43,7 @@ class CookieOutboxManager {
   enqueue(meetId: string, message: EntityMutation): void {
     if (typeof document === "undefined") return;
 
-    const { name, value } = serializeCookieMutation(meetId, message);
+    const { name, value } = serializeCookieMutation(message);
     const path = `/meets/${meetId}`;
 
     // Non-HttpOnly so client JS can write; 7-day TTL; SameSite=Lax
@@ -67,7 +56,7 @@ class CookieOutboxManager {
   clear(meetId: string, cookieName: string): void {
     if (typeof document === "undefined") return;
     const path = `/meets/${meetId}`;
-    document.cookie = `${cookieName}=; Path=${path}; Max-Age=0; SameSite=Lax; Secure`;
+    document.cookie = `${cookieName}=; Path=${path}; Max-Age=0; SameSite=Lax`;
   }
 
   /**

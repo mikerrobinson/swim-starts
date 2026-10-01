@@ -6,57 +6,68 @@ import {
   Link,
 } from "react-router";
 import { useState, useRef, useCallback } from "react";
-import { getNextHeat, getPreviousHeat } from "~/types/meet";
-import { toSwimKey } from "~/types/swim";
+import { eventName } from "~/types/meet";
 import { useMeet } from "~/hooks/useMeet";
+import { useHeat } from "~/hooks/useHeat";
+import { useMeetMutation } from "~/hooks/useMeetMutation";
+import { useDeviceId } from "~/state/user";
+import { timerCookiePath } from "~/lib/timer-path";
 
 export default function TimerLaneKiosk() {
   const params = useParams();
+  const meetId = params.meetId!;
   const navigate = useNavigate();
   const navigation = useNavigation();
 
   // Read directly from the parent shell loader
   const meet = useMeet();
+  const device = useDeviceId();
 
-  const meetId = params.meetId!;
-  const eventId = params.event!;
-  const heat = Number(params.heat);
+  const { send } = useMeetMutation(meetId);
+
   const lane = Number(params.lane);
-
-  // O(1) direct slot lookup
-  const swimKey = toSwimKey({
-    eventId: eventId,
-    heat: heat,
-    lane: lane,
-  });
-  const swim = meet.swims[swimKey];
-  const event = meet.events[eventId];
-
-  console.log(JSON.stringify(meet, null, 2));
-
-  const nextHeat = getNextHeat(meet, eventId, heat);
-  const previousHeat = getPreviousHeat(meet, eventId, heat);
+  const heat = useHeat(params.event!, Number(params.heat));
+  const watch = heat?.lanes[lane].watches.find(
+    (w) => w.deviceId == device && w.slot == 0,
+  );
 
   // High-performance touch timing state
-  const [stopwatchMs, setStopwatchMs] = useState<number | null>(null);
+  const [stopwatchMs, setStopwatchMs] = useState<number | null>(
+    heat?.lanes[lane].watches.find((w) => w.deviceId == device && w.slot == 0)
+      ?.timeMs || null,
+  );
   const [isRunning, setIsRunning] = useState(false);
   const startTimestamp = useRef<number>(0);
+  const stopTimestamp = useRef<number>(0);
+  const timeMs = useRef<number>(0);
   const animFrameRef = useRef<number>(0);
-  const nextHeatLink =
-    nextHeat == null
-      ? ""
-      : `/meets/${meetId}/timer/alt/${nextHeat.eventId}/${nextHeat?.heat}/${lane}`;
-  const previousHeatLink =
-    previousHeat == null
-      ? ""
-      : `/meets/${meetId}/timer/alt/${previousHeat.eventId}/${previousHeat?.heat}/${lane}`;
 
+  const sendWatch = () => {
+    send({
+      entity: "watch",
+      op: "upsert",
+      key: {
+        eventId: heat?.event.id || "",
+        heat: heat?.heatNumber || 1,
+        lane,
+        deviceId: device,
+        slot: 0,
+      },
+      patch: {
+        startedAt: startTimestamp.current,
+        stoppedAt: 0,
+        timeMs: 0,
+      },
+    });
+  };
   const startStopwatch = useCallback(
     (e: React.TouchEvent | React.MouseEvent) => {
       e.preventDefault();
       startTimestamp.current = e.timeStamp;
+      stopTimestamp.current = 0;
+      setStopwatchMs(0);
       setIsRunning(true);
-
+      sendWatch();
       const update = () => {
         setStopwatchMs(Math.round(performance.now() - startTimestamp.current));
         animFrameRef.current = requestAnimationFrame(update);
@@ -69,29 +80,73 @@ export default function TimerLaneKiosk() {
   const stopStopwatch = useCallback(
     (e: React.TouchEvent | React.MouseEvent) => {
       e.preventDefault();
+      stopTimestamp.current = e.timeStamp;
+      sendWatch();
       cancelAnimationFrame(animFrameRef.current);
       const finalElapsed = Math.round(
-        performance.now() - startTimestamp.current,
+        stopTimestamp.current - startTimestamp.current,
       );
       setStopwatchMs(finalElapsed);
       setIsRunning(false);
     },
     [],
   );
-  console.log("=========", JSON.stringify(nextHeat, null, 2));
 
+  const resetStopwatch = () => {
+    startTimestamp.current = 0;
+    stopTimestamp.current = 0;
+    timeMs.current = 0;
+    setStopwatchMs(0);
+  };
+
+  const submitStopwatch = () => {
+    sendWatch();
+    resetStopwatch();
+    heat?.next
+      ? navigate(
+          `/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`,
+        )
+      : "";
+  };
+
+  if (heat == null) {
+    return <h1>no heat</h1>;
+  }
   return (
     <div className="flex h-dvh flex-col select-none touch-none overscroll-none p-4">
       {/* Header Info Banner */}
       <header className="flex justify-between items-center pb-4">
-        {previousHeatLink == null ? (
+        {heat?.prev == null ? (
           <p>at start</p>
         ) : (
-          <Link to={previousHeatLink} />
+          <Link
+            to={`/meets/${meetId}/timer/alt/${heat.prev.eventId}/${heat.prev.heat}/${lane}`}
+          >
+            &lt;
+          </Link>
         )}
-        {nextHeatLink == null ? <p>at end</p> : <Link to={nextHeatLink} />}
+        {eventName(heat?.event)}
+        {heat?.next == null ? (
+          <p>at end</p>
+        ) : (
+          <Link
+            to={`/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`}
+          >
+            &gt;
+          </Link>
+        )}
       </header>
 
+      <div>
+        {heat.lanes[lane].athlete ? (
+          <span>
+            {heat.lanes[lane].athlete?.firstName}{" "}
+            {heat.lanes[lane].athlete?.lastName}
+          </span>
+        ) : (
+          <span>No athlete</span>
+        )}
+      </div>
       {/* Main Display / Manual Override Box */}
       <div className="flex-1 flex flex-col items-center justify-center">
         <span className="text-6xl font-mono tracking-tight font-bold">
@@ -120,26 +175,18 @@ export default function TimerLaneKiosk() {
           </button>
         )}
 
-        {/* Submission Form */}
-        <Form method="post" className="flex gap-2">
-          <input type="hidden" name="timeMs" value={stopwatchMs ?? 0} />
-          <input type="hidden" name="deviceId" value="timer-client-1" />
-
-          <button
-            type="submit"
-            disabled={
-              isRunning ||
-              stopwatchMs === null ||
-              navigation.state === "submitting"
-            }
-            onClick={() => setTimeout(handleNextHeat, 50)}
-            className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
-          >
-            {navigation.state === "submitting"
-              ? "Saving..."
-              : "Submit & Advance"}
-          </button>
-        </Form>
+        <button
+          type="submit"
+          disabled={
+            isRunning ||
+            stopwatchMs === null ||
+            navigation.state === "submitting"
+          }
+          onClick={submitStopwatch}
+          className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
+        >
+          {navigation.state === "submitting" ? "Saving..." : "Submit & Advance"}
+        </button>
       </div>
     </div>
   );

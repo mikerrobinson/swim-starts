@@ -28,32 +28,20 @@ export function drainOutboxCookies(
 
     try {
       const parsedValue = JSON.parse(decodeURIComponent(rawValue));
-      const isDelete = parsedValue?._del === 1;
+      const parts = rawName.slice(`${COOKIE_PREFIX}e_`.length).split("_");
 
       if (rawName.startsWith(`${COOKIE_PREFIX}e_`)) {
-        const parts = rawName.slice(`${COOKIE_PREFIX}e_`.length).split("_");
-        if (parts.length >= 2) {
-          const [eventId, athleteId] = parts;
-          const key = {
-            eventId,
-            athleteId,
-          };
-
-          if (isDelete) {
-            mutations.push({
-              entity: "entry",
-              op: "delete",
-              key,
-            });
-          } else {
-            mutations.push({
-              entity: "entry",
-              op: "upsert",
-              key,
-              patch: parsedValue,
-            });
-          }
-        }
+        const mutation = getEntryMutationFromCookie(parts, parsedValue);
+        if (mutation) mutations.push(mutation);
+      } else if (rawName.startsWith(`${COOKIE_PREFIX}w_`)) {
+        const mutation = getWatchMutationFromCookie(parts, parsedValue);
+        if (mutation) mutations.push(mutation);
+      } else if (rawName.startsWith(`${COOKIE_PREFIX}s_`)) {
+        const mutation = getSwimMutationFromCookie(parts, parsedValue);
+        if (mutation) mutations.push(mutation);
+      } else if (rawName.startsWith(`${COOKIE_PREFIX}a_`)) {
+        const mutation = getAthleteMutationFromCookie(parts, parsedValue);
+        if (mutation) mutations.push(mutation);
       }
 
       // Instruct browser to delete this processed cookie
@@ -67,4 +55,103 @@ export function drainOutboxCookies(
   }
 
   return { mutations, clearHeaders };
+}
+
+function getEntryMutationFromCookie(
+  [eventId, athleteId]: string[],
+  value: any,
+): EntityMutation | undefined {
+  const key = {
+    eventId,
+    athleteId,
+  };
+  if (value?._del === 1) {
+    return {
+      entity: "entry",
+      op: "delete",
+      key,
+    };
+  } else {
+    return {
+      entity: "entry",
+      op: "upsert",
+      key,
+      patch: value,
+    };
+  }
+}
+
+function getAthleteMutationFromCookie(
+  [id]: string[],
+  value: any,
+): EntityMutation | undefined {
+  const key = {
+    id,
+  };
+  if (value?._del === 1) {
+    return {
+      entity: "athlete",
+      op: "delete",
+      key,
+    };
+  } else {
+    return {
+      entity: "athlete",
+      op: "upsert",
+      key,
+      patch: value,
+    };
+  }
+}
+
+function getWatchMutationFromCookie(
+  [eventId, heat, lane, deviceId, slot]: string[],
+  value: any,
+): EntityMutation | undefined {
+  const key = {
+    eventId,
+    heat: Number(heat),
+    lane: Number(lane),
+    deviceId,
+    slot: Number(slot),
+  };
+  if (value?._del === 1) {
+    return {
+      entity: "watch",
+      op: "delete",
+      key,
+    };
+  } else {
+    return {
+      entity: "watch",
+      op: "upsert",
+      key,
+      patch: value,
+    };
+  }
+}
+
+function getSwimMutationFromCookie(
+  [eventId, heat, lane]: string[],
+  value: any,
+): EntityMutation | undefined {
+  const key = {
+    eventId,
+    heat: Number(heat),
+    lane: Number(lane),
+  };
+  if (value?._del === 1) {
+    return {
+      entity: "swim",
+      op: "delete",
+      key,
+    };
+  } else {
+    return {
+      entity: "swim",
+      op: "upsert",
+      key,
+      patch: value,
+    };
+  }
 }

@@ -14,7 +14,7 @@ import {
 import { useEffect, useState } from "react";
 import { getMeet } from "~/lib/meets.server";
 import { readResultsManifest } from "~/lib/results.server";
-import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
+import { meetCache } from "~/lib/meetCache";
 import { AccountMenu } from "~/components/AccountMenu";
 import { HeaderToggles } from "~/components/HeaderToggles";
 import type { MeetRouteHandle } from "~/lib/route-handle";

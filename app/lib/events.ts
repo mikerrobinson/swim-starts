@@ -71,12 +71,11 @@ function standardOrder(
  * flipping the lead gender, converting distances — is ordinary array work.
  */
 export function makeEvent(
-  meetId: string,
   distance: number,
   stroke: Stroke,
   gender: EventGender = "Open",
 ): Event {
-  return { id: generateId(), position: 0, distance, stroke, gender };
+  return { id: "1", position: 0, distance, stroke, gender };
 }
 
 /** Stamp array order onto `position`/`eventNumber`, ready to be written —
@@ -86,7 +85,7 @@ export function renumber(events: Event[]): Event[] {
   return events.map((event, position) => ({
     ...event,
     position,
-    eventNumber: position + 1,
+    id: `${position + 1}`,
   }));
 }
 
@@ -118,15 +117,13 @@ export function defaultEvents(
   const order = standardOrder(course, includeDiving);
 
   if (mode === "open") {
-    return renumber(
-      order.map((e) => makeEvent(meetId, e.distance, e.stroke, "Open")),
-    );
+    return renumber(order.map((e) => makeEvent(e.distance, e.stroke, "Open")));
   }
   const second = otherGender(leadGender);
   return renumber(
     order.flatMap((e) => [
-      makeEvent(meetId, e.distance, e.stroke, leadGender),
-      makeEvent(meetId, e.distance, e.stroke, second),
+      makeEvent(e.distance, e.stroke, leadGender),
+      makeEvent(e.distance, e.stroke, second),
     ]),
   );
 }

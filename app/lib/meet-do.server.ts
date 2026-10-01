@@ -195,6 +195,7 @@ interface WatchRow {
   stopped_at: number | null;
   recorded_at: number;
 }
+
 interface EntryRow {
   [key: string]: SqlStorageValue;
   event_id: string;
@@ -235,7 +236,7 @@ function meetAthleteFromRow(row: MeetAthleteRow): MeetAthlete {
 /** This DO's own `events` table — its programme, once something writes one
  *  via `setEvents`. `declareEntry`'s entry-limit check reads this now too —
  *  it used to read a D1 `events` table that no longer exists. */
-interface LiveEventRow {
+interface EventRow {
   [key: string]: SqlStorageValue;
   id: string;
   position: number;
@@ -246,7 +247,7 @@ interface LiveEventRow {
   total_heats: number | null;
 }
 
-function liveEventFromRow(row: LiveEventRow): Event {
+function eventFromRow(row: EventRow): Event {
   return {
     id: row.id,
     position: row.position,
@@ -259,9 +260,10 @@ function liveEventFromRow(row: LiveEventRow): Event {
 }
 
 function asResultStatus(value: string | null): ResultStatus | undefined {
-  if (value === "DQ" || value === "NS") return value;
-  return value === "OK" ? "OK" : undefined;
+  if (value === "DQ" || value === "NS" || value === "OK") return value;
+  return undefined;
 }
+
 function swimFromRow(row: SwimRow): Swim {
   return {
     eventId: row.event_id,
@@ -404,9 +406,9 @@ export class MeetDurableObject extends DurableObject<Env> {
     const details = this.getDetailsObject();
 
     const events = this.ctx.storage.sql
-      .exec<LiveEventRow>("SELECT * FROM events")
+      .exec<EventRow>("SELECT * FROM events")
       .toArray()
-      .map(liveEventFromRow)
+      .map(eventFromRow)
       .reduce<Record<string, Event>>((record, event) => {
         record[event.id] = event;
         return record;
@@ -744,7 +746,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       .exec<SwimRow>("SELECT * FROM swims")
       .toArray();
     const events = this.ctx.storage.sql
-      .exec<LiveEventRow>("SELECT * FROM events")
+      .exec<EventRow>("SELECT * FROM events")
       .toArray();
     const eventById = new Map(events.map((e) => [e.id, e] as const));
 

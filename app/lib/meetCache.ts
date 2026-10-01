@@ -1,47 +1,9 @@
-import {
-  type Event,
-  type MeetAthlete,
-  type MeetDetails,
-  type MeetManifest,
-} from "~/types/meet";
+import { type MeetManifest } from "~/types/meet";
 import { toEntryKey } from "~/types/entry";
-import { type Entry } from "~/types/entry";
 import { toSwimKey } from "~/types/swim";
-import { type Swim } from "~/types/swim";
 import { toWatchKey } from "~/types/watch";
-import { type Watch } from "~/types/watch";
 import type { EntityMutation } from "~/types/mutations";
 import { toAthleteKey } from "~/types/athlete";
-
-export type LiveSocketMessage =
-  | {
-      type: "WATCH";
-      watch: Watch;
-      isDelete: boolean;
-    }
-  | {
-      type: "SWIM";
-      swim: Swim;
-      isDelete: boolean;
-    }
-  | {
-      type: "ENTRY";
-      entry: Entry;
-      isDelete: boolean;
-    }
-  | {
-      type: "ATHLETE";
-      athlete: MeetAthlete;
-      isDelete: boolean;
-    }
-  | {
-      type: "MEET_DETAILS";
-      details: MeetDetails;
-    }
-  | {
-      type: "EVENTS";
-      events: Event[];
-    };
 
 interface CacheEntry {
   manifest: MeetManifest;
@@ -177,18 +139,18 @@ class MeetCacheManager {
         break;
       }
 
-      case "MEET_DETAILS": {
-        meet.details = mutation.details;
-        meet.name = mutation.details.name;
-        didMutate = true;
-        break;
-      }
+      // case "MEET_DETAILS": {
+      //   meet.details = mutation.details;
+      //   meet.name = mutation.details.name;
+      //   didMutate = true;
+      //   break;
+      // }
 
-      case "EVENTS": {
-        meet.events = Object.fromEntries(mutation.events.map((e) => [e.id, e]));
-        didMutate = true;
-        break;
-      }
+      // case "EVENTS": {
+      //   meet.events = Object.fromEntries(mutation.events.map((e) => [e.id, e]));
+      //   didMutate = true;
+      //   break;
+      // }
     }
 
     if (!didMutate) return false;

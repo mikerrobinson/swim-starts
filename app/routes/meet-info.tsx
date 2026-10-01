@@ -712,7 +712,7 @@ function EventsCard({
       : 50;
 
   const add = () => {
-    submit([...events, makeEvent(meet.id, chosenDistance, stroke, gender)]);
+    submit([...events, makeEvent(chosenDistance, stroke, gender)]);
   };
 
   const saving = fetcher.state !== "idle";

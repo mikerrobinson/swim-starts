@@ -537,13 +537,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                           title={blocked ?? undefined}
                           onClick={() =>
                             event &&
-                            toggle(
-                              meet.id,
-                              event.id,
-                              athlete.id,
-                              athlete.teamId,
-                              !isIn,
-                            )
+                            toggle(event.id, athlete.id, athlete.teamId, !isIn)
                           }
                           className={`flex h-12 w-full touch-manipulation items-center justify-center text-xl font-bold transition-colors ${
                             event === undefined

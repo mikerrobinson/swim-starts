@@ -1,17 +1,38 @@
-// app/hooks/useHeat.ts
 import { useMemo } from "react";
 import { useMeet } from "~/hooks/useMeet";
-import { toSwimKey } from "~/types/swim";
+import type { MeetAthlete, Event } from "~/types/meet";
+import { toSwimKey, type Swim } from "~/types/swim";
+import type { Watch } from "~/types/watch";
 
-export function useHeat(eventId: string, heat: number) {
+type LaneManifest = {
+  swim: Swim;
+  athlete?: MeetAthlete;
+  watches: Watch[];
+  isComplete: boolean;
+};
+
+type HeatManifest = {
+  event: Event;
+  heatNumber: number;
+  totalHeats: number;
+  lanes: Record<number, LaneManifest>;
+  isComplete: boolean;
+  prev: {
+    eventId: string;
+    heat: number;
+  } | null;
+  next: {
+    eventId: string;
+    heat: number;
+  } | null;
+};
+
+export function useHeat(eventId: string, heat: number): HeatManifest | null {
   const { events, details, athletes, swims, watches } = useMeet();
 
   return useMemo(() => {
-    if (!events) return null;
-
     const event = events[eventId];
     if (!event) return null;
-
     // 1. Resolve Heats & Navigation Pointers
     const sortedEvents = Object.values(events).sort(
       (a, b) => a.position - b.position,
@@ -38,7 +59,7 @@ export function useHeat(eventId: string, heat: number) {
     // 2. Hydrate the Lane Grid (assuming standard 6 or 8 lane configuration)
     let filledLanes = 0;
     let completedLanes = 0;
-    const lanes: Record<number, any> = {};
+    const lanes: Record<number, LaneManifest> = {};
 
     // Standard pool lanes (e.g., 1 to 6)
     for (let lane = 1; lane <= (details.laneCount || 6); lane++) {
@@ -81,5 +102,5 @@ export function useHeat(eventId: string, heat: number) {
       prev,
       next,
     };
-  }, [eventId, heat]);
+  }, [eventId, heat, events, details, swims, athletes, watches]);
 }
