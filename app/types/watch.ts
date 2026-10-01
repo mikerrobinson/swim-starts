@@ -13,9 +13,9 @@ export interface WatchIdentity {
 export interface Watch extends WatchIdentity {
   role: WatchRole;
   userId?: string;
-  startedAt?: number;
-  stoppedAt?: number;
-  timeMs?: number;
+  startedAt: number;
+  stoppedAt: number;
+  timeMs: number;
   recordedAt: number;
 }
 

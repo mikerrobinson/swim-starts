@@ -279,6 +279,7 @@ function swimFromRow(row: SwimRow): Swim {
     decidedBy: row.decided_by ?? undefined,
   };
 }
+
 function watchFromRow(row: WatchRow): Watch {
   return {
     eventId: row.event_id,
@@ -288,9 +289,9 @@ function watchFromRow(row: WatchRow): Watch {
     slot: row.slot,
     role: row.role === "admin" || row.role === "coach" ? row.role : "timer",
     userId: row.user_id ?? undefined,
-    timeMs: row.time_ms ?? undefined,
-    startedAt: row.started_at ?? undefined,
-    stoppedAt: row.stopped_at ?? undefined,
+    timeMs: row.time_ms ?? 0,
+    startedAt: row.started_at ?? 0,
+    stoppedAt: row.stopped_at ?? 0,
     recordedAt: row.recorded_at,
   };
 }
@@ -1012,10 +1013,10 @@ export class MeetDurableObject extends DurableObject<Env> {
       watch.deviceId,
       watch.slot,
       watch.role,
-      watch.userId ?? null,
-      watch.timeMs ?? null,
-      watch.startedAt ?? null,
-      watch.stoppedAt ?? null,
+      watch.userId ?? undefined,
+      watch.timeMs,
+      watch.startedAt,
+      watch.stoppedAt,
       watch.recordedAt,
     );
 

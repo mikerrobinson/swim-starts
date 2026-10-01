@@ -11,7 +11,7 @@ import { useMeet } from "~/hooks/useMeet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId } from "~/state/user";
-import { timerCookiePath } from "~/lib/timer-path";
+import type { Watch } from "~/types/watch";
 
 export default function TimerLaneKiosk() {
   const params = useParams();
@@ -27,9 +27,29 @@ export default function TimerLaneKiosk() {
 
   const lane = Number(params.lane);
   const heat = useHeat(params.event!, Number(params.heat));
-  const watch = heat?.lanes[lane].watches.find(
+
+  const DEFAULT_WATCH: Watch = {
+    eventId: heat?.event.id || "",
+    heat: heat?.heatNumber || 0,
+    lane: lane,
+    deviceId: device,
+    slot: 0,
+    startedAt: 0,
+    stoppedAt: 0,
+    timeMs: 0,
+    role: "timer",
+    recordedAt: 0,
+  };
+
+  const w = heat?.lanes[lane].watches.find(
     (w) => w.deviceId == device && w.slot == 0,
   );
+
+  //console.log("RENDERING TIMER SCREEN FOR WATCH: ", JSON.stringify(w, null, 2));
+
+  const previouslySubmitted = w && w.timeMs > 0;
+  console.log("canSubmit: ", previouslySubmitted);
+  const [watch, setWatch] = useState<Watch>(w || DEFAULT_WATCH);
 
   // High-performance touch timing state
   const [stopwatchMs, setStopwatchMs] = useState<number | null>(
@@ -37,71 +57,74 @@ export default function TimerLaneKiosk() {
       ?.timeMs || null,
   );
   const [isRunning, setIsRunning] = useState(false);
-  const startTimestamp = useRef<number>(0);
-  const stopTimestamp = useRef<number>(0);
-  const timeMs = useRef<number>(0);
   const animFrameRef = useRef<number>(0);
 
   const sendWatch = () => {
     send({
       entity: "watch",
       op: "upsert",
-      key: {
-        eventId: heat?.event.id || "",
-        heat: heat?.heatNumber || 1,
-        lane,
-        deviceId: device,
-        slot: 0,
-      },
-      patch: {
-        startedAt: startTimestamp.current,
-        stoppedAt: 0,
-        timeMs: 0,
-      },
+      key: watch,
+      patch: watch,
     });
   };
   const startStopwatch = useCallback(
     (e: React.TouchEvent | React.MouseEvent) => {
       e.preventDefault();
-      startTimestamp.current = e.timeStamp;
-      stopTimestamp.current = 0;
+      const lag = performance.now() - e.timeStamp;
+      const startedAt = Math.round(Date.now() - lag);
+      setWatch((watch) => ({
+        ...watch,
+        startedAt,
+        stoppedAt: 0,
+        timeMs: 0,
+      }));
       setStopwatchMs(0);
       setIsRunning(true);
       sendWatch();
+      console.log("startStopwatch (end): ", JSON.stringify(watch, null, 2));
       const update = () => {
-        setStopwatchMs(Math.round(performance.now() - startTimestamp.current));
+        setStopwatchMs(Math.round(performance.now() - watch.startedAt));
         animFrameRef.current = requestAnimationFrame(update);
       };
       animFrameRef.current = requestAnimationFrame(update);
     },
-    [],
+    [watch],
   );
 
   const stopStopwatch = useCallback(
     (e: React.TouchEvent | React.MouseEvent) => {
       e.preventDefault();
-      stopTimestamp.current = e.timeStamp;
+      const lag = performance.now() - e.timeStamp;
+      const stoppedAt = Math.round(Date.now() - lag);
+      console.log("stopStopwatch (begin): ", JSON.stringify(watch, null, 2));
+      setWatch((watch) => ({
+        ...watch,
+        stoppedAt,
+        timeMs: stoppedAt - watch.startedAt,
+      }));
       sendWatch();
       cancelAnimationFrame(animFrameRef.current);
-      const finalElapsed = Math.round(
-        stopTimestamp.current - startTimestamp.current,
-      );
-      setStopwatchMs(finalElapsed);
+      setStopwatchMs(watch.timeMs);
       setIsRunning(false);
+      console.log("stopStopwatch (end): ", JSON.stringify(watch, null, 2));
     },
-    [],
+    [watch],
   );
 
   const resetStopwatch = () => {
-    startTimestamp.current = 0;
-    stopTimestamp.current = 0;
-    timeMs.current = 0;
+    setWatch((watch) => ({
+      ...watch,
+      startedAt: 0,
+      stoppedAt: 0,
+      timeMs: 0,
+    }));
     setStopwatchMs(0);
   };
 
   const submitStopwatch = () => {
+    console.log("submitStopwatch (begin): ", JSON.stringify(watch, null, 2));
+
     sendWatch();
-    resetStopwatch();
     heat?.next
       ? navigate(
           `/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`,
@@ -175,18 +198,26 @@ export default function TimerLaneKiosk() {
           </button>
         )}
 
-        <button
-          type="submit"
-          disabled={
-            isRunning ||
-            stopwatchMs === null ||
-            navigation.state === "submitting"
-          }
-          onClick={submitStopwatch}
-          className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
-        >
-          {navigation.state === "submitting" ? "Saving..." : "Submit & Advance"}
-        </button>
+        {previouslySubmitted ? (
+          <button
+            type="submit"
+            disabled={true}
+            className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
+          >
+            Already Submitted
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={isRunning || stopwatchMs === null}
+            onClick={submitStopwatch}
+            className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
+          >
+            {navigation.state === "submitting"
+              ? "Saving..."
+              : "Submit & Advance"}
+          </button>
+        )}
       </div>
     </div>
   );

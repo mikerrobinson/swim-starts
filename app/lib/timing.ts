@@ -89,7 +89,7 @@ function timedWatches(
  * a number in afterwards. Read off the two timestamps it leaves behind.
  */
 export function fromStopwatch(watch: Watch): boolean {
-  return watch.startedAt !== undefined && watch.stoppedAt !== undefined;
+  return watch.startedAt !== 0 && watch.stoppedAt !== 0;
 }
 
 export interface ProposedTime {
@@ -180,7 +180,7 @@ export function laneTime(watches: Watch[]): LaneTime | null {
   // The most recent, if an administrator has somehow left two — a later
   // reading replaces an earlier one rather than being averaged with it.
   const official = byRole("admin").sort(
-    (a, b) => b.recordedAt - a.recordedAt,
+    (a, b) => (b.recordedAt || 0) - (a.recordedAt || 0),
   )[0];
   if (official) {
     return {
@@ -236,10 +236,7 @@ export function runningWatches(
   slot: SwimIdentity,
 ): Watch[] {
   return currentWatches(rows, slot).filter(
-    (w) =>
-      w.timeMs === undefined &&
-      w.startedAt !== undefined &&
-      w.stoppedAt === undefined,
+    (w) => w.timeMs === 0 && w.startedAt !== 0 && w.stoppedAt === 0,
   );
 }
 

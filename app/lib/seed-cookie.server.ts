@@ -198,9 +198,9 @@ async function applyWatches(
 
     const against = retimed ? undefined : current;
     const unchanged =
-      wanted.startedAt === (against?.startedAt ?? null) &&
-      wanted.stoppedAt === (against?.stoppedAt ?? null) &&
-      wanted.timeMs === (against?.timeMs ?? null);
+      wanted.startedAt === against?.startedAt &&
+      wanted.stoppedAt === against?.stoppedAt &&
+      wanted.timeMs === against?.timeMs;
     if (unchanged) continue;
 
     await stub.upsertWatch(manifest.id, {
@@ -208,9 +208,9 @@ async function applyWatches(
       deviceId,
       slot: s,
       role: "timer",
-      timeMs: wanted.timeMs ?? undefined,
-      startedAt: wanted.startedAt ?? undefined,
-      stoppedAt: wanted.stoppedAt ?? undefined,
+      timeMs: wanted.timeMs,
+      startedAt: wanted.startedAt,
+      stoppedAt: wanted.stoppedAt,
       recordedAt: receivedAt,
     });
     changed = true;
