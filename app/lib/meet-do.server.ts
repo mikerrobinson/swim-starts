@@ -23,9 +23,6 @@ import { DurableObject } from "cloudflare:workers";
 import { generateId } from "./id";
 import { putAthlete } from "./athletes.server";
 import { enrolVisitor } from "./teams.server";
-import { teamsCoachedBy } from "./coaches.server";
-import { whyNotEnter } from "./events";
-import { reseedEvent } from "./heats";
 import type {
   Event,
   MeetDetails,
@@ -1275,80 +1272,6 @@ export class MeetDurableObject extends DurableObject<Env> {
         key: swim,
         patch: swim,
       });
-    }
-  }
-
-  /**
-   * Re-seed an event over its current entrants, exactly the rule
-   * `api.meet.writes.ts` always followed: skipped once anything has been
-   * recorded against the event, since a scratch or a late entry must not
-   * rearrange a swim that's already been timed.
-   *
-   * Persists as a full replace of the event's lanes — `reseedEvent` can
-   * reshuffle which athlete is in which heat/lane wholesale, so this can't
-   * go lane by lane through `upsertSwim`/`deleteSwim` without one seat's
-   * "vacate whatever other lane this athlete held" briefly colliding with
-   * another seat from the very same pass. Diffed by lane (`SwimKey`, not an
-   * id — there isn't one) so only the lanes that actually changed get
-   * broadcast, and a lane nobody touched doesn't flicker on every connected
-   * screen. An un-entered swim (a walk-up nobody's backfilled an entry for)
-   * isn't in `entrants` at all, so it can be reflowed or dropped by this
-   * same pass — accepted, per `migration-plan.md`.
-   */
-  private async reseedIfUntouched(
-    meetId: string,
-    eventId: string,
-    meet: Pick<MeetDetails, "laneAssignments" | "laneCount">,
-  ): Promise<void> {
-    const swims = this.ctx.storage.sql
-      .exec<SwimRow>("SELECT * FROM swims WHERE event_id = ?", eventId)
-      .toArray()
-      .map(swimFromRow);
-    const watches = this.ctx.storage.sql
-      .exec<WatchRow>("SELECT * FROM watches WHERE event_id = ?", eventId)
-      .toArray()
-      .map(watchFromRow);
-
-    const entries = this.readEntries()[eventId] ?? [];
-
-    const nextSwims = reseedEvent(
-      { swims, watches },
-      eventId,
-      entries,
-      meet.laneAssignments,
-      meet.laneCount,
-    );
-    // Only null when the event turned out to be touched.
-    if (!nextSwims) return;
-
-    const before = new Map(swims.map((s) => [toSwimKey(s), s] as const));
-    const after = new Map(nextSwims.map((s) => [toSwimKey(s), s] as const));
-
-    this.ctx.storage.sql.exec("DELETE FROM swims WHERE event_id = ?", eventId);
-    for (const swim of nextSwims) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        eventId,
-        swim.heat,
-        swim.lane,
-        swim.athleteId ?? "",
-        swim.athleteName ?? "",
-        swim.athleteTeam ?? "",
-        swim.exhibition ? 1 : 0,
-      );
-    }
-
-    for (const [key, prior] of before) {
-      if (!after.has(key))
-        this.broadcast({ type: "SWIM", swim: prior, isDelete: true });
-    }
-    for (const [key, swim] of after) {
-      const prior = before.get(key);
-      if (prior && prior.athleteId === swim.athleteId) {
-        continue; // Unmoved — nothing for a connected screen to redraw.
-      }
-      this.broadcast({ type: "SWIM", swim, isDelete: false });
     }
   }
 
