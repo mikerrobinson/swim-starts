@@ -4,6 +4,7 @@ import {
   data,
   NavLink,
   Outlet,
+  redirect,
   useLoaderData,
   useLocation,
   useMatches,
@@ -20,13 +21,35 @@ import type { MeetRouteHandle } from "~/lib/route-handle";
 import { meetSubtitle } from "~/types/meet";
 import { drainOutboxCookies } from "~/lib/cookieDrain.server";
 import { currentUser } from "~/lib/api.server";
+import type { EntityMutation } from "~/types/mutations";
+
+export async function action({ params, request, context }: Route.ActionArgs) {
+  const db = context.cloudflare.env.DB;
+  const meetId = params.meetId!;
+  const [user, meet] = await Promise.all([
+    currentUser(request, db),
+    getMeet(db, meetId),
+  ]);
+  if (!meet) throw new Response("No such meet", { status: 404 });
+
+  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
+
+  const { mutations, clearHeaders } = drainOutboxCookies(request, meetId);
+  if (mutations.length > 0) {
+    if (user !== null) {
+      await stub.processMutations(meetId, user, mutations);
+    } else {
+      redirect("/login");
+    }
+  }
+  return data({ ok: true }, { headers: clearHeaders });
+}
 
 export async function loader({ params, context, request }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
   const user = await currentUser(request, db);
 
-  console.log("SERVER LOADER meet-layout", Date.now());
   const [meetFacts] = await Promise.all([getMeet(db, meetId)]);
   if (!meetFacts) throw new Response("Meet Not Found", { status: 404 });
 
@@ -36,43 +59,14 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
 
   const { mutations, clearHeaders } = drainOutboxCookies(request, meetId);
-  // if (mutations.length > 0) {
-  //   await stub.batchProcessMutations(mutations);
-  // }
-
-  if (mutations.length > 0 && mutations.some((m) => m.entity === "entry")) {
-    const meet = await stub.getMeetManifest(meetId);
-    if (meet) {
-      for (const mutation of mutations) {
-        if (mutation.entity === "entry") {
-          const result =
-            mutation.op === "delete"
-              ? await stub.declareEntry(
-                  {
-                    meetId,
-                    eventId: mutation.key.eventId,
-                    athleteId: mutation.key.athleteId,
-                    teamId: "",
-                    entering: false,
-                  },
-                  meet,
-                  user?.id ?? null,
-                )
-              : await stub.declareEntry(
-                  {
-                    meetId,
-                    eventId: mutation.key.eventId,
-                    athleteId: mutation.key.athleteId,
-                    teamId: mutation.patch.teamId || "",
-                    entering: true,
-                  },
-                  meet,
-                  user?.id ?? null,
-                );
-        }
-      }
+  if (mutations.length > 0) {
+    if (user !== null) {
+      await stub.processMutations(meetId, user, mutations);
+    } else {
+      redirect("/login");
     }
   }
+
   return data(
     { meet: await stub.getMeetManifest(meetId) },
     { headers: clearHeaders },
@@ -86,28 +80,21 @@ export async function clientLoader({
   const meetId = params.meetId!;
   const cached = meetCache.getMeet(meetId);
 
-  console.log("meet-layout CLIENTLOADER");
-
   // 1. If we have local memory AND it's not marked stale, return immediately (0ms)
   if (cached && !meetCache.isStale(meetId)) {
-    console.log("RETURNING CACHED VERSION");
     return { meet: cached };
   }
 
   // 2. Stale while revalidate
   if (cached) {
-    console.log("stale while revalidate");
-
     serverLoader()
       .then((fresh) => {
-        console.log("GOT meet-layout serverLoader response");
         meetCache.saveMeet(meetId, fresh.meet);
       })
       .catch(() => {});
     return { meet: cached };
   }
 
-  console.log("no cache");
   // 3. No cache - need to await server
   const fresh = await serverLoader();
   meetCache.saveMeet(meetId, fresh.meet);
@@ -314,13 +301,13 @@ function LiveMeetSync({
 
       socket.onmessage = (event) => {
         if (typeof event.data !== "string") return;
-        let msg: LiveSocketMessage;
+        let mutation: EntityMutation;
         try {
-          msg = JSON.parse(event.data) as LiveSocketMessage;
+          mutation = JSON.parse(event.data) as EntityMutation;
         } catch {
           return; // Not something we sent; not something we can apply.
         }
-        meetCache.applyPatch(meetId, msg, {
+        meetCache.applyPatch(meetId, mutation, {
           onRevalidate: () => revalidator.revalidate(),
         });
       };

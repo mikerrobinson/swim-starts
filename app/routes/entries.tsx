@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
-  useRevalidator,
   useSearchParams,
-  useSubmit,
   type ShouldRevalidateFunctionArgs,
 } from "react-router";
 import type { Route } from "./+types/entries";
@@ -18,7 +16,6 @@ import {
 } from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { getMeet } from "~/lib/meets.server";
-import { meetCache, type LiveSocketMessage } from "~/lib/meetCache";
 import { useMeet } from "~/hooks/useMeet";
 import { useViewPrefs } from "~/state/view-prefs";
 import type { MeetRouteHandle, ToggleOption } from "~/lib/route-handle";
@@ -35,8 +32,8 @@ import {
 import { toEntryKey } from "~/types/entry";
 import type { Entry } from "~/types/entry";
 import type { Athlete, Gender } from "~/types/athlete";
-import { cookieOutbox as outbox } from "~/lib/cookieOutbox";
-import type { EntityMutation } from "~/types/mutations";
+import { useMeetMutation } from "~/hooks/useMeetMutation";
+import { useUser } from "~/state/user";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Entries · Swim Starts" }];
@@ -98,10 +95,9 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     currentUser(request, db),
     getMeet(db, meetId),
   ]);
-  const userId = user?.id ?? null;
-  const coachedTeamIds = userId ? await teamsCoachedBy(db, userId) : [];
+  const coachedTeamIds = user?.id ? await teamsCoachedBy(db, user.id) : [];
 
-  return { userId, coachedTeamIds, meet };
+  return { coachedTeamIds, meet };
 }
 
 /** What `access.ts`'s predicates fall back to when the meet's own D1 row
@@ -118,102 +114,6 @@ export function shouldRevalidate({
   defaultShouldRevalidate,
 }: ShouldRevalidateFunctionArgs) {
   return currentUrl.pathname !== nextUrl.pathname || defaultShouldRevalidate;
-}
-
-/**
- * One tap, one entry. `entering`/`eventId`/`athleteId` are all this needs —
- * see `MeetDurableObject.declareEntry`, which re-checks everything
- * (`canEnter`, `whyNotEnter`) against the session rather than trusting the
- * client's own read of either.
- */
-export async function action({ params, request, context }: Route.ActionArgs) {
-  const db = context.cloudflare.env.DB;
-  const meetId = params.meetId!;
-  const [user, meet] = await Promise.all([
-    currentUser(request, db),
-    getMeet(db, meetId),
-  ]);
-  if (!meet) throw new Response("No such meet", { status: 404 });
-
-  const form = await request.formData();
-  const eventId = String(form.get("eventId") ?? "");
-  const athleteId = String(form.get("athleteId") ?? "");
-  const teamId = String(form.get("teamId"));
-  const entering = form.get("entering") === "true";
-
-  const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
-  // const result = await stub.declareEntry(
-  //   { meetId, eventId, athleteId, teamId, entering },
-  //   meet,
-  //   user?.id ?? null,
-  // );
-  // if (!result.ok) {
-  //   throw new Response(result.error, { status: result.status });
-  // }
-  return { ok: true };
-}
-
-/**
- * The tick moves the instant it's tapped: patch `meetCache`'s cached
- * manifest the same shape a `MEET_DETAILS`/`ENTRY` broadcast would, then
- * hand off to the real request. Refused writes (an entry limit, mostly)
- * don't reach here in practice — `locked` below disables the tap before it
- * can happen — so there's nothing to roll back on the rare case the server
- * disagrees; the next revalidation just shows what actually stuck.
- */
-export async function clientAction({
-  params,
-  request,
-  serverAction,
-}: Route.ClientActionArgs) {
-  const meetId = params.meetId!;
-  const form = await request.clone().formData();
-  const eventId = String(form.get("eventId") ?? "");
-  const athleteId = String(form.get("athleteId") ?? "");
-  const teamId = String(form.get("teamId") ?? "");
-  const entering = form.get("entering") === "true";
-  // Set by the component from `useUser()` — see `toggle` below. Only for
-  // this optimistic patch's own accuracy; the server never trusts it,
-  // deciding `entered_by` itself from the session (`declareEntry`).
-  const enteredBy = String(form.get("enteredBy") ?? "");
-
-  const msg: LiveSocketMessage = {
-    type: "ENTRY",
-    entry: {
-      eventId,
-      athleteId,
-      teamId,
-      exhibition: false,
-      enteredAt: Date.now(),
-      enteredBy,
-    },
-    isDelete: !entering,
-  };
-
-  const mutation: EntityMutation = {
-    entity: "entry",
-    op: !entering ? "delete" : "upsert",
-    key: {
-      eventId,
-      athleteId,
-    },
-    patch: {
-      teamId,
-      exhibition: false,
-      enteredAt: Date.now(),
-      enteredBy,
-    },
-  };
-
-  meetCache.applyPatch(meetId, mutation);
-
-  void outbox.enqueue(meetId, mutation);
-  try {
-    return await serverAction();
-  } catch {
-    // Suppress network error so UI doesn't trip error boundaries while offline
-    return { ok: true };
-  }
 }
 
 /**
@@ -273,16 +173,17 @@ function eventFor(race: Race, athlete: Athlete): Event | undefined {
 }
 
 export default function Registration({ loaderData }: Route.ComponentProps) {
-  const { userId, coachedTeamIds } = loaderData;
+  const { coachedTeamIds } = loaderData;
+  const user = useUser();
   const meetFacts = loaderData.meet ?? EMPTY_MEET_FACTS;
   const meet = useMeet();
-  const submit = useSubmit();
-  const revalidator = useRevalidator();
+  const { send } = useMeetMutation(meet.id);
+
   const {
     viewPrefs: { nameOrder },
   } = useViewPrefs();
 
-  const isAdmin = canEditMeet({ meet: meetFacts, userId });
+  const isAdmin = canEditMeet({ meet: meetFacts, userId: user?.id || "" });
   // This meet's teams, narrowed to the ones the loader already found this
   // person coaching.
   const myRacingTeams = meetFacts.teamIds.filter((id) =>
@@ -382,7 +283,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
   // no claim on it, and the results are public either way.
   const mayLook =
     meet.details.entryVisibility === "everyone" ||
-    canRecordTime({ meet: meetFacts, userId, coachedTeamIds });
+    canRecordTime({ meet: meetFacts, userId: user?.id || "", coachedTeamIds });
   if (!mayLook) {
     return (
       <EmptyState title="Entries aren't public for this meet">
@@ -415,7 +316,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
     const athlete = meet.athletes[athleteId];
     return canEnter({
       meet: meetFacts,
-      userId,
+      userId: user?.id || "",
       coachedTeamIds,
       athlete: {
         id: athleteId,
@@ -433,42 +334,35 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
    * history entries.
    */
   const toggle = (
-    meetId: string,
     eventId: string,
     athleteId: string,
     teamId: string,
     entering: boolean,
   ) => {
-    const form = new FormData();
-    form.set("eventId", eventId);
-    form.set("athleteId", athleteId);
-    form.set("teamId", teamId);
-    form.set("entering", String(entering));
-    form.set("enteredBy", userId ?? "");
-
-    // const entry = {
-    //   eventId,
-    //   athleteId,
-    //   teamId,
-    //   exhibition: false,
-    //   enteredAt: Date.now(),
-    //   enteredBy: userId || "",
-    // };
-
-    // meetCache.applyPatch(
-    //   meetId,
-    //   {
-    //     type: "ENTRY",
-    //     entry,
-    //     isDelete: !entering,
-    //   },
-    //   {
-    //     onRevalidate: () => revalidator.revalidate(),
-    //     immediate: true,
-    //   },
-    // );
-
-    submit(form, { method: "post", navigate: false });
+    if (entering) {
+      send({
+        entity: "entry",
+        op: "upsert",
+        key: {
+          eventId,
+          athleteId,
+        },
+        patch: {
+          teamId,
+          enteredAt: Date.now(),
+          enteredBy: user?.id || "",
+        },
+      });
+    } else {
+      send({
+        entity: "entry",
+        op: "delete",
+        key: {
+          eventId,
+          athleteId,
+        },
+      });
+    }
   };
 
   /** The count line under a column header, phrased for the current filter. */
@@ -494,7 +388,7 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
               // Their own team if they coach one of the ones racing, since
               // that is the roster they can actually add to; otherwise the
               // host's, which is the one they came to look at.
-              to={`/teams/${myRacingTeams[0] ?? loaderData.meet?.hostTeamId ?? meetFacts.teamIds[0] ?? ""}`}
+              to={`/teams/${myRacingTeams[0] ?? meetFacts.teamIds[0] ?? ""}`}
               className="font-semibold text-blue-600 underline"
             >
               Add swimmers
@@ -617,13 +511,6 @@ export default function Registration({ loaderData }: Route.ComponentProps) {
                           athleteId: athlete.id,
                         })
                       ] != null;
-                    // const isIn =
-                    //   event !== undefined &&
-                    //   registered.has(`${event.id}|${athlete.id}`);
-                    // Who may change this cell is a per-swimmer question: an
-                    // administrator may change any, a coach only their own
-                    // team's, a swimmer only their own and only when the meet
-                    // allows it.
                     const mayEdit =
                       event !== undefined && mayEditFor(athlete.id);
                     // Entry limits are the meet's rules, so they're checked

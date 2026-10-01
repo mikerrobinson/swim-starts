@@ -18,6 +18,19 @@ export function toAthleteKey(athlete: AthleteIdentity): AthleteKey {
   return athlete.id;
 }
 
+export type AthleteUpsertMutation = {
+  entity: "athlete";
+  op: "upsert";
+  key: AthleteIdentity;
+  patch: Partial<Omit<Athlete, keyof AthleteIdentity>>;
+};
+
+export type AthleteDeleteMutation = {
+  entity: "athlete";
+  op: "delete";
+  key: AthleteIdentity;
+};
+
 /**
  * Age on a given date — what age-group entries are seeded by, and what an
  * export has to state. Returns null when the birth date is missing or

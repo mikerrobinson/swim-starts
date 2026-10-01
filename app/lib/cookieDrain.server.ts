@@ -32,7 +32,7 @@ export function drainOutboxCookies(
 
       if (rawName.startsWith(`${COOKIE_PREFIX}e_`)) {
         const parts = rawName.slice(`${COOKIE_PREFIX}e_`.length).split("_");
-        if (parts.length >= 5) {
+        if (parts.length >= 2) {
           const [eventId, athleteId] = parts;
           const key = {
             eventId,
@@ -59,7 +59,7 @@ export function drainOutboxCookies(
       // Instruct browser to delete this processed cookie
       clearHeaders.append(
         "Set-Cookie",
-        `${rawName}=; Path=${path}; Max-Age=0; SameSite=Lax; Secure`,
+        `${rawName}=; Path=${path}; Max-Age=0; SameSite=Lax;`,
       );
     } catch (err) {
       console.error("Failed to parse outbox cookie:", rawName, err);

@@ -23,19 +23,23 @@ import { DurableObject } from "cloudflare:workers";
 import { generateId } from "./id";
 import { putAthlete } from "./athletes.server";
 import { enrolVisitor } from "./teams.server";
-import { canEnter, type MeetFacts } from "./access";
 import { teamsCoachedBy } from "./coaches.server";
 import { whyNotEnter } from "./events";
 import { reseedEvent } from "./heats";
-import type { LiveSocketMessage } from "./meetCache";
 import type {
   Event,
   MeetDetails,
   Stroke,
   MeetManifest,
   MeetAthlete,
+  LaneCount,
+  LaneAssignments,
 } from "~/types/meet";
-import type { Entry } from "~/types/entry";
+import type {
+  Entry,
+  EntryDeleteMutation,
+  EntryUpsertMutation,
+} from "~/types/entry";
 import type { EntryKey } from "~/types/entry";
 import type { Swim } from "~/types/swim";
 import type { SwimIdentity } from "~/types/swim";
@@ -44,15 +48,17 @@ import type { ResultStatus } from "~/types/swim";
 import type { Watch } from "~/types/watch";
 import type { WatchIdentity } from "~/types/watch";
 import { athleteName, DEFAULT_MEET_DETAILS } from "~/types/meet";
-import { toEntryKey } from "~/types/entry";
+import { canDeleteEntry, canUpsertEntry, toEntryKey } from "~/types/entry";
 import { toSwimKey } from "~/types/swim";
 import { toWatchKey } from "~/types/watch";
 import type { Team } from "~/types/team";
 import type { Athlete, Gender } from "~/types/athlete";
+import type { EntityMutation } from "~/types/mutations";
+import type { User } from "~/types/user";
+import { swimsForEvent, type TimingRows } from "./timing";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS swims (
-     meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
      heat INTEGER NOT NULL,
      lane INTEGER NOT NULL,
@@ -65,12 +71,11 @@ const SCHEMA = [
      decided_at INTEGER,
      decided_by TEXT,
 
-     PRIMARY KEY (meet_id, event_id, heat, lane)
+     PRIMARY KEY (event_id, heat, lane)
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS swims_by_lane ON swims (event_id, heat, lane)`,
 
   `CREATE TABLE IF NOT EXISTS watches (
-     meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
      heat INTEGER NOT NULL,
      lane INTEGER NOT NULL,
@@ -83,15 +88,14 @@ const SCHEMA = [
      stopped_at INTEGER,
      recorded_at INTEGER NOT NULL,
 
-     PRIMARY KEY (meet_id, event_id, heat, lane, device_id, slot),
-     FOREIGN KEY (meet_id, event_id, heat, lane) 
-       REFERENCES swims(meet_id, event_id, heat, lane) 
+     PRIMARY KEY (event_id, heat, lane, device_id, slot),
+     FOREIGN KEY (event_id, heat, lane) 
+       REFERENCES swims(event_id, heat, lane) 
        ON DELETE CASCADE
    )`,
   `CREATE INDEX IF NOT EXISTS watches_by_swim ON watches (event_id, heat, lane)`,
 
   `CREATE TABLE IF NOT EXISTS entries (
-     meet_id TEXT NOT NULL,
      event_id TEXT NOT NULL,
      athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
      team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -167,7 +171,6 @@ const SCHEMA = [
 /** How this DO's own live tables come back, before mapping to POCOs. */
 interface SwimRow {
   [key: string]: SqlStorageValue;
-  meet_id: string;
   event_id: string;
   heat: number;
   lane: number;
@@ -183,7 +186,6 @@ interface SwimRow {
 
 interface WatchRow {
   [key: string]: SqlStorageValue;
-  meet_id: string;
   event_id: string;
   heat: number;
   lane: number;
@@ -198,7 +200,6 @@ interface WatchRow {
 }
 interface EntryRow {
   [key: string]: SqlStorageValue;
-  meet_id: string;
   event_id: string;
   athlete_id: string;
   team_id: string;
@@ -306,6 +307,8 @@ function entryFromRow(row: EntryRow): Entry {
   };
 }
 
+export type DBResult = "applied" | "noop" | "failed";
+
 /** Who a live connection is, resolved by the Worker before the upgrade ever
  *  reaches the DO — see `api.meet.live.ts`. */
 export type MeetRole = "admin" | "coach" | "timer" | "spectator";
@@ -338,6 +341,48 @@ export class MeetDurableObject extends DurableObject<Env> {
         key,
         value,
       );
+    }
+  }
+
+  async processMutation(
+    meetId: string,
+    user: User,
+    mutation: EntityMutation,
+  ): Promise<void> {
+    const meet = await this.getMeetManifest(meetId);
+    switch (mutation.entity) {
+      case "entry":
+        if (
+          mutation.op === "delete" &&
+          canDeleteEntry(mutation.key, user, meet)
+        ) {
+          await this.deleteEntry(mutation);
+        } else if (
+          mutation.op === "upsert" &&
+          canUpsertEntry(mutation.key, user, meet)
+        ) {
+          await this.upsertEntry(mutation);
+        }
+        break;
+      case "athlete":
+        break;
+      case "swim":
+        break;
+      case "watch":
+        break;
+    }
+  }
+
+  // TBD: maybe parallelize here?
+  async processMutations(
+    meetId: string,
+    user: User,
+    mutations: EntityMutation[],
+  ): Promise<void> {
+    if (mutations === null || mutations.length < 1) return;
+
+    for (const mutation of mutations) {
+      this.processMutation(meetId, user, mutation);
     }
   }
 
@@ -742,12 +787,9 @@ export class MeetDurableObject extends DurableObject<Env> {
 
   /** Every declared entry, by event — the DO's own, not D1's, now that
    *  `declareEntry` is the only place an entry is written. */
-  private readEntries(meetId: string): Record<string, Entry[]> {
+  private readEntries(): Record<string, Entry[]> {
     const rows = this.ctx.storage.sql
-      .exec<EntryRow>(
-        "SELECT * FROM entries WHERE meet_id = ? ORDER BY entered_at",
-        meetId,
-      )
+      .exec<EntryRow>("SELECT * FROM entries ORDER BY entered_at")
       .toArray();
     const entries: Record<string, Entry[]> = {};
     for (const row of rows)
@@ -830,8 +872,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     }
 
     this.ctx.storage.sql.exec(
-      `INSERT INTO swims (meet_id, event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition, status, official_time_ms, decided_at, decided_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition, status, official_time_ms, decided_at, decided_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(event_id, heat, lane) DO UPDATE SET
          athlete_id = excluded.athlete_id,
          athlete_name = excluded.athlete_name,
@@ -841,7 +883,6 @@ export class MeetDurableObject extends DurableObject<Env> {
          official_time_ms = excluded.official_time_ms,
          decided_at = excluded.decided_at,
          decided_by = excluded.decided_by`,
-      meetId,
       swim.eventId,
       swim.heat,
       swim.lane,
@@ -905,10 +946,9 @@ export class MeetDurableObject extends DurableObject<Env> {
    */
   private ensureSwimRow(meetId: string, slot: SwimIdentity): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO swims (meet_id, event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
-       VALUES (?, ?, ?, ?, '', '', '', 0)
+      `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
+       VALUES (?, ?, ?, '', '', '', 0)
        ON CONFLICT(event_id, heat, lane) DO NOTHING`,
-      meetId,
       slot.eventId,
       slot.heat,
       slot.lane,
@@ -958,16 +998,15 @@ export class MeetDurableObject extends DurableObject<Env> {
     this.ensureSwimRow(meetId, watch);
 
     this.ctx.storage.sql.exec(
-      `INSERT INTO watches (meet_id, event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(meet_id, event_id, heat, lane, device_id, slot) DO UPDATE SET
+      `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(event_id, heat, lane, device_id, slot) DO UPDATE SET
          role = excluded.role,
          user_id = excluded.user_id,
          time_ms = excluded.time_ms,
          started_at = excluded.started_at,
          stopped_at = excluded.stopped_at,
          recorded_at = excluded.recorded_at`,
-      meetId,
       watch.eventId,
       watch.heat,
       watch.lane,
@@ -1016,144 +1055,227 @@ export class MeetDurableObject extends DurableObject<Env> {
     });
   }
 
+  async deleteEntry(mutation: EntryDeleteMutation): Promise<void> {
+    const cursor = this.ctx.storage.sql.exec(
+      "DELETE FROM entries WHERE event_id = ? AND athlete_id = ? RETURNING athlete_id",
+      mutation.key.eventId,
+      mutation.key.athleteId,
+    );
+    if (cursor.toArray().length > 0) {
+      this.broadcast(mutation);
+      this.reseed(mutation.key.eventId);
+    }
+  }
+
+  async upsertEntry(mutation: EntryUpsertMutation): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO entries (event_id, athlete_id, team_id, seed_time_ms, exhibition, entered_at, entered_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      mutation.key.eventId,
+      mutation.key.athleteId,
+      mutation.patch.teamId,
+      mutation.patch.seedTimeMs ?? null,
+      mutation.patch.exhibition ? 1 : 0,
+      mutation.patch.enteredAt,
+      mutation.patch.enteredBy,
+    );
+    this.broadcast(mutation);
+    this.reseed(mutation.key.eventId);
+  }
+
   /**
-   * Entering or scratching one swimmer
-   *
-   * `meet`/`userId` are resolved by the Worker from the session (and the
-   * meet's own D1 row) before this is ever called — same separation as the
-   * WebSocket handshake in `fetch`, and why this takes the caller's already-
-   * fetched `Meet` rather than fetching its own copy the way this used to.
-   * "Every team `userId` coaches" is resolved here rather than passed in,
-   * for the same reason `api.meet.writes.ts` resolves its own copy instead
-   * of reading it off a cached identity: it's a fact about `team_coaches`,
-   * asked fresh by this id, not something carried on the caller.
-   * Returns a refusal rather than throwing: a DO RPC error crossing the
-   * Worker boundary loses everything but a message, and the caller needs a
-   * status code to answer with.
+   * Lane assignment order, fastest lane first. Standard practice puts the top
+   * seed in the middle of the pool and works outward, alternating sides: six
+   * lanes seed 3-4-2-5-1-6, five lanes 3-2-4-1-5. An even pool has no true
+   * centre, so its first pair leans to the high side.
    */
-  async declareEntry(
-    input: {
-      meetId: string;
-      eventId: string;
-      athleteId: string;
-      teamId: string;
-      entering: boolean;
-      seedTimeMs?: number;
-      exhibition?: boolean;
-    },
-    meet: MeetManifest,
-    userId: string | null,
-  ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
-    const [teamsOf, athleteUserId, coachedTeamIds] = await Promise.all([
-      this.teamsOfAthlete(input.athleteId),
-      this.athleteUserId(input.athleteId),
-      userId ? teamsCoachedBy(this.env.DB, userId) : Promise.resolve([]),
-    ]);
-    // TBD: FIX THIS
-    // if (
-    //   !canEnter({
-    //     { adminIds: Object.values(meet.admins).map((a) => a.id),
-    //       teamIds: [],
-    //       athletesMayEnter: true,
-    //      } as MeetFacts,
-    //     userId,
-    //     coachedTeamIds,
-    //     athlete: {
-    //       id: input.athleteId,
-    //       userId: athleteUserId,
-    //       teamIds: teamsOf,
-    //     },
-    //   })
-    // ) {
-    //   return {
-    //     ok: false,
-    //     status: 403,
-    //     error: "That swimmer isn't yours to enter.",
-    //   };
-    // }
+  private laneOrder(laneCount: LaneCount): number[] {
+    const middle = Math.floor((laneCount + 1) / 2);
+    const even = laneCount % 2 === 0;
+    const order = [middle];
 
-    let enteredAt = 0;
-    if (input.entering) {
-      const events = this.ctx.storage.sql
-        .exec<LiveEventRow>("SELECT * FROM events")
-        .toArray()
-        .map(liveEventFromRow);
-      const refusal = whyNotEnter(
-        {
-          events,
-          entries: this.readEntries(input.meetId),
-          limits: meet.details.limits,
-        },
-        input.athleteId,
-        input.eventId,
-      );
-      if (refusal) return { ok: false, status: 400, error: refusal };
+    for (let step = 1; order.length < laneCount; step++) {
+      for (const lane of even
+        ? [middle + step, middle - step]
+        : [middle - step, middle + step]) {
+        if (lane >= 1 && lane <= laneCount) order.push(lane);
+      }
+    }
 
-      enteredAt = Date.now();
+    return order;
+  }
+
+  /**
+   * Seed a whole event, in one deterministic pass.
+   *
+   * `entrants` is given in priority order — fastest first, once the app knows a
+   * time; first entered first until it does — and that order is also the order
+   * lanes fill: the centre of a team's *own* lanes before its outside ones,
+   * and a team's own lanes before anybody else's. A team short on entrants
+   * simply leaves its spare lanes for whoever needs them, in whichever heat
+   * that spare lane falls in, rather than forcing a heat that would otherwise
+   * sit mostly empty.
+   *
+   * Run over the *whole* entrant list every time it changes, rather than only
+   * placing whoever's new — a team that enters late still reaches for its own
+   * lanes, bumping out whatever overflow was borrowing them, rather than being
+   * pushed into an extra heat by swimmers who got there first.
+   *
+   * Where a swimmer lands back in the seat they already had, the swim keeps its
+   * id and every other field untouched — the same rule this always followed,
+   * so a watch already taken on an untouched swim (there can't be one, but a
+   * caller composing this with other changes might still care) would still
+   * point at the right row, and a lane-level exhibition override a reseed of
+   * the rest of the event shouldn't clobber survives. `displayOf`/
+   * `exhibitionOf` are only consulted for a swim that's freshly created here —
+   * moved or brand new — never for one that's kept as-is.
+   */
+  private seedEvent(
+    rows: Pick<TimingRows, "swims">,
+    eventId: string,
+    entries: Entry[],
+    laneAssignments: LaneAssignments,
+    laneCount: LaneCount,
+  ): Swim[] {
+    if (entries.length === 0) return [];
+
+    const heatCount = Math.ceil(entries.length / laneCount);
+    const globalOrder = this.laneOrder(laneCount);
+
+    // Each team's own lanes, centre-out, and how many of that team's own
+    // entrants fit across every heat this event ends up needing.
+    const ownOrder = new Map<string, number[]>();
+    const capacity = new Map<string, number>();
+    for (const [teamId, lanes] of Object.entries(laneAssignments)) {
+      const order = globalOrder.filter((lane) => lanes.includes(lane));
+      ownOrder.set(teamId, order);
+      capacity.set(teamId, order.length * heatCount);
+    }
+
+    const seatOf = new Map<string, { heat: number; lane: number }>();
+    const claimed = new Set<string>(); // "heat/lane", own-lane placements only
+    const placedByTeam = new Map<string, number>();
+    const overflow: string[] = [];
+
+    for (const entry of entries) {
+      const teamId = entry.teamId;
+      const order = teamId ? ownOrder.get(teamId) : undefined;
+      const already = teamId ? (placedByTeam.get(teamId) ?? 0) : 0;
+
+      if (order && order.length > 0 && already < (capacity.get(teamId!) ?? 0)) {
+        const heat = Math.floor(already / order.length) + 1;
+        const lane = order[already % order.length];
+        seatOf.set(entry.athleteId, { heat, lane });
+        claimed.add(`${heat}/${lane}`);
+        placedByTeam.set(teamId!, already + 1);
+      } else {
+        overflow.push(entry.athleteId);
+      }
+    }
+
+    // Whatever's left over takes whatever's left over: any lane, in any heat,
+    // that no team's own swimmers claimed — earliest heat first, centre-out
+    // within it.
+    const open: Array<{ heat: number; lane: number }> = [];
+    for (
+      let heat = 1;
+      heat <= heatCount && open.length < overflow.length;
+      heat++
+    ) {
+      for (const lane of globalOrder) {
+        if (!claimed.has(`${heat}/${lane}`)) open.push({ heat, lane });
+      }
+    }
+    overflow.forEach((athleteId, i) => seatOf.set(athleteId, open[i]));
+
+    const existing = new Map(
+      swimsForEvent(rows, eventId).map(
+        (s) => [`${s.heat}/${s.lane}`, s] as const,
+      ),
+    );
+
+    return entries.map((entry) => {
+      const seat = seatOf.get(entry.athleteId)!;
+      const before = existing.get(`${seat.heat}/${seat.lane}`);
+      if (before && before.athleteId === entry.athleteId) return { ...before };
+      return {
+        eventId,
+        heat: seat.heat,
+        lane: seat.lane,
+        athleteId: entry.athleteId,
+        exhibition: entry.exhibition,
+      };
+    });
+  }
+
+  private async reseed(eventId: string) {
+    const swims = this.ctx.storage.sql
+      .exec<SwimRow>("SELECT * FROM swims WHERE event_id = ?", eventId)
+      .toArray()
+      .map(swimFromRow);
+    const watches = this.ctx.storage.sql
+      .exec<WatchRow>("SELECT * FROM watches WHERE event_id = ?", eventId)
+      .toArray()
+      .map(watchFromRow);
+    const entries = this.ctx.storage.sql
+      .exec<EntryRow>(
+        "SELECT * FROM entries WHERE event_id = ? ORDER BY entered_at",
+        eventId,
+      )
+      .toArray()
+      .map(entryFromRow);
+    const details = this.getDetailsObject();
+
+    const nextSwims = this.seedEvent(
+      { swims },
+      eventId,
+      entries,
+      details.laneAssignments,
+      details.laneCount,
+    );
+
+    // Only null when the event turned out to be touched.
+    if (!nextSwims) return;
+
+    const before = new Map(swims.map((s) => [toSwimKey(s), s] as const));
+    const after = new Map(nextSwims.map((s) => [toSwimKey(s), s] as const));
+
+    this.ctx.storage.sql.exec("DELETE FROM swims WHERE event_id = ?", eventId);
+    for (const swim of nextSwims) {
       this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO entries (meet_id, event_id, athlete_id, team_id, seed_time_ms, exhibition, entered_at, entered_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        input.meetId,
-        input.eventId,
-        input.athleteId,
-        input.teamId,
-        input.seedTimeMs ?? null,
-        input.exhibition ? 1 : 0,
-        enteredAt,
-        userId,
-      );
-    } else {
-      this.ctx.storage.sql.exec(
-        "DELETE FROM entries WHERE event_id = ? AND athlete_id = ?",
-        input.eventId,
-        input.athleteId,
+        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        eventId,
+        swim.heat,
+        swim.lane,
+        swim.athleteId ?? "",
+        swim.athleteName ?? "",
+        swim.athleteTeam ?? "",
+        swim.exhibition ? 1 : 0,
       );
     }
 
-    // The `LiveSocketMessage` shape (`meetCache`'s), not the old `Write`
-    // one — nothing still listens for the old one at all, so there's no
-    // reason to send both.
-    this.broadcast({
-      type: "ENTRY",
-      entry: {
-        eventId: input.eventId,
-        athleteId: input.athleteId,
-        teamId: input.teamId,
-        seedTimeMs: input.seedTimeMs,
-        exhibition: input.exhibition ?? false,
-        enteredAt,
-        enteredBy: userId ?? "",
-      },
-      isDelete: !input.entering,
-    });
-
-    await this.reseedIfUntouched(input.meetId, input.eventId, meet.details);
-    return { ok: true };
-  }
-
-  /** Every team an athlete is enrolled on, anywhere — enough for `canEnter`'s
-   *  "is this one of the teams you coach" check, which only cares whether
-   *  any of them intersects `coachedTeamIds`. */
-  private async teamsOfAthlete(athleteId: string): Promise<string[]> {
-    const { results } = await this.env.DB.prepare(
-      "SELECT DISTINCT team_id FROM enrollments WHERE athlete_id = ?",
-    )
-      .bind(athleteId)
-      .all<{ team_id: string }>();
-    return results.map((r) => r.team_id);
-  }
-
-  /** The account this athlete is linked to, if any — `canEnter`'s
-   *  self-entry check compares this against the asking `userId` directly,
-   *  the same way `meet.adminIds` decides `canEditMeet`: a fact read off
-   *  the resource, never cached on the person asking. */
-  private async athleteUserId(athleteId: string): Promise<string | null> {
-    const row = await this.env.DB.prepare(
-      "SELECT user_id FROM athletes WHERE id = ?",
-    )
-      .bind(athleteId)
-      .first<{ user_id: string | null }>();
-    return row?.user_id ?? null;
+    for (const [key, prior] of before) {
+      if (!after.has(key))
+        this.broadcast({
+          entity: "swim",
+          op: "upsert",
+          key: prior,
+          patch: prior,
+        });
+    }
+    for (const [key, swim] of after) {
+      const prior = before.get(key);
+      if (prior && prior.athleteId === swim.athleteId) {
+        continue; // Unmoved — nothing for a connected screen to redraw.
+      }
+      this.broadcast({
+        entity: "swim",
+        op: "upsert",
+        key: swim,
+        patch: swim,
+      });
+    }
   }
 
   /**
@@ -1187,7 +1309,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       .toArray()
       .map(watchFromRow);
 
-    const entries = this.readEntries(meetId)[eventId] ?? [];
+    const entries = this.readEntries()[eventId] ?? [];
 
     const nextSwims = reseedEvent(
       { swims, watches },
@@ -1205,9 +1327,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM swims WHERE event_id = ?", eventId);
     for (const swim of nextSwims) {
       this.ctx.storage.sql.exec(
-        `INSERT INTO swims (meet_id, event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        meetId,
+        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         eventId,
         swim.heat,
         swim.lane,
@@ -1361,7 +1482,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    * vocabulary this used to also send is gone with the granular RPCs that
    * used to construct it.
    */
-  private broadcast(message: LiveSocketMessage): void {
+  private broadcast(message: EntityMutation): void {
     const payload = JSON.stringify(message);
     for (const ws of this.ctx.getWebSockets()) {
       try {

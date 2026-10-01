@@ -22,3 +22,16 @@ export interface Swim extends SwimIdentity {
 export function toSwimKey(swim: SwimIdentity): SwimKey {
   return `e${swim.eventId}:h${swim.heat}:l${swim.lane}`;
 }
+
+export type SwimUpsertMutation = {
+  entity: "swim";
+  op: "upsert";
+  key: SwimIdentity;
+  patch: Partial<Omit<Swim, keyof SwimIdentity>>;
+};
+
+export type SwimDeleteMutation = {
+  entity: "swim";
+  op: "delete";
+  key: SwimIdentity;
+};
