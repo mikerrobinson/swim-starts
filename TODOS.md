@@ -348,24 +348,6 @@ lane that hadn't stopped. Could require a confirm while lanes are outstanding.
 
 <!-- add below -->
 
-### Split the stopwatch tick out of `timer2.tsx`
-
-`elapsed` lives in the same component that also derives `swims`/`watches`/
-`order` from the whole meet (`useMemo(() => Object.values(meet.swims), [meet.swims])`
-and friends). A running stopwatch's `requestAnimationFrame` loop calls
-`setElapsed` up to 60×/sec, re-rendering all of that along with the digits,
-on a screen explicitly built for "storage-hostile phones."
-
-Fix: pull `startedAt` → `elapsed` (and the RAF loop) into its own small leaf
-component that owns just the ticking display. The parent then only
-re-renders when `startedAt` itself changes — start/stop, a real event, not
-every frame — and the `swims`/`watches`/`order` derivation only reruns then
-too. Should happen regardless of anything else; also makes memoizing those
-derivations in `admin-heat.tsx`/`splits-heat.tsx`/`timer.tsx` (same
-`useMemo(() => Object.values(meet.X), [meet.X])` pattern in all three, none
-of which use `useHeat()` yet) a much smaller concern once it's done, since
-the parent stops re-rendering 60×/sec regardless of memoization.
-
 ### ~~`memberships` → `team_coaches`~~ — done
 
 `memberships` carried a `role` of five values and a `status` of two so it could

@@ -6,11 +6,25 @@ import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
 import { StopwatchDisplay } from "~/components/StopwatchDisplay";
+import { Button, Sheet } from "~/components/ui";
 import type { Watch } from "~/types/watch";
 
 /** Plain seconds to two decimals — "12.34", not "0:12.34". */
 function formatSeconds(ms: number): string {
   return (ms / 1000).toFixed(2);
+}
+
+/**
+ * What this lane's stopped clock reads, if anything. A watch started but
+ * never stopped (the device was closed or refreshed mid-race) has
+ * `stoppedAt` still at 0 — `stoppedAt - startedAt` would read as a large
+ * negative number instead of "nothing to show yet".
+ */
+function stoppedMsOf(watch: Watch): number {
+  if (watch.timeMs > 0) return watch.timeMs;
+  return watch.stoppedAt > watch.startedAt
+    ? watch.stoppedAt - watch.startedAt
+    : 0;
 }
 
 export default function TimerLaneKiosk() {
@@ -51,22 +65,39 @@ export default function TimerLaneKiosk() {
   // they just wrote instead of a closure still holding the pre-update watch.
   const watchRef = useRef<Watch>(watch);
 
-  const [stopwatchMs, setStopwatchMs] = useState<number>(
-    watch.timeMs || watch.stoppedAt - watch.startedAt,
-  );
+  const [stopwatchMs, setStopwatchMs] = useState<number>(stoppedMsOf(watch));
   const [isRunning, setIsRunning] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   const isAlreadySubmitted = Boolean(watch && watch.timeMs > 0);
-  const hasStoppedTime = !isRunning && stopwatchMs !== null && stopwatchMs > 0;
-  const canSubmit = !isAlreadySubmitted && hasStoppedTime;
+
+  // The one action button at the bottom of the screen walks through these in
+  // order — never back, except via the explicit Reset that only shows up on
+  // "stopped" (there's no un-submitting; a result is a decision).
+  const phase: "start" | "running" | "stopped" | "submitted" =
+    isAlreadySubmitted
+      ? "submitted"
+      : isRunning
+        ? "running"
+        : stopwatchMs > 0
+          ? "stopped"
+          : "start";
 
   // A clock belongs to the race it was started for. Moving to another heat
   // changes this route's params rather than matching a different route, so
   // React keeps this component mounted — without this, a watch left running
   // (or just-stopped) would carry over onto the next heat's screen.
+  //
+  // Guarded on `heat` itself: a momentary loader hiccup (a revalidation that
+  // briefly has no data yet) must never be read as "nothing recorded for
+  // this lane" — that would stomp a real stopped/submitted time with 0 and,
+  // since the dependency array is keyed on heat/lane identity rather than on
+  // `watch`, there'd be no later render to correct it once the hiccup
+  // passes and the identity settles back to where it already was.
   useEffect(() => {
+    if (!heat) return;
     watchRef.current = watch;
-    setStopwatchMs(watch.timeMs || watch.stoppedAt - watch.startedAt);
+    setStopwatchMs(stoppedMsOf(watch));
     setIsRunning(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heat?.event.id, heat?.heatNumber, lane]);
@@ -138,6 +169,33 @@ export default function TimerLaneKiosk() {
       : "";
   };
 
+  // Forgets this device's own watch entirely rather than just clearing the
+  // display — a fat-fingered stop shouldn't leave a phantom watch behind for
+  // the admin to sort out later.
+  const resetStopwatch = () => {
+    const next: Watch = {
+      ...watchRef.current,
+      startedAt: 0,
+      stoppedAt: 0,
+      timeMs: 0,
+    };
+    watchRef.current = next;
+    send({
+      entity: "watch",
+      op: "delete",
+      key: {
+        eventId: next.eventId,
+        heat: next.heat,
+        lane: next.lane,
+        deviceId: next.deviceId,
+        slot: next.slot,
+      },
+    });
+
+    setStopwatchMs(0);
+    setIsRunning(false);
+  };
+
   if (heat == null) {
     return <h1>no heat</h1>;
   }
@@ -176,8 +234,8 @@ export default function TimerLaneKiosk() {
           <span>No athlete</span>
         )}
       </div>
-      {/* Main Display / Manual Override Box */}
-      <div className="flex-1 flex flex-col items-center justify-center">
+
+      <div className="flex-1 flex flex-col items-center justify-center pb-32">
         <StopwatchDisplay
           running={isRunning}
           startedAt={watchRef.current.startedAt}
@@ -188,45 +246,94 @@ export default function TimerLaneKiosk() {
         <span className="text-xs text-slate-400 mt-2">seconds</span>
       </div>
 
-      {/* Touch-Trigger Timing Zone */}
-      <div className="h-2/5 flex flex-col gap-3">
-        {!isRunning ? (
+      <div
+        className="fixed inset-x-0 bottom-0 flex items-stretch p-4"
+        style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+      >
+        {phase === "start" && (
           <button
             onTouchStart={startStopwatch}
             onMouseDown={startStopwatch}
-            className="flex-1 w-full bg-green-700 active:bg-green-600 text-2xl font-black text-white rounded-2xl shadow-lg"
+            className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg"
           >
             START
           </button>
-        ) : (
+        )}
+        {phase === "running" && (
           <button
             onTouchStart={stopStopwatch}
             onMouseDown={stopStopwatch}
-            className="flex-1 w-full bg-rose-600 active:bg-rose-700 text-3xl font-black rounded-2xl shadow-lg animate-pulse"
+            className="min-h-24 flex-1 animate-pulse rounded-2xl bg-rose-600 active:bg-rose-700 text-3xl font-black text-white shadow-lg"
           >
-            TOUCH / FINISH
+            STOP
+          </button>
+        )}
+        {phase === "stopped" && (
+          <button
+            type="submit"
+            onClick={submitStopwatch}
+            className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg"
+          >
+            SUBMIT
+          </button>
+        )}
+        {phase === "submitted" && (
+          <button
+            type="submit"
+            disabled
+            className="min-h-24 flex-1 rounded-2xl bg-slate-800 text-3xl font-black text-slate-600 shadow-lg"
+          >
+            SUBMITTED
           </button>
         )}
 
-        {isAlreadySubmitted ? (
-          <button
-            type="submit"
-            disabled={true}
-            className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
-          >
-            Already Submitted
-          </button>
-        ) : (
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            onClick={submitStopwatch}
-            className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
-          >
-            Submit & Advance
-          </button>
-        )}
+        <div
+          className={`grid overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out ${
+            phase === "stopped" ? "grid-cols-[1fr]" : "grid-cols-[0fr]"
+          }`}
+        >
+          <div className="overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setConfirmingReset(true)}
+              className="ml-3 h-full whitespace-nowrap rounded-2xl bg-rose-600 active:bg-rose-700 px-6 text-lg font-black text-white shadow-lg"
+            >
+              RESET
+            </button>
+          </div>
+        </div>
       </div>
+
+      {confirmingReset && (
+        <Sheet
+          open
+          title="Reset this time?"
+          onClose={() => setConfirmingReset(false)}
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              This throws away the {formatSeconds(stopwatchMs)}s on the clock.
+              It can&rsquo;t be undone.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button size="lg" full onClick={() => setConfirmingReset(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                size="lg"
+                full
+                onClick={() => {
+                  resetStopwatch();
+                  setConfirmingReset(false);
+                }}
+              >
+                Reset
+              </Button>
+            </div>
+          </div>
+        </Sheet>
+      )}
     </div>
   );
 }
