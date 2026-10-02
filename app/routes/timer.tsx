@@ -18,23 +18,10 @@ import {
   saveFurthest,
   watchCount,
 } from "~/lib/timer";
-import { lanesPath, stopPath, timerCookiePath } from "~/lib/timer-path";
+import { lanesPath, stopPath } from "~/lib/timer-path";
 import { currentWatches } from "~/lib/timing";
 import { eventName, type MeetAthlete } from "~/types/meet";
-import { queueState, saveSeedRecord } from "~/lib/seed-queue";
-import {
-  decodeSeedRecord,
-  emptySeedRecord,
-  encodeSeedRecord,
-  seedCookieName,
-  type LaneRef,
-  type SeedRecord,
-} from "~/lib/seed-cookie";
-import { applySeedCookies } from "~/lib/seed-cookie.server";
-import {
-  clearSeedCookies,
-  resolveTimerAccess,
-} from "~/lib/timer-request.server";
+import { resolveTimerAccess } from "~/lib/timer-request.server";
 import { useMeet } from "~/hooks/useMeet";
 import { useDeviceId } from "~/state/user";
 
@@ -64,37 +51,35 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
   const stub = env.MEET_DO.getByName(meetId);
   const manifest = await stub.getMeetManifest(meetId);
-  const { cleared } = await applySeedCookies(stub, manifest, deviceId, request);
-  clearSeedCookies(headers, request, meetId, cleared);
 
   return data({ ok: true }, { headers });
 }
 
-export async function clientAction({
-  params,
-  request,
-  serverAction,
-}: Route.ClientActionArgs) {
-  const formData = await request.clone().formData();
-  const raw = formData.get("record");
-  const record = typeof raw === "string" ? decodeSeedRecord(raw) : null;
-  if (record) {
-    const at: LaneRef = {
-      event: Number(params.event),
-      heat: Number(params.heat),
-      lane: Number(params.lane),
-    };
-    saveSeedRecord(timerCookiePath(params.meetId!), at, record);
-  }
+// export async function clientAction({
+//   params,
+//   request,
+//   serverAction,
+// }: Route.ClientActionArgs) {
+//   const formData = await request.clone().formData();
+//   const raw = formData.get("record");
+//   const record = typeof raw === "string" ? decodeSeedRecord(raw) : null;
+//   if (record) {
+//     const at: LaneRef = {
+//       event: Number(params.event),
+//       heat: Number(params.heat),
+//       lane: Number(params.lane),
+//     };
+//     saveSeedRecord(timerCookiePath(params.meetId!), at, record);
+//   }
 
-  try {
-    return await serverAction();
-  } catch {
-    // Offline: the cookie already has it, and the next request that reaches
-    // the server at all — any of them — carries it the rest of the way.
-    return null;
-  }
-}
+//   try {
+//     return await serverAction();
+//   } catch {
+//     // Offline: the cookie already has it, and the next request that reaches
+//     // the server at all — any of them — carries it the rest of the way.
+//     return null;
+//   }
+// }
 
 /**
  * The stopwatch a volunteer holds behind a lane.
@@ -152,30 +137,6 @@ export default function Timer({ params }: Route.ComponentProps) {
    */
   const [retiming, setRetiming] = useState(false);
 
-  /**
-   * What this phone still owes, and whether it has stopped being a blip.
-   *
-   * A count is normal — a cookie sits unconsumed for a second on a good
-   * connection and a minute on a bad one. `overflow` is not: it means a
-   * record could not be *stored*, because the browser's cookie limits were
-   * reached, and no amount of waiting fixes that. Only that second one earns
-   * a colour, because a timer glancing down mid-heat should see nothing
-   * unless something is genuinely wrong.
-   */
-  const [queue, setQueue] = useState(() => queueState());
-  const refreshQueue = () => setQueue(queueState());
-
-  useEffect(() => {
-    if (fetcher.state === "idle") refreshQueue();
-  }, [fetcher.state]);
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible") refreshQueue();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, []);
-
   const deviceId = useDeviceId();
 
   /**
@@ -209,7 +170,6 @@ export default function Timer({ params }: Route.ComponentProps) {
    * state rather than re-derived from the cookie itself: see `seed-cookie.ts`
    * for why reading it back mid-session is exactly the bug this avoids.
    */
-  const [pending, setPending] = useState<Record<string, SeedRecord>>({});
   // Swimmers typed in on this device; they may not have reached the server yet.
   const [added, setAdded] = useState<MeetAthlete[]>([]);
 
@@ -339,18 +299,13 @@ export default function Timer({ params }: Route.ComponentProps) {
    * The same three integers the seed cookie's name is built from, so what the
    * phone queues and what the person is looking at cannot disagree.
    */
-  const where: LaneRef | null =
-    stop && lane
-      ? { event: stop.event.position + 1, heat: stop.heat, lane }
-      : null;
+  const where: null = null;
 
   /** The swim in this lane, if anybody has said who is in it. */
   const seed = stop?.swims.find((s) => s.lane === lane);
-  const laneKey = where ? seedCookieName(where) : null;
-  const record = laneKey ? pending[laneKey] : undefined;
-  const swimmerId = (record?.athleteId ?? seed?.athleteId) || null;
+  const swimmerId = seed?.athleteId || null;
   const swimmer = swimmerId ? byId.get(swimmerId) : undefined;
-  const exhibition = record?.exhibition ?? seed?.exhibition ?? false;
+  const exhibition = seed?.exhibition ?? false;
 
   /**
    * This phone's own times for this swim, once the server has them, by column.
@@ -385,33 +340,19 @@ export default function Timer({ params }: Route.ComponentProps) {
   /* --------------------------------------------------------------- actions */
 
   /**
-   * What this lane's record starts from before this device has touched
-   * anything about it — the seat and exhibition flag the meet already
-   * agrees on, no watches of its own yet. Patching from this rather than an
-   * empty record means arming a stopwatch can't accidentally blank a seat
-   * assigned moments earlier at the desk, and vice versa.
-   */
-  const baseRecord = (): SeedRecord => ({
-    ...emptySeedRecord(),
-    athleteId: seed?.athleteId ?? "",
-    exhibition: seed?.exhibition ?? false,
-  });
-
-  /**
    * Apply one change to this lane's record and push the whole thing to the
    * server as a single write. The record lives in `pending` state, not the
    * cookie — `clientAction` is what turns it into one — so there is nothing
    * to read back and no chance of building the next change off a copy the
    * server already cleared.
    */
-  const updateSwim = (patch: (record: SeedRecord) => SeedRecord) => {
-    if (!where || !laneKey) return;
-    const next = patch({
-      ...(pending[laneKey] ?? baseRecord()),
-      updatedAt: Date.now(),
-    });
-    setPending((current) => ({ ...current, [laneKey]: next }));
-    fetcher.submit({ record: encodeSeedRecord(next) }, { method: "post" });
+  const updateSwim = (patch: any) => {
+    // const next = patch({
+    //   ...baseRecord(),
+    //   updatedAt: Date.now(),
+    // });
+    // setPending((current) => ({ ...current }));
+    // fetcher.submit({ record: encodeSeedRecord(next) }, { method: "post" });
   };
 
   /**
@@ -546,7 +487,7 @@ export default function Timer({ params }: Route.ComponentProps) {
       .map((e) => e.athleteId),
   );
 
-  const alarm = queue.overflow ? "not saving — find signal" : null;
+  //const alarm = queue.overflow ? "not saving — find signal" : null;
   const nextHeat = order[stopIndex + 1];
   const previousHeat = stopIndex > floor ? order[stopIndex - 1] : undefined;
   const previousHeatLink =
@@ -569,10 +510,6 @@ export default function Timer({ params }: Route.ComponentProps) {
           <p className="truncate text-sm font-bold">{eventName(stop.event)}</p>
           <p className="text-xs text-slate-500">
             Heat {stop.number} of {stop.of}
-            {alarm
-              ? ` · ${alarm}`
-              : queue.pending.length > 0 &&
-                ` · ${queue.pending.length} to send`}
           </p>
         </div>
         <SmartLink

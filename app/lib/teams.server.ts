@@ -90,6 +90,22 @@ export async function getTeam(
   return row ? teamRow(row) : null;
 }
 
+/** A batch of teams by id — what a meet's roster synthesis needs for every
+ *  team racing it in one round trip, rather than one `getTeam` each. */
+export async function getTeams(
+  db: D1Database,
+  ids: string[],
+): Promise<Team[]> {
+  if (ids.length === 0) return [];
+  await ensureSchema(db);
+  const placeholders = ids.map(() => "?").join(",");
+  const { results } = await db
+    .prepare(`SELECT * FROM teams WHERE id IN (${placeholders})`)
+    .bind(...ids)
+    .all<TeamRow>();
+  return results.map(teamRow);
+}
+
 export async function listSeasons(
   db: D1Database,
   teamId: string,

@@ -19,12 +19,6 @@ import { createMeet, listMeets } from "~/lib/meets.server";
 import { defaultEvents } from "~/lib/events";
 import { addMeetAdmin } from "~/lib/admins.server";
 import { teamsCoachedBy } from "~/lib/coaches.server";
-import {
-  getTeam,
-  listSeasons,
-  roster as teamRoster,
-  seasonForDate,
-} from "~/lib/teams.server";
 import { useSession } from "~/state/session";
 import { TeamPicker } from "~/components/TeamPicker";
 import {
@@ -159,27 +153,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       course: meet.course,
       leadGender: meet.leadGender,
       includeDiving: meet.includeDiving,
-    }),
-  );
-
-  // Copy each racing team's roster in — same call `meet-info.tsx`'s "teams"
-  // intent makes for a team added later. Without this, the DO's own
-  // `athletes`/`teams` tables stay empty and the first entry for anyone on
-  // the initial roster fails: `entries.athlete_id` is a foreign key against
-  // this DO's local `athletes`, not D1's.
-  await Promise.all(
-    teamIds.map(async (teamId) => {
-      const [team, seasons] = await Promise.all([
-        getTeam(db, teamId),
-        listSeasons(db, teamId),
-      ]);
-      if (!team) return;
-      const season = seasonForDate(seasons, team.currentSeasonId, meet.date);
-      const rosterEntries = await teamRoster(db, teamId, season?.id);
-      await stub.addTeam(
-        team,
-        rosterEntries.map((e) => e.athlete),
-      );
     }),
   );
 

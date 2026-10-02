@@ -24,12 +24,7 @@ import { revealsCodes, sendMeetInvite } from "~/lib/notify.server";
 import { canEditMeet, type MeetFacts } from "~/lib/access";
 import { teamsCoachedBy } from "~/lib/coaches.server";
 import { deleteMeet, getMeet, updateMeet } from "~/lib/meets.server";
-import {
-  getTeam,
-  listSeasons,
-  roster as teamRoster,
-  seasonForDate,
-} from "~/lib/teams.server";
+import { getTeam } from "~/lib/teams.server";
 import { meetCache } from "~/lib/meetCache";
 import { useMeet } from "~/hooks/useMeet";
 import {
@@ -219,41 +214,27 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   }
 
   /**
-   * Who's racing, kept in step with the meet's own Durable Object — D1's
-   * `meet_teams` is still the record of *which* teams, but the DO needs
-   * each one's roster copied in the moment it joins (`addTeam`) and out
-   * the moment it leaves (`removeTeam`, which refuses once anything's
-   * been timed against one of that team's swimmers). Removals go first
-   * and have to all succeed before anything else changes: a team that
-   * can't be dropped means nothing here should be, not just that team.
-   * `updateMeet` still gets the whole list rather than a diff — that's
-   * what it writes either way, since it replaces `meet_teams` outright.
+   * Who's racing. D1's `meet_teams` (via `updateMeet` below) is the whole
+   * record of *which* teams now — there's no roster to copy into the DO any
+   * more, since it holds no athlete or team data of its own. A team leaving
+   * still has to tell the DO, though: `removeTeam` clears that team's
+   * entries and any of its not-yet-timed swims from this meet's live state,
+   * refusing nothing itself — a team with a decided result against it just
+   * keeps that swim, orphaned name and all (see `meet-do.server.ts`).
+   * `updateMeet` still gets the whole list rather than a diff — that's what
+   * it writes either way, since it replaces `meet_teams` outright.
    */
   if (intent === "teams") {
     const teamIds = form.getAll("teamId").map(String).filter(Boolean);
     const host = String(form.get("hostTeamId") ?? "");
-    const added = teamIds.filter((id) => !meet.teamIds.includes(id));
     const removed = meet.teamIds.filter((id) => !teamIds.includes(id));
 
     const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
 
     for (const teamId of removed) {
-      const result = await stub.removeTeam(teamId);
-      if (!result.ok) return { ok: false, error: result.reason };
-    }
-
-    for (const teamId of added) {
-      const [team, seasons] = await Promise.all([
-        getTeam(db, teamId),
-        listSeasons(db, teamId),
-      ]);
+      const team = await getTeam(db, teamId);
       if (!team) continue;
-      const season = seasonForDate(seasons, team.currentSeasonId, meet.date);
-      const rosterEntries = await teamRoster(db, teamId, season?.id);
-      await stub.addTeam(
-        team,
-        rosterEntries.map((e) => e.athlete),
-      );
+      await stub.removeTeam(teamId, { name: team.name, code: team.code });
     }
 
     await updateMeet(db, meetId, {

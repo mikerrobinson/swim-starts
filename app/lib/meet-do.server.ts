@@ -15,20 +15,25 @@
  * archive and flips `status`; from that point on D1 answers every read and
  * this DO is never spun back up.
  *
+ * This DO holds no copy of an athlete or a team — D1 owns that identity,
+ * full stop. `entries.athlete_id`/`team_id` and `swims.athlete_id` are
+ * plain ids, never a local foreign key; `swims.athlete_name`/`athlete_team`
+ * are a denormalized snapshot the client stamps on at seat/entry time from
+ * its own already-current `meetCache` copy of the D1 roster, not something
+ * this DO resolves itself. `meet-layout.tsx`'s loader is what splices D1's
+ * current roster onto this DO's live state into one `MeetManifest` for the
+ * client — see its doc comment.
+ *
  * The write methods mirror `meets.server.ts`'s old D1-backed versions in
  * spirit, one table row at a time, just against local (synchronous) SQLite.
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { generateId } from "./id";
-import { putAthlete } from "./athletes.server";
-import { enrolVisitor } from "./teams.server";
 import type {
   Event,
   MeetDetails,
   Stroke,
   MeetManifest,
-  MeetAthlete,
   LaneCount,
   LaneAssignments,
 } from "~/types/meet";
@@ -48,12 +53,10 @@ import type {
   WatchUpsertMutation,
 } from "~/types/watch";
 import type { WatchIdentity } from "~/types/watch";
-import { athleteName, DEFAULT_MEET_DETAILS } from "~/types/meet";
+import { DEFAULT_MEET_DETAILS } from "~/types/meet";
 import { canDeleteEntry, canUpsertEntry, toEntryKey } from "~/types/entry";
 import { toSwimKey } from "~/types/swim";
 import { canDeleteWatch, canUpsertWatch, toWatchKey } from "~/types/watch";
-import type { Team } from "~/types/team";
-import type { Athlete, Gender } from "~/types/athlete";
 import type { EntityMutation } from "~/types/mutations";
 import type { User } from "~/types/user";
 import { swimsForEvent, type TimingRows } from "./timing";
@@ -98,8 +101,8 @@ const SCHEMA = [
 
   `CREATE TABLE IF NOT EXISTS entries (
      event_id TEXT NOT NULL,
-     athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
-     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+     athlete_id TEXT NOT NULL,
+     team_id TEXT NOT NULL,
      seed_time_ms INTEGER,
      exhibition INTEGER NOT NULL DEFAULT 0,
      entered_at INTEGER NOT NULL DEFAULT 0,
@@ -121,44 +124,6 @@ const SCHEMA = [
      gender TEXT NOT NULL,
      name TEXT,
      total_heats INTEGER
-   )`,
-
-  /**
-   * This meet's own mirror of whichever teams are racing — copied in by
-   * `addTeam` the moment a team joins `meet.teamIds`, so a heat sheet never
-   * needs D1 for a name or a code. Meet-scoped on purpose, unlike D1's own
-   * `teams`: two meets racing the same school each get their own copy, so
-   * neither can go stale because of what the other did to it.
-   */
-  `CREATE TABLE IF NOT EXISTS teams (
-     id TEXT PRIMARY KEY,
-     name TEXT NOT NULL,
-     code TEXT NOT NULL
-   )`,
-  /**
-   * This meet's own roster — copied in by `addTeam` alongside the team it
-   * belongs to, one flat row per swimmer rather than D1's enrollment/season
-   * pair: a meet is one day, not a competitive year, so there's nothing
-   * seasonal left to say. `team_id` is what `addTeam`/`removeTeam` scope a
-   * team's roster by and what a heat sheet stamps onto a `Swim`'s
-   * `athleteTeam` — never part of the public `Athlete` shape itself, which
-   * carries no team of its own (see `types/athlete.ts`).
-   *
-   * `is_walkup` marks a swimmer added here first, mid-meet, rather than
-   * copied from an existing team roster — `addWalkupAthlete` sets it, and
-   * `completeMeet` is what writes such a row back to D1 (a fresh account
-   * and an enrollment), once, rather than on every walk-up while the meet
-   * is still moving.
-   */
-  `CREATE TABLE IF NOT EXISTS athletes (
-     id TEXT PRIMARY KEY,
-     first_name TEXT NOT NULL,
-     last_name TEXT NOT NULL,
-     gender TEXT NOT NULL,
-     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-     birth_date TEXT,
-     user_id TEXT,
-     is_walkup INTEGER NOT NULL DEFAULT 0
    )`,
 
   // Scalar bookkeeping the tables above don't carry a column for:
@@ -209,32 +174,6 @@ interface EntryRow {
   exhibition: number | null;
   entered_at: number;
   entered_by: string;
-}
-
-/** This meet's own copy of a swimmer — `addTeam`'s roster rows and
- *  `addWalkupAthlete`'s. */
-interface MeetAthleteRow {
-  [key: string]: SqlStorageValue;
-  id: string;
-  first_name: string;
-  last_name: string;
-  gender: string;
-  team_id: string;
-  birth_date: string | null;
-  user_id: string | null;
-  is_walkup: number;
-}
-
-function meetAthleteFromRow(row: MeetAthleteRow): MeetAthlete {
-  return {
-    id: row.id,
-    firstName: row.first_name,
-    lastName: row.last_name,
-    gender: row.gender === "M" ? "M" : "F",
-    birthDate: row.birth_date ?? undefined,
-    userId: row.user_id ?? undefined,
-    teamId: row.team_id,
-  };
 }
 
 /** This DO's own `events` table — its programme, once something writes one
@@ -404,11 +343,12 @@ export class MeetDurableObject extends DurableObject<Env> {
   /* --------------------------------------------------------------- reading */
 
   /**
-   * The full client-side `MeetManifest` — everything `meet-layout.tsx`'s loader
-   * needs for a meet that isn't `status: "complete"`. Plain `SELECT`s
-   * against this DO's own tables plus the `meta` scalars — every one of
-   * them, including `athletes`, is this DO's own durable storage now, so
-   * there's no cache to warm and no D1 trip to make first.
+   * This DO's own half of the client-side `MeetManifest` — events, entries,
+   * swims, watches — plain `SELECT`s against this DO's own tables plus the
+   * `meta` scalars, so there's no cache to warm and no D1 trip to make
+   * first. `athletes`/`teams` come back empty: `meet-layout.tsx`'s loader is
+   * what splices in a current D1 roster read before a client ever sees this,
+   * since identity isn't this DO's to answer for any more.
    *
    * `name` isn't its own `meta` row — it's just `details.name`, read back
    * out. There's only one stored copy, so it can't drift out of sync with
@@ -457,23 +397,6 @@ export class MeetDurableObject extends DurableObject<Env> {
         return record;
       }, {});
 
-    const athletes = this.ctx.storage.sql
-      .exec<MeetAthleteRow>("SELECT * FROM athletes")
-      .toArray()
-      .map(meetAthleteFromRow)
-      .reduce<Record<string, MeetAthlete>>((record, athlete) => {
-        record[athlete.id] = athlete;
-        return record;
-      }, {});
-
-    const teams = this.ctx.storage.sql
-      .exec<{ id: string; name: string; code: string }>("SELECT * FROM teams")
-      .toArray()
-      .reduce<Record<string, Team>>((record, row) => {
-        record[row.id] = { id: row.id, name: row.name, code: row.code };
-        return record;
-      }, {});
-
     const adminIds = this.getMeta("adminIds")?.split(",") || [];
 
     const rawHeat = this.getMeta("currentHeatNumber");
@@ -488,8 +411,12 @@ export class MeetDurableObject extends DurableObject<Env> {
       entries,
       swims,
       watches,
-      athletes,
-      teams,
+      // Identity lives in D1 now, not here — `meet-layout.tsx`'s loader is
+      // what fills these back in from a current roster read before handing
+      // the manifest to a client, so an empty object here is a mid-flight
+      // state no screen is ever meant to actually render.
+      athletes: {},
+      teams: {},
       adminIds,
     };
   }
@@ -592,120 +519,72 @@ export class MeetDurableObject extends DurableObject<Env> {
   }
 
   /**
-   * Copy a racing team's roster in — the moment a team joins
-   * `meet.teamIds`, so a timer, an admin or a coach can seat and time its
-   * swimmers with no D1 dependency for the rest of the meet. Upsert, not
-   * insert: calling this again (a coach adds a swimmer to the team's D1
-   * roster mid-setup, say) just refreshes the copy. Broadcasts every
-   * athlete as an `ATHLETE` upsert so a screen already open on this meet's
-   * entries picks up the new names without a reload.
-   */
-  async addTeam(team: Team, roster: Athlete[]): Promise<void> {
-    this.ctx.storage.sql.exec(
-      `INSERT INTO teams (id, name, code) VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, code = excluded.code`,
-      team.id,
-      team.name,
-      team.code,
-    );
-    for (const athlete of roster) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO athletes (id, first_name, last_name, gender, team_id, birth_date, user_id, is_walkup)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-         ON CONFLICT(id) DO UPDATE SET
-           first_name = excluded.first_name,
-           last_name = excluded.last_name,
-           gender = excluded.gender,
-           team_id = excluded.team_id,
-           birth_date = excluded.birth_date,
-           user_id = excluded.user_id,
-           is_walkup = 0`,
-        athlete.id,
-        athlete.firstName,
-        athlete.lastName,
-        athlete.gender,
-        team.id,
-        athlete.birthDate ?? null,
-        athlete.userId ?? null,
-      );
-      this.broadcast({
-        type: "ATHLETE",
-        athlete: { ...athlete, teamId: team.id },
-        isDelete: false,
-      });
-    }
-  }
-
-  /**
-   * Drop a team's whole roster copy — the moment it leaves `meet.teamIds`.
-   * Refuses once any of its swimmers has an actual time or a decided
-   * result against them: a scratch before racing starts is an ordinary
-   * setup change, but pulling a team out from under a result that's
-   * already stood would make swims that once had a swimmer's name on them
-   * un-explainable. Entries and any un-timed swims for this team's
-   * athletes go with it — they're not racing this meet any more, so
-   * there's nothing for those rows to mean.
+   * Drop a team's racing presence from this meet's live state — the moment
+   * it leaves `meet.teamIds` in D1 (`meets.server.ts`'s `updateMeet` is what
+   * actually removes the `meet_teams` row; this is the DO's side of the
+   * same action). There's no roster copy to drop any more — just this
+   * team's `entries` (a real `team_id` column, so those come out clean by
+   * id) and any of its swims that haven't actually happened yet.
+   *
+   * "Happened yet" is a text match on `athlete_team` (the name or code the
+   * client stamped on at seat time — see the file's own doc comment)
+   * because a directly-seated swim, unlike an entry, carries no `team_id`
+   * of its own to match by id instead. Good enough for what this guards
+   * against: a scratch before racing starts is an ordinary setup change, a
+   * decided result is not, and nothing here needs to be precise about
+   * anything in between.
    */
   async removeTeam(
     teamId: string,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const athletes = this.ctx.storage.sql
-      .exec<MeetAthleteRow>("SELECT * FROM athletes WHERE team_id = ?", teamId)
+    team: { name: string; code: string },
+  ): Promise<{ ok: true }> {
+    const entryRows = this.ctx.storage.sql
+      .exec<{ event_id: string; athlete_id: string }>(
+        "SELECT event_id, athlete_id FROM entries WHERE team_id = ?",
+        teamId,
+      )
       .toArray();
-    const athleteIds = athletes.map((a) => a.id);
-    if (athleteIds.length === 0) {
-      this.ctx.storage.sql.exec("DELETE FROM teams WHERE id = ?", teamId);
-      return { ok: true };
-    }
-
-    const placeholders = athleteIds.map(() => "?").join(",");
-    const timed = this.ctx.storage.sql
-      .exec<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM swims
-         WHERE athlete_id IN (${placeholders})
-           AND (status IS NOT NULL OR official_time_ms IS NOT NULL)`,
-        ...athleteIds,
-      )
-      .toArray()[0]?.n;
-    const watched = this.ctx.storage.sql
-      .exec<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM watches w
-         JOIN swims s ON (s.event_id, s.heat, s.lane) = (w.event_id, w.heat, w.lane)
-         WHERE s.athlete_id IN (${placeholders}) AND w.time_ms IS NOT NULL`,
-        ...athleteIds,
-      )
-      .toArray()[0]?.n;
-    if ((timed ?? 0) > 0 || (watched ?? 0) > 0) {
-      return {
-        ok: false,
-        reason:
-          "This team has times or results recorded — it can't be removed.",
-      };
-    }
-
-    this.ctx.storage.sql.exec(
-      `DELETE FROM watches WHERE (event_id, heat, lane) IN
-        (SELECT event_id, heat, lane FROM swims WHERE athlete_id IN (${placeholders}))`,
-      ...athleteIds,
-    );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM swims WHERE athlete_id IN (${placeholders})`,
-      ...athleteIds,
-    );
-    this.ctx.storage.sql.exec(
-      `DELETE FROM entries WHERE athlete_id IN (${placeholders})`,
-      ...athleteIds,
-    );
-    this.ctx.storage.sql.exec(`DELETE FROM athletes WHERE team_id = ?`, teamId);
-    this.ctx.storage.sql.exec("DELETE FROM teams WHERE id = ?", teamId);
-
-    for (const athlete of athletes) {
+    this.ctx.storage.sql.exec("DELETE FROM entries WHERE team_id = ?", teamId);
+    for (const row of entryRows) {
       this.broadcast({
-        type: "ATHLETE",
-        athlete: meetAthleteFromRow(athlete),
-        isDelete: true,
+        entity: "entry",
+        op: "delete",
+        key: { eventId: row.event_id, athleteId: row.athlete_id },
       });
     }
+
+    // Never a swim that's already been timed or decided — that one stays,
+    // an unexplainable name on it forever rather than silently vanishing
+    // because the team later left the meet.
+    const swimRows = this.ctx.storage.sql
+      .exec<SwimRow>(
+        `SELECT * FROM swims
+         WHERE athlete_team IN (?, ?)
+           AND status IS NULL AND official_time_ms IS NULL`,
+        team.code,
+        team.name,
+      )
+      .toArray();
+    for (const row of swimRows) {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ?",
+        row.event_id,
+        row.heat,
+        row.lane,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM swims WHERE event_id = ? AND heat = ? AND lane = ?",
+        row.event_id,
+        row.heat,
+        row.lane,
+      );
+      this.broadcast({
+        entity: "swim",
+        op: "delete",
+        key: { eventId: row.event_id, heat: row.heat, lane: row.lane },
+      });
+    }
+
     return { ok: true };
   }
 
@@ -734,30 +613,18 @@ export class MeetDurableObject extends DurableObject<Env> {
    * this point on, D1 answers every read for this meet and this DO is never
    * spun back up to do it again.
    *
-   * Also the one time a walk-up (`athletes.is_walkup = 1`) ever reaches
-   * D1: a real account (`putAthlete`) and an enrollment on the team they
-   * raced for (`enrolVisitor`), so the roster they were added to mid-meet
-   * still has them on it afterwards. One at a time, ahead of the batch —
-   * both calls are their own D1 round trip already, not a prepared
-   * statement `db.batch` could fold in.
+   * A swim with no `athlete_id` at all — a walk-up never given one, named
+   * only by its `athlete_name`/`athlete_team` — reaches D1 exactly the way
+   * every other swim does: as a `results` row. There's no account or
+   * enrollment created for them; that denormalized row is the only trace
+   * of them this app ever keeps, on purpose (see the file's own doc
+   * comment) unless a future pass decides reconciling one back onto the
+   * team's roster is worth doing.
    *
    * Scoring (`place`/`points`) isn't computed here — nothing in this pass
    * wires up `ScoringRules`/`timing.ts` — so those columns are written null.
    */
   async completeMeet(meetId: string): Promise<void> {
-    const walkups = this.ctx.storage.sql
-      .exec<MeetAthleteRow>("SELECT * FROM athletes WHERE is_walkup = 1")
-      .toArray();
-    for (const row of walkups) {
-      const athlete = await putAthlete(this.env.DB, {
-        id: row.id,
-        firstName: row.first_name,
-        lastName: row.last_name,
-        gender: row.gender === "M" ? "M" : "F",
-      });
-      await enrolVisitor(this.env.DB, meetId, row.team_id, athlete.id);
-    }
-
     const swims = this.ctx.storage.sql
       .exec<SwimRow>("SELECT * FROM swims")
       .toArray();
@@ -972,36 +839,6 @@ export class MeetDurableObject extends DurableObject<Env> {
     } catch (e) {
       console.error("ensureSwim failure: ", e);
     }
-  }
-
-  /**
-   * Name and team to stamp onto a swim (`Swim.athleteName`/`athleteTeam`) —
-   * a public RPC now rather than a private step inside `seat`, because
-   * `upsertSwim` takes the whole object and doesn't resolve anything of its
-   * own any more. A caller building one (the timer, the desk) reaches for
-   * this first: `MeetManifest` carries athletes but not which team each is
-   * racing for at this meet — that's `team_id`, local to this DO's own
-   * `athletes` row (`addTeam`/`addWalkupAthlete` are what set it) — so this
-   * is a plain local join, no D1 trip, no cache to warm first.
-   */
-  async resolveAthleteDisplay(
-    athleteId: string,
-  ): Promise<{ name: string; team: string }> {
-    if (!athleteId) return { name: "", team: "" };
-
-    const row = this.ctx.storage.sql
-      .exec<MeetAthleteRow & { code: string | null }>(
-        `SELECT a.*, t.code
-         FROM athletes a LEFT JOIN teams t ON t.id = a.team_id
-         WHERE a.id = ?`,
-        athleteId,
-      )
-      .toArray()[0];
-    if (!row) return { name: "", team: "" };
-    return {
-      name: athleteName(meetAthleteFromRow(row)),
-      team: row.code ?? "",
-    };
   }
 
   async deleteEntry(mutation: EntryDeleteMutation): Promise<void> {
@@ -1281,57 +1118,6 @@ export class MeetDurableObject extends DurableObject<Env> {
         patch: swim,
       });
     }
-  }
-
-  /**
-   * A name added behind the blocks. Lands only here, immediately — this
-   * DO's own `athletes` row, `is_walkup = 1` — so every connected timer,
-   * admin and coach sees the name the instant it's typed, with no D1 round
-   * trip on the way. D1 doesn't hear about this swimmer at all until
-   * `completeMeet` reconciles every `is_walkup` row into a real account and
-   * enrollment, once, the same moment everything else about the meet
-   * settles — not on every walk-up while the meet is still moving.
-   */
-  async addWalkupAthlete(input: {
-    teamId: string;
-    firstName: string;
-    lastName: string;
-    /** No birth date and, absent a caller that knows better, no real gender
-     *  signal from a walk-up either — same default this always used. */
-    gender?: Gender;
-    /**
-     * Client-minted when the caller needs re-applying the same not-yet-
-     * acknowledged request to upsert the same person rather than mint a
-     * duplicate (see the timer's seed cookie). Server-minted otherwise.
-     */
-    id?: string;
-  }): Promise<MeetAthlete> {
-    const id = input.id ?? generateId();
-    const gender: Gender = input.gender ?? "F";
-    this.ctx.storage.sql.exec(
-      `INSERT INTO athletes (id, first_name, last_name, gender, team_id, is_walkup)
-       VALUES (?, ?, ?, ?, ?, 1)
-       ON CONFLICT(id) DO UPDATE SET
-         first_name = excluded.first_name,
-         last_name = excluded.last_name,
-         gender = excluded.gender,
-         team_id = excluded.team_id`,
-      id,
-      input.firstName.trim().slice(0, 60),
-      input.lastName.trim().slice(0, 60),
-      gender,
-      input.teamId,
-    );
-
-    const athlete: MeetAthlete = {
-      id,
-      firstName: input.firstName.trim().slice(0, 60),
-      lastName: input.lastName.trim().slice(0, 60),
-      gender,
-      teamId: input.teamId,
-    };
-    this.broadcast({ type: "ATHLETE", athlete, isDelete: false });
-    return athlete;
   }
 
   /* -------------------------------------------------------------- sockets */

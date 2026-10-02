@@ -13,8 +13,15 @@ import {
 } from "react-router";
 import { useEffect, useState } from "react";
 import { getMeet } from "~/lib/meets.server";
+import {
+  getTeams,
+  listSeasons,
+  roster,
+  seasonForDate,
+} from "~/lib/teams.server";
 import { readResultsManifest } from "~/lib/results.server";
 import { meetCache } from "~/lib/meetCache";
+import type { MeetAthlete } from "~/types/meet";
 import { AccountMenu } from "~/components/AccountMenu";
 import { HeaderToggles } from "~/components/HeaderToggles";
 import type { MeetRouteHandle } from "~/lib/route-handle";
@@ -79,10 +86,49 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
     }
   }
 
-  return data(
-    { meet: await stub.getMeetManifest(meetId) },
-    { headers: clearHeaders },
-  );
+  // meetFacts.teamIds is already who's racing (meets.server.ts reads
+  // meet_teams for us) — no need to re-derive it with a join here.
+  const teamIds = meetFacts.teamIds;
+
+  const [doMeet, teamRows] = await Promise.all([
+    stub.getMeetManifest(meetId), // swims, watches, events, meet status
+    getTeams(db, teamIds),
+  ]);
+  const teamById = new Map(teamRows.map((t) => [t.id, t]));
+
+  // The roster as of the meet's own date, not a team's whole history —
+  // "last year's grad" shouldn't show up in today's picker. A team with no
+  // seasons recorded yet falls back to every enrollment it has, same as
+  // `roster()`'s own no-season-given behavior.
+  const rosterEntries = (
+    await Promise.all(
+      teamIds.map(async (teamId) => {
+        const seasons = await listSeasons(db, teamId);
+        const season = seasonForDate(
+          seasons,
+          teamById.get(teamId)?.currentSeasonId,
+          meetFacts.date,
+        );
+        return roster(db, teamId, season?.id);
+      }),
+    )
+  ).flat();
+
+  // The DO carries no athlete data of its own any more — this is the only
+  // source `meet.athletes` has.
+  const athletes: Record<string, MeetAthlete> = {};
+  for (const { athlete, enrollment } of rosterEntries) {
+    if (enrollment.status !== "active") continue;
+    athletes[athlete.id] = { ...athlete, teamId: enrollment.teamId };
+  }
+
+  const meet = {
+    ...doMeet,
+    teams: Object.fromEntries(teamRows.map((t) => [t.id, t])),
+    athletes,
+  };
+
+  return data({ meet }, { headers: clearHeaders });
 }
 
 export async function clientLoader({
