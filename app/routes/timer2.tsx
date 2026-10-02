@@ -1,86 +1,109 @@
-import { useParams, useNavigation, useNavigate, Link } from "react-router";
+import { useParams, useNavigate, Link } from "react-router";
 import { useEffect, useRef, useState } from "react";
 import { eventName } from "~/types/meet";
-import { useMeet } from "~/hooks/useMeet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
 import { Button, Sheet } from "~/components/ui";
 import type { Watch } from "~/types/watch";
 
+function formatSeconds(ms: number): string {
+  return (Math.max(0, ms) / 1000).toFixed(2);
+}
+
 export function StopwatchDisplay({
   running,
   startedAt,
   frozenMs = 0,
-  format,
   className,
 }: {
-  /** Ticks up from `startedAt` while true; otherwise shows `frozenMs`. */
   running: boolean;
   startedAt: number;
-  /** What to show while not running — a stopped time, or 0 before any run. */
   frozenMs?: number;
-  format: (ms: number) => string;
   className?: string;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
-  const frameRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running || !startedAt) return;
+
+    let frameId: number;
     const tick = () => {
       if (ref.current) {
-        ref.current.textContent = format(Date.now() - startedAt);
+        ref.current.textContent = formatSeconds(Date.now() - startedAt);
       }
-      frameRef.current = requestAnimationFrame(tick);
+      frameId = requestAnimationFrame(tick);
     };
-    frameRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameRef.current);
-  }, [running, startedAt, format]);
+
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [running, startedAt]);
+
+  const initialMs =
+    running && startedAt > 0 ? Date.now() - startedAt : frozenMs;
 
   return (
     <span ref={ref} className={className}>
-      {format(running ? Date.now() - startedAt : frozenMs)}
+      {formatSeconds(initialMs)}
     </span>
   );
 }
 
-/** Plain seconds to two decimals — "12.34", not "0:12.34". */
-function formatSeconds(ms: number): string {
-  return (ms / 1000).toFixed(2);
-}
-
-/**
- * What this lane's stopped clock reads, if anything. A watch started but
- * never stopped (the device was closed or refreshed mid-race) has
- * `stoppedAt` still at 0 — `stoppedAt - startedAt` would read as a large
- * negative number instead of "nothing to show yet".
- */
-function stoppedMsOf(watch: Watch): number {
-  if (watch.timeMs > 0) return watch.timeMs;
-  return watch.stoppedAt > watch.startedAt
-    ? watch.stoppedAt - watch.startedAt
-    : 0;
-}
-
+// -------------------------------------------------------------
+// Parent Route Wrapper: Only manages route parameter identity
+// -------------------------------------------------------------
 export default function TimerLaneKiosk() {
   const params = useParams();
   const meetId = params.meetId!;
-  const navigate = useNavigate();
-  const navigation = useNavigation();
+  const eventId = params.event!;
+  const heatNumber = Number(params.heat);
+  const lane = Number(params.lane);
 
+  // Keying by the route parameters ensures a clean slate on heat/lane change
+  return (
+    <ActiveTimerKiosk
+      key={`${meetId}-${eventId}-${heatNumber}-${lane}`}
+      meetId={meetId}
+      eventId={eventId}
+      heatNumber={heatNumber}
+      lane={lane}
+    />
+  );
+}
+
+// -------------------------------------------------------------
+// Active Kiosk: Subscribes directly to useHeat
+// -------------------------------------------------------------
+function ActiveTimerKiosk({
+  meetId,
+  eventId,
+  heatNumber,
+  lane,
+}: {
+  meetId: string;
+  eventId: string;
+  heatNumber: number;
+  lane: number;
+}) {
+  const navigate = useNavigate();
   const device = useDeviceId();
   const user = useUser();
-
   const { send } = useMeetMutation(meetId);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
-  const lane = Number(params.lane);
-  const heat = useHeat(params.event!, Number(params.heat));
+  // 1. Direct subscription ensures immediate re-render when send() updates cache
+  const heat = useHeat(eventId, heatNumber);
 
-  const DEFAULT_WATCH: Watch = {
-    eventId: heat?.event.id || "",
-    heat: heat?.heatNumber || 0,
-    lane: lane,
+  if (!heat) {
+    return <h1>Loading heat...</h1>;
+  }
+
+  const watch: Watch = heat.lanes[lane]?.watches?.find(
+    (w) => w.deviceId === device && w.slot === 0,
+  ) || {
+    eventId,
+    heat: heatNumber,
+    lane,
     deviceId: device,
     slot: 0,
     startedAt: 0,
@@ -90,205 +113,120 @@ export default function TimerLaneKiosk() {
     recordedAt: 0,
   };
 
-  const watch =
-    heat?.lanes[lane].watches.find(
-      (w) => w.deviceId == device && w.slot == 0,
-    ) || DEFAULT_WATCH;
+  const isRunning =
+    watch.startedAt > 0 && watch.stoppedAt === 0 && watch.timeMs === 0;
+  const isStopped = watch.stoppedAt > watch.startedAt && watch.timeMs === 0;
+  const isSubmitted = watch.timeMs > 0;
 
-  useEffect(() => {
-    watchRef.current = watch;
-  }, [watch]);
-
-  // Sync timer state when heat/lane identity changes OR when initial watch data hydrates
-  useEffect(() => {
-    if (!heat) return;
-
-    const isRunningMidRace =
-      watch.startedAt > 0 && watch.stoppedAt === 0 && watch.timeMs === 0;
-
-    if (isRunningMidRace) {
-      setIsRunning(true);
-      setStopwatchMs(0);
-    } else {
-      setIsRunning(false);
-      setStopwatchMs(stoppedMsOf(watch));
-    }
-  }, [
-    heat?.event.id,
-    heat?.heatNumber,
-    lane,
-    watch.startedAt,
-    watch.stoppedAt,
-    watch.timeMs,
-  ]);
-
-  // The watch being built for this lane. It's a ref, not state: nothing in
-  // this component is rendered from it directly (the ticking display below
-  // reads `stopwatchMs`), and a ref means start/stop always read the value
-  // they just wrote instead of a closure still holding the pre-update watch.
-  const watchRef = useRef<Watch>(watch);
-
-  const [stopwatchMs, setStopwatchMs] = useState<number>(stoppedMsOf(watch));
-  const [isRunning, setIsRunning] = useState(false);
-  const [confirmingReset, setConfirmingReset] = useState(false);
-
-  const isAlreadySubmitted = Boolean(watch && watch.timeMs > 0);
-
-  // The one action button at the bottom of the screen walks through these in
-  // order — never back, except via the explicit Reset that only shows up on
-  // "stopped" (there's no un-submitting; a result is a decision).
-  const phase: "start" | "running" | "stopped" | "submitted" =
-    isAlreadySubmitted
-      ? "submitted"
+  const phase: "start" | "running" | "stopped" | "submitted" = isSubmitted
+    ? "submitted"
+    : isStopped
+      ? "stopped"
       : isRunning
         ? "running"
-        : stopwatchMs > 0
-          ? "stopped"
-          : "start";
+        : "start";
 
-  // A clock belongs to the race it was started for. Moving to another heat
-  // changes this route's params rather than matching a different route, so
-  // React keeps this component mounted — without this, a watch left running
-  // (or just-stopped) would carry over onto the next heat's screen.
-  //
-  // Guarded on `heat` itself: a momentary loader hiccup (a revalidation that
-  // briefly has no data yet) must never be read as "nothing recorded for
-  // this lane" — that would stomp a real stopped/submitted time with 0 and,
-  // since the dependency array is keyed on heat/lane identity rather than on
-  // `watch`, there'd be no later render to correct it once the hiccup
-  // passes and the identity settles back to where it already was.
-  useEffect(() => {
-    if (!heat) return;
-    watchRef.current = watch;
-    setStopwatchMs(stoppedMsOf(watch));
-    setIsRunning(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [heat?.event.id, heat?.heatNumber, lane]);
+  const stoppedMs = isSubmitted
+    ? watch.timeMs
+    : isStopped
+      ? watch.stoppedAt - watch.startedAt
+      : 0;
 
-  const sendWatch = (next: Watch) => {
+  const sendWatch = (patch: Partial<Watch>) => {
     send({
       entity: "watch",
       op: "upsert",
       key: {
-        eventId: next.eventId,
-        heat: next.heat,
-        lane: next.lane,
-        deviceId: next.deviceId,
-        slot: next.slot,
+        eventId,
+        heat: heatNumber,
+        lane,
+        deviceId: device,
+        slot: 0,
       },
       patch: {
         recordedAt: Date.now(),
-        startedAt: next.startedAt,
-        stoppedAt: next.stoppedAt,
+        startedAt: watch.startedAt,
+        stoppedAt: watch.stoppedAt,
         userId: user?.id,
-        timeMs: next.timeMs,
+        timeMs: watch.timeMs,
         role: "timer",
+        ...patch,
       },
     });
   };
 
-  const startStopwatch = (e: React.TouchEvent | React.MouseEvent) => {
+  const handleStart = (e: React.PointerEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     const lag = performance.now() - e.timeStamp;
-    const startedAt = Math.round(Date.now() - lag);
-
-    const next: Watch = {
-      ...watchRef.current,
-      startedAt,
+    sendWatch({
+      startedAt: Math.round(Date.now() - lag),
       stoppedAt: 0,
       timeMs: 0,
-    };
-    watchRef.current = next;
-    sendWatch(next);
-
-    setStopwatchMs(0);
-    setIsRunning(true);
+    });
   };
 
-  const stopStopwatch = (e: React.TouchEvent | React.MouseEvent) => {
+  const handleStop = (e: React.PointerEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     const lag = performance.now() - e.timeStamp;
-    const stoppedAt = Math.round(Date.now() - lag);
-
-    const timeMs = stoppedAt - watchRef.current.startedAt;
-    const next: Watch = { ...watchRef.current, stoppedAt };
-    watchRef.current = next;
-    sendWatch(next);
-
-    setIsRunning(false);
-    setStopwatchMs(timeMs);
+    sendWatch({
+      stoppedAt: Math.round(Date.now() - lag),
+    });
   };
 
-  const submitStopwatch = () => {
-    if (stopwatchMs === null || stopwatchMs <= 0) return;
+  const handleSubmit = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (stoppedMs <= 0) return;
+    sendWatch({ timeMs: stoppedMs });
 
-    const next: Watch = { ...watchRef.current, timeMs: stopwatchMs };
-    watchRef.current = next;
-    sendWatch(next);
-    heat?.next
-      ? navigate(
-          `/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`,
-        )
-      : "";
+    if (heat.next) {
+      navigate(
+        `/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`,
+      );
+    }
   };
 
-  // Forgets this device's own watch entirely rather than just clearing the
-  // display — a fat-fingered stop shouldn't leave a phantom watch behind for
-  // the admin to sort out later.
-  const resetStopwatch = () => {
-    const next: Watch = {
-      ...watchRef.current,
-      startedAt: 0,
-      stoppedAt: 0,
-      timeMs: 0,
-    };
-    watchRef.current = next;
+  const handleReset = () => {
     send({
       entity: "watch",
       op: "delete",
       key: {
-        eventId: next.eventId,
-        heat: next.heat,
-        lane: next.lane,
-        deviceId: next.deviceId,
-        slot: next.slot,
+        eventId,
+        heat: heatNumber,
+        lane,
+        deviceId: device,
+        slot: 0,
       },
     });
-
-    setStopwatchMs(0);
-    setIsRunning(false);
   };
 
-  if (heat == null) {
-    return <h1>no heat</h1>;
-  }
   return (
     <div className="flex h-dvh flex-col select-none touch-none overscroll-none p-4">
-      {/* Header Info Banner */}
       <header className="flex justify-between items-center pb-4">
-        {heat?.prev == null ? (
-          <p>at start</p>
-        ) : (
+        {heat.prev ? (
           <Link
             to={`/meets/${meetId}/timer/alt/${heat.prev.eventId}/${heat.prev.heat}/${lane}`}
           >
             &lt;
           </Link>
-        )}
-        {eventName(heat?.event)}
-        {heat?.next == null ? (
-          <p>at end</p>
         ) : (
+          <p>at start</p>
+        )}
+        {eventName(heat.event)}
+        {heat.next ? (
           <Link
             to={`/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`}
           >
             &gt;
           </Link>
+        ) : (
+          <p>at end</p>
         )}
       </header>
 
       <div>
-        {heat.lanes[lane].athlete ? (
+        {heat.lanes[lane]?.athlete ? (
           <span>
             {heat.lanes[lane].athlete?.firstName}{" "}
             {heat.lanes[lane].athlete?.lastName}
@@ -301,9 +239,8 @@ export default function TimerLaneKiosk() {
       <div className="flex-1 flex flex-col items-center justify-center pb-32">
         <StopwatchDisplay
           running={isRunning}
-          startedAt={watchRef.current.startedAt}
-          frozenMs={stopwatchMs}
-          format={formatSeconds}
+          startedAt={watch.startedAt}
+          frozenMs={stoppedMs}
           className="text-6xl font-mono tracking-tight font-bold"
         />
         <span className="text-xs text-slate-400 mt-2">seconds</span>
@@ -315,8 +252,7 @@ export default function TimerLaneKiosk() {
       >
         {phase === "start" && (
           <button
-            onTouchStart={startStopwatch}
-            onMouseDown={startStopwatch}
+            onPointerDown={handleStart}
             className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg"
           >
             START
@@ -324,8 +260,7 @@ export default function TimerLaneKiosk() {
         )}
         {phase === "running" && (
           <button
-            onTouchStart={stopStopwatch}
-            onMouseDown={stopStopwatch}
+            onPointerDown={handleStop}
             className="min-h-24 flex-1 animate-pulse rounded-2xl bg-rose-600 active:bg-rose-700 text-3xl font-black text-white shadow-lg"
           >
             STOP
@@ -333,8 +268,8 @@ export default function TimerLaneKiosk() {
         )}
         {phase === "stopped" && (
           <button
-            type="submit"
-            onClick={submitStopwatch}
+            type="button"
+            onClick={handleSubmit}
             className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg"
           >
             SUBMIT
@@ -342,7 +277,7 @@ export default function TimerLaneKiosk() {
         )}
         {phase === "submitted" && (
           <button
-            type="submit"
+            type="button"
             disabled
             className="min-h-24 flex-1 rounded-2xl bg-slate-800 text-3xl font-black text-slate-600 shadow-lg"
           >
@@ -375,8 +310,8 @@ export default function TimerLaneKiosk() {
         >
           <div className="space-y-4">
             <p className="text-sm text-slate-600 dark:text-slate-300">
-              This throws away the {formatSeconds(stopwatchMs)}s on the clock.
-              It can&rsquo;t be undone.
+              This throws away the {formatSeconds(stoppedMs)}s on the clock. It
+              can&rsquo;t be undone.
             </p>
             <div className="grid grid-cols-2 gap-2">
               <Button size="lg" full onClick={() => setConfirmingReset(false)}>
@@ -387,7 +322,7 @@ export default function TimerLaneKiosk() {
                 size="lg"
                 full
                 onClick={() => {
-                  resetStopwatch();
+                  handleReset();
                   setConfirmingReset(false);
                 }}
               >
