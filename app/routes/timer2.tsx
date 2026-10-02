@@ -5,9 +5,45 @@ import { useMeet } from "~/hooks/useMeet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
-import { StopwatchDisplay } from "~/components/StopwatchDisplay";
 import { Button, Sheet } from "~/components/ui";
 import type { Watch } from "~/types/watch";
+
+export function StopwatchDisplay({
+  running,
+  startedAt,
+  frozenMs = 0,
+  format,
+  className,
+}: {
+  /** Ticks up from `startedAt` while true; otherwise shows `frozenMs`. */
+  running: boolean;
+  startedAt: number;
+  /** What to show while not running — a stopped time, or 0 before any run. */
+  frozenMs?: number;
+  format: (ms: number) => string;
+  className?: string;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const frameRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!running) return;
+    const tick = () => {
+      if (ref.current) {
+        ref.current.textContent = format(Date.now() - startedAt);
+      }
+      frameRef.current = requestAnimationFrame(tick);
+    };
+    frameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameRef.current);
+  }, [running, startedAt, format]);
+
+  return (
+    <span ref={ref} className={className}>
+      {format(running ? Date.now() - startedAt : frozenMs)}
+    </span>
+  );
+}
 
 /** Plain seconds to two decimals — "12.34", not "0:12.34". */
 function formatSeconds(ms: number): string {
@@ -58,6 +94,33 @@ export default function TimerLaneKiosk() {
     heat?.lanes[lane].watches.find(
       (w) => w.deviceId == device && w.slot == 0,
     ) || DEFAULT_WATCH;
+
+  useEffect(() => {
+    watchRef.current = watch;
+  }, [watch]);
+
+  // Sync timer state when heat/lane identity changes OR when initial watch data hydrates
+  useEffect(() => {
+    if (!heat) return;
+
+    const isRunningMidRace =
+      watch.startedAt > 0 && watch.stoppedAt === 0 && watch.timeMs === 0;
+
+    if (isRunningMidRace) {
+      setIsRunning(true);
+      setStopwatchMs(0);
+    } else {
+      setIsRunning(false);
+      setStopwatchMs(stoppedMsOf(watch));
+    }
+  }, [
+    heat?.event.id,
+    heat?.heatNumber,
+    lane,
+    watch.startedAt,
+    watch.stoppedAt,
+    watch.timeMs,
+  ]);
 
   // The watch being built for this lane. It's a ref, not state: nothing in
   // this component is rendered from it directly (the ticking display below
