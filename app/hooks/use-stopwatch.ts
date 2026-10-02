@@ -1,37 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-
-/**
- * Elapsed milliseconds since `startedAt`, refreshed every animation frame.
- *
- * The value is always recomputed from `Date.now()` rather than accumulated, so
- * the clock stays true even if frames are dropped, the tab is backgrounded, or
- * the iPad screen locks mid-heat.
- */
-export function useElapsed(startedAt: number | null): number {
-  const [elapsed, setElapsed] = useState(() =>
-    startedAt ? Math.max(0, Date.now() - startedAt) : 0,
-  );
-  const frame = useRef<number | undefined>(undefined);
-
-  useEffect(() => {
-    if (startedAt === null) {
-      setElapsed(0);
-      return;
-    }
-
-    const tick = () => {
-      setElapsed(Math.max(0, Date.now() - startedAt));
-      frame.current = requestAnimationFrame(tick);
-    };
-    frame.current = requestAnimationFrame(tick);
-
-    return () => {
-      if (frame.current !== undefined) cancelAnimationFrame(frame.current);
-    };
-  }, [startedAt]);
-
-  return elapsed;
-}
+import { useEffect } from "react";
 
 /**
  * Hold a screen wake lock while `active`. Silently does nothing on browsers

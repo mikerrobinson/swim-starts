@@ -5,7 +5,13 @@ import { useMeet } from "~/hooks/useMeet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
+import { StopwatchDisplay } from "~/components/StopwatchDisplay";
 import type { Watch } from "~/types/watch";
+
+/** Plain seconds to two decimals — "12.34", not "0:12.34". */
+function formatSeconds(ms: number): string {
+  return (ms / 1000).toFixed(2);
+}
 
 export default function TimerLaneKiosk() {
   const params = useParams();
@@ -49,8 +55,6 @@ export default function TimerLaneKiosk() {
     watch.timeMs || watch.stoppedAt - watch.startedAt,
   );
   const [isRunning, setIsRunning] = useState(false);
-  const animFrameRef = useRef<number>(0);
-  const displayRef = useRef<HTMLSpanElement>(null);
 
   const isAlreadySubmitted = Boolean(watch && watch.timeMs > 0);
   const hasStoppedTime = !isRunning && stopwatchMs !== null && stopwatchMs > 0;
@@ -61,16 +65,11 @@ export default function TimerLaneKiosk() {
   // React keeps this component mounted — without this, a watch left running
   // (or just-stopped) would carry over onto the next heat's screen.
   useEffect(() => {
-    cancelAnimationFrame(animFrameRef.current);
     watchRef.current = watch;
     setStopwatchMs(watch.timeMs || watch.stoppedAt - watch.startedAt);
     setIsRunning(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heat?.event.id, heat?.heatNumber, lane]);
-
-  useEffect(() => {
-    return () => cancelAnimationFrame(animFrameRef.current);
-  }, []);
 
   const sendWatch = (next: Watch) => {
     send({
@@ -110,23 +109,12 @@ export default function TimerLaneKiosk() {
 
     setStopwatchMs(0);
     setIsRunning(true);
-
-    const update = () => {
-      const ms = Math.round(Date.now() - startedAt);
-      if (displayRef.current) {
-        displayRef.current.textContent = (ms / 1000).toFixed(2);
-      }
-      animFrameRef.current = requestAnimationFrame(update);
-    };
-    animFrameRef.current = requestAnimationFrame(update);
   };
 
   const stopStopwatch = (e: React.TouchEvent | React.MouseEvent) => {
     e.preventDefault();
     const lag = performance.now() - e.timeStamp;
     const stoppedAt = Math.round(Date.now() - lag);
-
-    cancelAnimationFrame(animFrameRef.current);
 
     const timeMs = stoppedAt - watchRef.current.startedAt;
     const next: Watch = { ...watchRef.current, stoppedAt };
@@ -190,12 +178,13 @@ export default function TimerLaneKiosk() {
       </div>
       {/* Main Display / Manual Override Box */}
       <div className="flex-1 flex flex-col items-center justify-center">
-        <span
-          ref={displayRef}
+        <StopwatchDisplay
+          running={isRunning}
+          startedAt={watchRef.current.startedAt}
+          frozenMs={stopwatchMs}
+          format={formatSeconds}
           className="text-6xl font-mono tracking-tight font-bold"
-        >
-          {stopwatchMs !== null ? (stopwatchMs / 1000).toFixed(2) : "0.00"}
-        </span>
+        />
         <span className="text-xs text-slate-400 mt-2">seconds</span>
       </div>
 

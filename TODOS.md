@@ -348,7 +348,7 @@ lane that hadn't stopped. Could require a confirm while lanes are outstanding.
 
 <!-- add below -->
 
-### Split the stopwatch tick out of `timer.tsx`
+### Split the stopwatch tick out of `timer2.tsx`
 
 `elapsed` lives in the same component that also derives `swims`/`watches`/
 `order` from the whole meet (`useMemo(() => Object.values(meet.swims), [meet.swims])`

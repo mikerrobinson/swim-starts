@@ -11,6 +11,7 @@ import type { Route } from "./+types/splits-heat";
 import type { SwimTime } from "~/lib/timing";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
 import { LaneTile } from "~/components/LaneTile";
+import { StopwatchDisplay } from "~/components/StopwatchDisplay";
 import {
   Banner,
   Button,
@@ -19,7 +20,7 @@ import {
   Sheet,
   TextInput,
 } from "~/components/ui";
-import { useElapsed, useWakeLock } from "~/hooks/use-stopwatch";
+import { useWakeLock } from "~/hooks/use-stopwatch";
 import {
   currentWatches,
   fromStopwatch,
@@ -519,7 +520,6 @@ export default function SplitsHeat({
   const clockRunning = running && !allStopped;
   const heatComplete = running && allStopped;
 
-  const elapsed = useElapsed(clockRunning ? clock!.startedAt : null);
   useWakeLock(running);
 
   useEffect(() => {
@@ -692,9 +692,12 @@ export default function SplitsHeat({
               current — so the lane grid above it never shifts. */}
           {clockRunning ? (
             <div className="flex min-h-24 items-center justify-center rounded-2xl bg-slate-200 text-slate-900 dark:bg-slate-800 dark:text-white">
-              <span className="text-6xl font-bold leading-none tabular-nums">
-                {formatClock(elapsed)}
-              </span>
+              <StopwatchDisplay
+                running
+                startedAt={clock!.startedAt}
+                format={formatClock}
+                className="text-6xl font-bold leading-none tabular-nums"
+              />
             </div>
           ) : heatComplete && confirmReset ? (
             /* Cancel sits where Reset just was, so a double tap lands on the
