@@ -35,6 +35,12 @@ export async function action({ params, request, context }: Route.ActionArgs) {
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
 
   const { mutations, clearHeaders } = drainOutboxCookies(request, meetId);
+  for (const mutation of mutations) {
+    console.log(
+      "ACTION: Found mutation: \n",
+      JSON.stringify(mutation, null, 2),
+    );
+  }
   if (mutations.length > 0) {
     if (user !== null) {
       await stub.processMutations(meetId, user, mutations);
@@ -59,6 +65,12 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
 
   const { mutations, clearHeaders } = drainOutboxCookies(request, meetId);
+  for (const mutation of mutations) {
+    console.log(
+      "LOADER: Found mutation: \n",
+      JSON.stringify(mutation, null, 2),
+    );
+  }
   if (mutations.length > 0) {
     if (user !== null) {
       await stub.processMutations(meetId, user, mutations);

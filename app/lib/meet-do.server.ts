@@ -42,12 +42,16 @@ import type { Swim } from "~/types/swim";
 import type { SwimIdentity } from "~/types/swim";
 import type { SwimKey } from "~/types/swim";
 import type { ResultStatus } from "~/types/swim";
-import type { Watch } from "~/types/watch";
+import type {
+  Watch,
+  WatchDeleteMutation,
+  WatchUpsertMutation,
+} from "~/types/watch";
 import type { WatchIdentity } from "~/types/watch";
 import { athleteName, DEFAULT_MEET_DETAILS } from "~/types/meet";
 import { canDeleteEntry, canUpsertEntry, toEntryKey } from "~/types/entry";
 import { toSwimKey } from "~/types/swim";
-import { toWatchKey } from "~/types/watch";
+import { canDeleteWatch, canUpsertWatch, toWatchKey } from "~/types/watch";
 import type { Team } from "~/types/team";
 import type { Athlete, Gender } from "~/types/athlete";
 import type { EntityMutation } from "~/types/mutations";
@@ -369,6 +373,17 @@ export class MeetDurableObject extends DurableObject<Env> {
       case "swim":
         break;
       case "watch":
+        if (
+          mutation.op === "delete" &&
+          canDeleteWatch(mutation.key, user, meet)
+        ) {
+          await this.deleteWatch(mutation);
+        } else if (
+          mutation.op === "upsert" &&
+          canUpsertWatch(mutation.key, user, meet)
+        ) {
+          await this.upsertWatch(mutation);
+        }
         break;
     }
   }
@@ -985,75 +1000,44 @@ export class MeetDurableObject extends DurableObject<Env> {
     };
   }
 
-  /**
-   * One slot's watch, replaced whole. What used to split across
-   * `recordWatch` (a fresh append-only row) plus the caller's own
-   * `ensureLane` call first: a slot's key — event/heat/lane/device/slot —
-   * already is its whole identity, so a stopwatch running, then stopped,
-   * then submitted is the same slot's row progressing through states, not
-   * three different rows racing to be inserted. `ensureSwimRow` creates the
-   * lane this is evidence for if nothing has touched it yet.
-   */
-  async upsertWatch(meetId: string, watch: Watch): Promise<Watch> {
-    this.ensureSwimRow(meetId, watch);
+  // /**
+  //  * One slot's watch, replaced whole. What used to split across
+  //  * `recordWatch` (a fresh append-only row) plus the caller's own
+  //  * `ensureLane` call first: a slot's key — event/heat/lane/device/slot —
+  //  * already is its whole identity, so a stopwatch running, then stopped,
+  //  * then submitted is the same slot's row progressing through states, not
+  //  * three different rows racing to be inserted. `ensureSwimRow` creates the
+  //  * lane this is evidence for if nothing has touched it yet.
+  //  */
+  // async upsertWatch(meetId: string, watch: Watch): Promise<Watch> {
+  //   this.ensureSwimRow(meetId, watch);
 
-    this.ctx.storage.sql.exec(
-      `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(event_id, heat, lane, device_id, slot) DO UPDATE SET
-         role = excluded.role,
-         user_id = excluded.user_id,
-         time_ms = excluded.time_ms,
-         started_at = excluded.started_at,
-         stopped_at = excluded.stopped_at,
-         recorded_at = excluded.recorded_at`,
-      watch.eventId,
-      watch.heat,
-      watch.lane,
-      watch.deviceId,
-      watch.slot,
-      watch.role,
-      watch.userId ?? undefined,
-      watch.timeMs,
-      watch.startedAt,
-      watch.stoppedAt,
-      watch.recordedAt,
-    );
+  //   this.ctx.storage.sql.exec(
+  //     `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
+  //      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  //      ON CONFLICT(event_id, heat, lane, device_id, slot) DO UPDATE SET
+  //        role = excluded.role,
+  //        user_id = excluded.user_id,
+  //        time_ms = excluded.time_ms,
+  //        started_at = excluded.started_at,
+  //        stopped_at = excluded.stopped_at,
+  //        recorded_at = excluded.recorded_at`,
+  //     watch.eventId,
+  //     watch.heat,
+  //     watch.lane,
+  //     watch.deviceId,
+  //     watch.slot,
+  //     watch.role,
+  //     watch.userId ?? undefined,
+  //     watch.timeMs,
+  //     watch.startedAt,
+  //     watch.stoppedAt,
+  //     watch.recordedAt,
+  //   );
 
-    this.broadcast({ type: "WATCH", watch, isDelete: false });
-    return watch;
-  }
-
-  /** Clears a slot's whole history — "this clock claim shouldn't exist," not
-   *  a correction (that's a fresh `upsertWatch`). What used to be
-   *  `dropWatch`. */
-  async deleteWatch(meetId: string, key: WatchIdentity): Promise<void> {
-    const existing = this.ctx.storage.sql
-      .exec<WatchRow>(
-        "SELECT * FROM watches WHERE event_id = ? AND heat = ? AND lane = ? AND device_id = ? AND slot = ?",
-        key.eventId,
-        key.heat,
-        key.lane,
-        key.deviceId,
-        key.slot,
-      )
-      .toArray()[0];
-    if (!existing) return;
-
-    this.ctx.storage.sql.exec(
-      "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ? AND device_id = ? AND slot = ?",
-      key.eventId,
-      key.heat,
-      key.lane,
-      key.deviceId,
-      key.slot,
-    );
-    this.broadcast({
-      type: "WATCH",
-      watch: watchFromRow(existing),
-      isDelete: true,
-    });
-  }
+  //   this.broadcast({ type: "WATCH", watch, isDelete: false });
+  //   return watch;
+  // }
 
   async deleteEntry(mutation: EntryDeleteMutation): Promise<void> {
     const cursor = this.ctx.storage.sql.exec(
@@ -1081,6 +1065,48 @@ export class MeetDurableObject extends DurableObject<Env> {
     );
     this.broadcast(mutation);
     this.reseed(mutation.key.eventId);
+  }
+
+  async deleteWatch(mutation: WatchDeleteMutation): Promise<void> {
+    const cursor = this.ctx.storage.sql.exec(
+      "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ? AND device_id = ? AND slot = ? RETURNING slot",
+      mutation.key.eventId,
+      mutation.key.heat,
+      mutation.key.lane,
+      mutation.key.deviceId,
+      mutation.key.slot,
+    );
+    if (cursor.toArray().length > 0) {
+      this.broadcast(mutation);
+    }
+  }
+
+  async upsertWatch(mutation: WatchUpsertMutation): Promise<void> {
+    console.log("upserting watch: ", JSON.stringify(mutation, null, 2));
+    this.ctx.storage.sql.exec(
+      `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(event_id, heat, lane, device_id, slot) DO UPDATE SET
+         role = excluded.role,
+         user_id = excluded.user_id,
+         time_ms = excluded.time_ms,
+         started_at = excluded.started_at,
+         stopped_at = excluded.stopped_at,
+         recorded_at = excluded.recorded_at`,
+      mutation.key.eventId,
+      mutation.key.heat,
+      mutation.key.lane,
+      mutation.key.deviceId,
+      mutation.key.slot,
+      mutation.patch.role,
+      mutation.patch.userId ?? undefined,
+      mutation.patch.timeMs,
+      mutation.patch.startedAt,
+      mutation.patch.stoppedAt,
+      mutation.patch.recordedAt,
+    );
+    console.log("done upserting");
+    this.broadcast(mutation);
   }
 
   /**

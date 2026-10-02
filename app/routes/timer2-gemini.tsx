@@ -1,10 +1,16 @@
-import { useParams, useNavigation, useNavigate, Link } from "react-router";
+import {
+  useParams,
+  Form,
+  useNavigation,
+  useNavigate,
+  Link,
+} from "react-router";
 import { useEffect, useRef, useState } from "react";
 import { eventName } from "~/types/meet";
 import { useMeet } from "~/hooks/useMeet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
-import { useDeviceId, useUser } from "~/state/user";
+import { useDeviceId } from "~/state/user";
 import type { Watch } from "~/types/watch";
 
 export default function TimerLaneKiosk() {
@@ -13,8 +19,9 @@ export default function TimerLaneKiosk() {
   const navigate = useNavigate();
   const navigation = useNavigation();
 
+  // Read directly from the parent shell loader
+  const meet = useMeet();
   const device = useDeviceId();
-  const user = useUser();
 
   const { send } = useMeetMutation(meetId);
 
@@ -34,27 +41,24 @@ export default function TimerLaneKiosk() {
     recordedAt: 0,
   };
 
-  const watch =
-    heat?.lanes[lane].watches.find(
-      (w) => w.deviceId == device && w.slot == 0,
-    ) || DEFAULT_WATCH;
+  const w = heat?.lanes[lane].watches.find(
+    (w) => w.deviceId == device && w.slot == 0,
+  );
+
+  const previouslySubmitted = !!w && w.timeMs > 0;
 
   // The watch being built for this lane. It's a ref, not state: nothing in
   // this component is rendered from it directly (the ticking display below
   // reads `stopwatchMs`), and a ref means start/stop always read the value
   // they just wrote instead of a closure still holding the pre-update watch.
-  const watchRef = useRef<Watch>(watch);
+  const watchRef = useRef<Watch>(w ?? DEFAULT_WATCH);
 
-  const [stopwatchMs, setStopwatchMs] = useState<number>(
-    watch.timeMs || watch.stoppedAt - watch.startedAt,
+  const [stopwatchMs, setStopwatchMs] = useState<number | null>(
+    w?.timeMs || null,
   );
   const [isRunning, setIsRunning] = useState(false);
   const animFrameRef = useRef<number>(0);
   const displayRef = useRef<HTMLSpanElement>(null);
-
-  const isAlreadySubmitted = Boolean(watch && watch.timeMs > 0);
-  const hasStoppedTime = !isRunning && stopwatchMs !== null && stopwatchMs > 0;
-  const canSubmit = !isAlreadySubmitted && hasStoppedTime;
 
   // A clock belongs to the race it was started for. Moving to another heat
   // changes this route's params rather than matching a different route, so
@@ -62,8 +66,8 @@ export default function TimerLaneKiosk() {
   // (or just-stopped) would carry over onto the next heat's screen.
   useEffect(() => {
     cancelAnimationFrame(animFrameRef.current);
-    watchRef.current = watch;
-    setStopwatchMs(watch.timeMs || watch.stoppedAt - watch.startedAt);
+    watchRef.current = w ?? DEFAULT_WATCH;
+    setStopwatchMs(w?.timeMs || null);
     setIsRunning(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heat?.event.id, heat?.heatNumber, lane]);
@@ -76,21 +80,8 @@ export default function TimerLaneKiosk() {
     send({
       entity: "watch",
       op: "upsert",
-      key: {
-        eventId: next.eventId,
-        heat: next.heat,
-        lane: next.lane,
-        deviceId: next.deviceId,
-        slot: next.slot,
-      },
-      patch: {
-        recordedAt: Date.now(),
-        startedAt: next.startedAt,
-        stoppedAt: next.stoppedAt,
-        userId: user?.id,
-        timeMs: next.timeMs,
-        role: "timer",
-      },
+      key: next,
+      patch: next,
     });
   };
 
@@ -129,7 +120,7 @@ export default function TimerLaneKiosk() {
     cancelAnimationFrame(animFrameRef.current);
 
     const timeMs = stoppedAt - watchRef.current.startedAt;
-    const next: Watch = { ...watchRef.current, stoppedAt };
+    const next: Watch = { ...watchRef.current, stoppedAt, timeMs };
     watchRef.current = next;
     sendWatch(next);
 
@@ -138,11 +129,7 @@ export default function TimerLaneKiosk() {
   };
 
   const submitStopwatch = () => {
-    if (stopwatchMs === null || stopwatchMs <= 0) return;
-
-    const next: Watch = { ...watchRef.current, timeMs: stopwatchMs };
-    watchRef.current = next;
-    sendWatch(next);
+    sendWatch(watchRef.current);
     heat?.next
       ? navigate(
           `/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`,
@@ -219,7 +206,7 @@ export default function TimerLaneKiosk() {
           </button>
         )}
 
-        {isAlreadySubmitted ? (
+        {previouslySubmitted ? (
           <button
             type="submit"
             disabled={true}
@@ -230,11 +217,13 @@ export default function TimerLaneKiosk() {
         ) : (
           <button
             type="submit"
-            disabled={!canSubmit}
+            disabled={isRunning || stopwatchMs === null}
             onClick={submitStopwatch}
             className="w-full py-4 bg-teal-500 disabled:bg-slate-800 disabled:text-slate-600 active:bg-teal-600 text-slate-950 font-bold rounded-xl text-lg"
           >
-            Submit & Advance
+            {navigation.state === "submitting"
+              ? "Saving..."
+              : "Submit & Advance"}
           </button>
         )}
       </div>

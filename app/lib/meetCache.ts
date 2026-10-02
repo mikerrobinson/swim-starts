@@ -37,22 +37,22 @@ class MeetCacheManager {
       return this.meets.get(meetId)?.manifest!;
     }
 
-    // if (typeof window !== "undefined") {
-    //   try {
-    //     const raw = localStorage.getItem(`meet:${meetId}`);
-    //     if (raw) {
-    //       const parsed = JSON.parse(raw) as MeetManifest;
-    //       this.meets.set(meetId, {
-    //         manifest: parsed,
-    //         lastSyncedAt: Date.now(),
-    //         isExplicitlyStale: false,
-    //       });
-    //       return parsed;
-    //     }
-    //   } catch (err) {
-    //     console.warn("Failed to load meet from storage", err);
-    //   }
-    // }
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem(`meet:${meetId}`);
+        if (raw) {
+          const parsed = JSON.parse(raw) as MeetManifest;
+          this.meets.set(meetId, {
+            manifest: parsed,
+            lastSyncedAt: Date.now(),
+            isExplicitlyStale: false,
+          });
+          return parsed;
+        }
+      } catch (err) {
+        console.warn("Failed to load meet from storage", err);
+      }
+    }
 
     return null;
   }
@@ -67,13 +67,13 @@ class MeetCacheManager {
       isExplicitlyStale: false,
     });
 
-    // if (typeof window !== "undefined") {
-    //   try {
-    //     localStorage.setItem(`meet:${meetId}`, JSON.stringify(manifest));
-    //   } catch (err) {
-    //     console.warn("Failed to persist meet manifest to storage", err);
-    //   }
-    // }
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(`meet:${meetId}`, JSON.stringify(manifest));
+      } catch (err) {
+        console.warn("Failed to persist meet manifest to storage", err);
+      }
+    }
   }
 
   /**
