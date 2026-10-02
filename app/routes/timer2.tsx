@@ -1,5 +1,5 @@
 import { useParams, useNavigate, Link } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { eventName } from "~/types/meet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
@@ -8,53 +8,10 @@ import { Button } from "~/components/ui";
 import { Modal } from "~/components/Modal";
 import type { Watch } from "~/types/watch";
 import { useWatch } from "~/hooks/useWatch";
+import { formatSeconds } from "~/lib/time";
+import { StopwatchDisplay } from "~/components/StopwatchDisplay";
 
-function formatSeconds(ms: number): string {
-  return (Math.max(0, ms) / 1000).toFixed(2);
-}
-
-export function StopwatchDisplay({
-  running,
-  startedAt,
-  frozenMs = 0,
-  className,
-}: {
-  running: boolean;
-  startedAt: number;
-  frozenMs?: number;
-  className?: string;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!running || !startedAt) return;
-
-    let frameId: number;
-    const tick = () => {
-      if (ref.current) {
-        ref.current.textContent = formatSeconds(Date.now() - startedAt);
-      }
-      frameId = requestAnimationFrame(tick);
-    };
-
-    frameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameId);
-  }, [running, startedAt]);
-
-  const initialMs =
-    running && startedAt > 0 ? Date.now() - startedAt : frozenMs;
-
-  return (
-    <span ref={ref} className={className}>
-      {formatSeconds(initialMs)}
-    </span>
-  );
-}
-
-// -------------------------------------------------------------
-// Parent Route Wrapper: Only manages route parameter identity
-// -------------------------------------------------------------
-export default function TimerLaneKiosk() {
+export default function Timer() {
   const params = useParams();
   const meetId = params.meetId!;
   const eventId = params.event!;
@@ -68,7 +25,6 @@ export default function TimerLaneKiosk() {
   const { send } = useMeetMutation(meetId);
   const [confirmingReset, setConfirmingReset] = useState(false);
 
-  // Directly subscribed in O(1) time
   const watch = useWatch({
     meetId,
     eventId,
@@ -81,7 +37,6 @@ export default function TimerLaneKiosk() {
     return <h1>Loading heat...</h1>;
   }
 
-  // Purely derived states
   const isRunning =
     watch.startedAt > 0 && watch.stoppedAt === 0 && watch.timeMs === 0;
   const isStopped = watch.stoppedAt > watch.startedAt && watch.timeMs === 0;

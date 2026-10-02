@@ -25,7 +25,10 @@ export function formatTime(ms: number): string {
  * jitter rather than read as precision. Once the watch stops, pass `true` (the
  * default) so the number that lands matches what `formatTime` would show.
  */
-export function formatClock(ms: number, opts?: { hundredths?: boolean }): string {
+export function formatClock(
+  ms: number,
+  opts?: { hundredths?: boolean },
+): string {
   if (!Number.isFinite(ms) || ms < 0) ms = 0;
   const totalHundredths = Math.floor(ms / 10);
   const hundredths = totalHundredths % 100;
@@ -101,4 +104,7 @@ export function parseTime(input: string): number | null {
   if (minutesPart && seconds > 59) return null;
 
   return toMs(minutesPart ? parseInt(minutesPart, 10) : 0, seconds, hundredths);
+}
+export function formatSeconds(ms: number): string {
+  return (Math.max(0, ms) / 1000).toFixed(2);
 }
