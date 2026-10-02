@@ -335,6 +335,7 @@ export interface MeetManifest {
   athletes: Record<string, MeetAthlete>;
   teams: Record<string, Team>;
   adminIds: string[];
+  version?: number;
 }
 
 export interface Event {

@@ -12,26 +12,41 @@ interface CacheEntry {
 }
 
 interface PatchOptions {
-  onRevalidate?: () => void;
-  immediate?: boolean; // Defaults to false (batched). Set to true for local client updates
+  immediate?: boolean; // Defaults to false (batched). Set to true for local pointer updates
 }
 
-class MeetCacheManager {
-  // In-memory heap cache of deserialized manifests
-  private meets = new Map<string, CacheEntry>();
+type Listener = () => void;
 
-  // Coalescing queue for high-frequency bursts
-  private isRevalidationPending = false;
+class MeetCacheManager {
+  private meets = new Map<string, CacheEntry>();
+  private listeners = new Set<Listener>();
+
+  // Coalescing queue for high-frequency bursts (WebSockets)
+  private isNotificationPending = false;
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null;
   private diskSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private revalidateTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingCallback: (() => void) | null = null;
 
   private readonly STALE_TTL_MS = 60 * 1000;
 
   /**
-   * Retrieves the manifest synchronously from memory if warm,
-   * falling back to localStorage during initial bootstrap.
+   * React useSyncExternalStore subscription contract.
    */
+  subscribe = (listener: Listener): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  /**
+   * Synchronously invokes all active store subscribers.
+   */
+  notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+
   getMeet(meetId: string): MeetManifest | null {
     if (this.meets.has(meetId)) {
       return this.meets.get(meetId)?.manifest!;
@@ -57,9 +72,6 @@ class MeetCacheManager {
     return null;
   }
 
-  /**
-   * Stores fresh manifest from initial SSR/loader hydration in RAM and disk.
-   */
   saveMeet(meetId: string, manifest: MeetManifest): void {
     this.meets.set(meetId, {
       manifest,
@@ -77,8 +89,9 @@ class MeetCacheManager {
   }
 
   /**
-   * Applies incoming socket patches directly to the in-memory object graph in O(1) time.
-   * Batches downstream Remix revalidation to next animation frame and debounces disk writes.
+   * Applies mutations in-place in O(1) time.
+   * If immediate = true (local touches), notifies React subscribers synchronously.
+   * Otherwise (remote socket frames), batches notifications into a 50ms window.
    */
   applyPatch(
     meetId: string,
@@ -138,38 +151,22 @@ class MeetCacheManager {
         didMutate = true;
         break;
       }
-
-      // case "MEET_DETAILS": {
-      //   meet.details = mutation.details;
-      //   meet.name = mutation.details.name;
-      //   didMutate = true;
-      //   break;
-      // }
-
-      // case "EVENTS": {
-      //   meet.events = Object.fromEntries(mutation.events.map((e) => [e.id, e]));
-      //   didMutate = true;
-      //   break;
-      // }
     }
 
     if (!didMutate) return false;
 
+    meet.version = (meet.version || 0) + 1;
+    this.meets.get(meetId)!.manifest = { ...meet };
     this.touch(meetId);
 
-    // If a revalidation callback is supplied (client-side only):
-    if (typeof window !== "undefined" && options?.onRevalidate) {
-      if (options.immediate) {
-        // Local touch: bypass debounce timer and paint immediately
-        this.pendingCallback = options.onRevalidate;
-        this.flushRevalidation();
-      } else {
-        // WebSocket packet: batch into 50ms window
-        this.scheduleRevalidation(options.onRevalidate);
-      }
+    // Notify React UI subscribers
+    if (options?.immediate) {
+      this.flushNotification();
+    } else {
+      this.scheduleNotification();
     }
 
-    // 2. Debounce serialization & disk write until pool action settles
+    // Debounce serialization & disk persistence
     this.scheduleDiskPersist(meetId, meet);
 
     return true;
@@ -196,32 +193,21 @@ class MeetCacheManager {
     }
   }
 
-  hasPendingRevalidation(): boolean {
-    return this.isRevalidationPending;
+  flushNotification(): void {
+    if (this.notifyTimer) {
+      clearTimeout(this.notifyTimer);
+      this.notifyTimer = null;
+    }
+    this.isNotificationPending = false;
+    this.notify();
   }
 
-  flushRevalidation(): void {
-    if (this.revalidateTimer) {
-      clearTimeout(this.revalidateTimer);
-      this.revalidateTimer = null;
-    }
-    this.isRevalidationPending = false;
+  scheduleNotification(): void {
+    if (this.isNotificationPending) return;
+    this.isNotificationPending = true;
 
-    if (this.pendingCallback) {
-      const cb = this.pendingCallback;
-      this.pendingCallback = null;
-      cb();
-    }
-  }
-
-  scheduleRevalidation(callback: () => void): void {
-    this.pendingCallback = callback;
-
-    if (this.isRevalidationPending) return;
-    this.isRevalidationPending = true;
-
-    this.revalidateTimer = setTimeout(() => {
-      this.flushRevalidation();
+    this.notifyTimer = setTimeout(() => {
+      this.flushNotification();
     }, 50);
   }
 
@@ -239,7 +225,7 @@ class MeetCacheManager {
       } finally {
         this.diskSaveTimers.delete(meetId);
       }
-    }, 500); // 500ms debounce buffer
+    }, 500);
 
     this.diskSaveTimers.set(meetId, timer);
   }
@@ -255,10 +241,16 @@ class MeetCacheManager {
       }
     } else {
       this.meets.clear();
+      this.listeners.clear();
       for (const timer of this.diskSaveTimers.values()) {
         clearTimeout(timer);
       }
       this.diskSaveTimers.clear();
+      if (this.notifyTimer) {
+        clearTimeout(this.notifyTimer);
+        this.notifyTimer = null;
+      }
+      this.isNotificationPending = false;
     }
   }
 }

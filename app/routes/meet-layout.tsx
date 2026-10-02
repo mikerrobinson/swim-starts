@@ -283,13 +283,8 @@ function LiveMeetSync({
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        // If mutations happened while backgrounded, flush immediately
-        if (meetCache.hasPendingRevalidation()) {
-          meetCache.flushRevalidation();
-        } else {
-          // Optional safety net: nudge revalidator in case a socket message was dropped
-          revalidator.revalidate();
-        }
+        //meetCache.flushNotification();
+        revalidator.revalidate();
       }
     };
 
@@ -305,9 +300,6 @@ function LiveMeetSync({
 
       socket.onopen = () => {
         reconnectAttempt = 0;
-        // if (meetCache.isStale(meetId)) {
-        //   revalidator.revalidate();
-        // }
         onConnectedChange(true);
       };
 
@@ -319,9 +311,7 @@ function LiveMeetSync({
         } catch {
           return; // Not something we sent; not something we can apply.
         }
-        meetCache.applyPatch(meetId, mutation, {
-          onRevalidate: () => revalidator.revalidate(),
-        });
+        meetCache.applyPatch(meetId, mutation);
       };
 
       // socket.onerror = () => {

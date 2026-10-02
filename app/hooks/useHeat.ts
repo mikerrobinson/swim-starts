@@ -28,7 +28,7 @@ type HeatManifest = {
 };
 
 export function useHeat(eventId: string, heat: number): HeatManifest | null {
-  const { events, details, athletes, swims, watches } = useMeet();
+  const { events, details, athletes, swims, watches, version } = useMeet();
 
   return useMemo(() => {
     const event = events[eventId];
@@ -102,5 +102,5 @@ export function useHeat(eventId: string, heat: number): HeatManifest | null {
       prev,
       next,
     };
-  }, [eventId, heat, events, details, swims, athletes, watches]);
+  }, [eventId, heat, events, details, swims, athletes, watches, version]);
 }

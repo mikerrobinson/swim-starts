@@ -959,7 +959,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    * and an empty one appearing is exactly the state `LaneRow`'s "no name
    * yet" rendering already expects.
    */
-  private ensureSwimRow(meetId: string, slot: SwimIdentity): void {
+  private ensureSwim(slot: SwimIdentity): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
        VALUES (?, ?, ?, '', '', '', 0)
@@ -1083,8 +1083,10 @@ export class MeetDurableObject extends DurableObject<Env> {
 
   async upsertWatch(mutation: WatchUpsertMutation): Promise<void> {
     console.log("upserting watch: ", JSON.stringify(mutation, null, 2));
-    this.ctx.storage.sql.exec(
-      `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
+    this.ensureSwim(mutation.key);
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(event_id, heat, lane, device_id, slot) DO UPDATE SET
          role = excluded.role,
@@ -1093,20 +1095,23 @@ export class MeetDurableObject extends DurableObject<Env> {
          started_at = excluded.started_at,
          stopped_at = excluded.stopped_at,
          recorded_at = excluded.recorded_at`,
-      mutation.key.eventId,
-      mutation.key.heat,
-      mutation.key.lane,
-      mutation.key.deviceId,
-      mutation.key.slot,
-      mutation.patch.role,
-      mutation.patch.userId ?? undefined,
-      mutation.patch.timeMs,
-      mutation.patch.startedAt,
-      mutation.patch.stoppedAt,
-      mutation.patch.recordedAt,
-    );
-    console.log("done upserting");
-    this.broadcast(mutation);
+        mutation.key.eventId,
+        mutation.key.heat,
+        mutation.key.lane,
+        mutation.key.deviceId,
+        mutation.key.slot,
+        mutation.patch.role,
+        mutation.patch.userId,
+        mutation.patch.timeMs,
+        mutation.patch.startedAt,
+        mutation.patch.stoppedAt,
+        mutation.patch.recordedAt,
+      );
+      console.log("done upserting");
+      this.broadcast(mutation);
+    } catch (e) {
+      console.error("failed to execute upsert: ", e);
+    }
   }
 
   /**

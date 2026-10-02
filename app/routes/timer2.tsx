@@ -6,6 +6,7 @@ import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
 import { Button, Sheet } from "~/components/ui";
 import type { Watch } from "~/types/watch";
+import { useWatch } from "~/hooks/useWatch";
 
 function formatSeconds(ms: number): string {
   return (Math.max(0, ms) / 1000).toFixed(2);
@@ -58,61 +59,28 @@ export default function TimerLaneKiosk() {
   const eventId = params.event!;
   const heatNumber = Number(params.heat);
   const lane = Number(params.lane);
-
-  // Keying by the route parameters ensures a clean slate on heat/lane change
-  return (
-    <ActiveTimerKiosk
-      key={`${meetId}-${eventId}-${heatNumber}-${lane}`}
-      meetId={meetId}
-      eventId={eventId}
-      heatNumber={heatNumber}
-      lane={lane}
-    />
-  );
-}
-
-// -------------------------------------------------------------
-// Active Kiosk: Subscribes directly to useHeat
-// -------------------------------------------------------------
-function ActiveTimerKiosk({
-  meetId,
-  eventId,
-  heatNumber,
-  lane,
-}: {
-  meetId: string;
-  eventId: string;
-  heatNumber: number;
-  lane: number;
-}) {
   const navigate = useNavigate();
+
   const device = useDeviceId();
   const user = useUser();
+  const heat = useHeat(eventId, heatNumber);
   const { send } = useMeetMutation(meetId);
   const [confirmingReset, setConfirmingReset] = useState(false);
 
-  // 1. Direct subscription ensures immediate re-render when send() updates cache
-  const heat = useHeat(eventId, heatNumber);
+  // Directly subscribed in O(1) time
+  const watch = useWatch({
+    meetId,
+    eventId,
+    heat: heatNumber,
+    lane,
+    deviceId: device,
+  });
 
   if (!heat) {
     return <h1>Loading heat...</h1>;
   }
 
-  const watch: Watch = heat.lanes[lane]?.watches?.find(
-    (w) => w.deviceId === device && w.slot === 0,
-  ) || {
-    eventId,
-    heat: heatNumber,
-    lane,
-    deviceId: device,
-    slot: 0,
-    startedAt: 0,
-    stoppedAt: 0,
-    timeMs: 0,
-    role: "timer",
-    recordedAt: 0,
-  };
-
+  // Purely derived states
   const isRunning =
     watch.startedAt > 0 && watch.stoppedAt === 0 && watch.timeMs === 0;
   const isStopped = watch.stoppedAt > watch.startedAt && watch.timeMs === 0;
@@ -120,10 +88,10 @@ function ActiveTimerKiosk({
 
   const phase: "start" | "running" | "stopped" | "submitted" = isSubmitted
     ? "submitted"
-    : isStopped
-      ? "stopped"
-      : isRunning
-        ? "running"
+    : isRunning
+      ? "running"
+      : isStopped
+        ? "stopped"
         : "start";
 
   const stoppedMs = isSubmitted
@@ -157,7 +125,7 @@ function ActiveTimerKiosk({
 
   const handleStart = (e: React.PointerEvent) => {
     e.preventDefault();
-    e.stopPropagation();
+    if (e.button !== 0) return;
     const lag = performance.now() - e.timeStamp;
     sendWatch({
       startedAt: Math.round(Date.now() - lag),
@@ -168,7 +136,7 @@ function ActiveTimerKiosk({
 
   const handleStop = (e: React.PointerEvent) => {
     e.preventDefault();
-    e.stopPropagation();
+    if (e.button !== 0) return;
     const lag = performance.now() - e.timeStamp;
     sendWatch({
       stoppedAt: Math.round(Date.now() - lag),
@@ -253,7 +221,7 @@ function ActiveTimerKiosk({
         {phase === "start" && (
           <button
             onPointerDown={handleStart}
-            className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg"
+            className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg touch-none"
           >
             START
           </button>
@@ -261,7 +229,7 @@ function ActiveTimerKiosk({
         {phase === "running" && (
           <button
             onPointerDown={handleStop}
-            className="min-h-24 flex-1 animate-pulse rounded-2xl bg-rose-600 active:bg-rose-700 text-3xl font-black text-white shadow-lg"
+            className="min-h-24 flex-1 animate-pulse rounded-2xl bg-rose-600 active:bg-rose-700 text-3xl font-black text-white shadow-lg touch-none"
           >
             STOP
           </button>
