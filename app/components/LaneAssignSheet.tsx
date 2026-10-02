@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Sheet, TextInput } from "./ui";
+import { TextInput } from "./ui";
+import { Modal } from "./Modal";
 import { swimsForEvent, swimTime } from "~/lib/timing";
 import {
   byAthlete,
@@ -148,7 +149,7 @@ export function LaneAssignSheet({
   };
 
   return (
-    <Sheet open title={`Lane ${lane} · who's swimming?`} onClose={onClose}>
+    <Modal title={`Lane ${lane} · who's swimming?`} onClose={onClose}>
       {event && (
         <p className="-mt-2 mb-3 text-sm text-slate-500 dark:text-slate-400">
           They'll be entered in {eventName(event)} as well.
@@ -209,6 +210,6 @@ export function LaneAssignSheet({
           ))}
         </ul>
       )}
-    </Sheet>
+    </Modal>
   );
 }

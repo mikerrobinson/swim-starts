@@ -8,9 +8,9 @@ import {
   EmptyState,
   Field,
   SectionTitle,
-  Sheet,
   TextInput,
 } from "~/components/ui";
+import { Modal } from "~/components/Modal";
 import { listPublicTeams } from "~/lib/public.server";
 import { useSession } from "~/state/session";
 import { currentUser } from "~/lib/api.server";
@@ -190,7 +190,7 @@ function NewTeamSheet({
   const [name, setName] = useState("");
 
   return (
-    <Sheet open title="New team" onClose={onClose}>
+    <Modal title="New team" onClose={onClose}>
       <Form method="post" className="space-y-3">
         {error && (
           <Banner tone="error">
@@ -248,7 +248,7 @@ function NewTeamSheet({
           {saving ? "Creating…" : "Create team"}
         </Button>
       </Form>
-    </Sheet>
+    </Modal>
   );
 }
 

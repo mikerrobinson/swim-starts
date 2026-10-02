@@ -4,7 +4,8 @@ import { eventName } from "~/types/meet";
 import { useHeat } from "~/hooks/useHeat";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
-import { Button, Sheet } from "~/components/ui";
+import { Button } from "~/components/ui";
+import { Modal } from "~/components/Modal";
 import type { Watch } from "~/types/watch";
 import { useWatch } from "~/hooks/useWatch";
 
@@ -143,9 +144,9 @@ export default function TimerLaneKiosk() {
     });
   };
 
-  const handleSubmit = (e: React.MouseEvent) => {
+  const handleSubmit = (e: React.PointerEvent) => {
     e.preventDefault();
-    if (stoppedMs <= 0) return;
+    if (e.button !== 0 || stoppedMs <= 0) return;
     sendWatch({ timeMs: stoppedMs });
 
     if (heat.next) {
@@ -237,7 +238,7 @@ export default function TimerLaneKiosk() {
         {phase === "stopped" && (
           <button
             type="button"
-            onClick={handleSubmit}
+            onPointerDown={handleSubmit}
             className="min-h-24 flex-1 rounded-2xl bg-green-700 active:bg-green-600 text-3xl font-black text-white shadow-lg"
           >
             SUBMIT
@@ -271,34 +272,28 @@ export default function TimerLaneKiosk() {
       </div>
 
       {confirmingReset && (
-        <Sheet
-          open
-          title="Reset this time?"
+        <Modal
+          title="Confirm Reset"
           onClose={() => setConfirmingReset(false)}
+          showClose={false}
         >
           <div className="space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-300">
-              This throws away the {formatSeconds(stoppedMs)}s on the clock. It
-              can&rsquo;t be undone.
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <Button size="lg" full onClick={() => setConfirmingReset(false)}>
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                size="lg"
-                full
-                onClick={() => {
-                  handleReset();
-                  setConfirmingReset(false);
-                }}
-              >
-                Reset
-              </Button>
-            </div>
+            <Button
+              variant="danger"
+              size="lg"
+              full
+              onClick={() => {
+                handleReset();
+                setConfirmingReset(false);
+              }}
+            >
+              Discard {formatSeconds(stoppedMs)}
+            </Button>
+            <Button size="lg" full onClick={() => setConfirmingReset(false)}>
+              Cancel
+            </Button>
           </div>
-        </Sheet>
+        </Modal>
       )}
     </div>
   );

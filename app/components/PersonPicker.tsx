@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useFetcher } from "react-router";
-import { Banner, Button, Field, Sheet, TextInput } from "./ui";
+import { Banner, Button, Field, TextInput } from "./ui";
+import { Modal } from "./Modal";
 
 export interface DirectoryUser {
   userId: string;
@@ -87,12 +88,12 @@ export function PersonPicker({
   }, [typed]);
 
   const searching = search.state !== "idle";
-  const candidates = (typed.length < 2 ? [] : (search.data?.users ?? [])).filter(
-    (u) => !exclude.includes(u.userId),
-  );
+  const candidates = (
+    typed.length < 2 ? [] : (search.data?.users ?? [])
+  ).filter((u) => !exclude.includes(u.userId));
 
   return (
-    <Sheet open title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       <div className="space-y-3">
         {error && <Banner tone="error">{error}</Banner>}
 
@@ -172,7 +173,7 @@ export function PersonPicker({
           onClose={() => setInviting(false)}
         />
       )}
-    </Sheet>
+    </Modal>
   );
 }
 
@@ -216,7 +217,7 @@ function InviteSheet({
   };
 
   return (
-    <Sheet open title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       <div className="space-y-3">
         {error && <Banner tone="error">{error}</Banner>}
 
@@ -253,6 +254,6 @@ function InviteSheet({
           Cancel
         </Button>
       </div>
-    </Sheet>
+    </Modal>
   );
 }

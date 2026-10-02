@@ -9,9 +9,9 @@ import {
   SectionTitle,
   Segmented,
   Select,
-  Sheet,
   TextInput,
 } from "~/components/ui";
+import { Modal } from "~/components/Modal";
 import { currentUser } from "~/lib/api.server";
 import { findOrCreateTeam } from "~/lib/new-team.server";
 import { coachedTeamsFor } from "~/lib/auth.server";
@@ -361,7 +361,7 @@ function NewMeetSheet({
       : meetTypeLabel(type);
 
   return (
-    <Sheet open title="New meet" onClose={onClose}>
+    <Modal title="New meet" onClose={onClose}>
       <Form method="post" className="space-y-3">
         <input type="hidden" name="suggestedName" value={suggested} />
         <Field label="Name" hint={`Leave blank for "${suggested}".`}>
@@ -509,6 +509,6 @@ function NewMeetSheet({
           {saving ? "Creating…" : "Create meet"}
         </Button>
       </Form>
-    </Sheet>
+    </Modal>
   );
 }

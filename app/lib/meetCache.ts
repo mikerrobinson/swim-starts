@@ -107,7 +107,9 @@ class MeetCacheManager {
       case "watch": {
         const k = toWatchKey(mutation.key);
         if (mutation.op === "delete") {
+          console.log("deleting watch: ", k);
           delete meet.watches[k];
+          console.log("done");
         } else {
           const existing = meet.watches[k] || { ...mutation.key };
           meet.watches[k] = { ...existing, ...mutation.patch };

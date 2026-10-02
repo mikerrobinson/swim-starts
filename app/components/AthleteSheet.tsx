@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Button, Field, Segmented, Sheet, TextInput } from "./ui";
+import { Button, Field, Segmented, TextInput } from "./ui";
+import { Modal } from "./Modal";
 import { generateId } from "~/lib/id";
 import { todayIso } from "~/types/athlete";
 import { ageOn } from "~/types/athlete";
@@ -53,7 +54,7 @@ export function AthleteSheet({
   };
 
   return (
-    <Sheet open title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       <div className="space-y-3">
         <Field label="First name">
           <TextInput
@@ -126,6 +127,6 @@ export function AthleteSheet({
           </Button>
         )}
       </div>
-    </Sheet>
+    </Modal>
   );
 }

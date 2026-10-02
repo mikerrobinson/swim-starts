@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useFetcher } from "react-router";
-import { Banner, Button, Field, Sheet, TextInput } from "./ui";
+import { Banner, Button, Field, TextInput } from "./ui";
+import { Modal } from "./Modal";
 import { exactTeam, rankTeams } from "~/lib/team-search";
 import type { PublicTeam } from "~/lib/public";
 
@@ -134,8 +135,9 @@ export function TeamPicker({
           are pointing at different rosters. It stays reachable because a
           genuinely new school can share a prefix with an old one — it just
           stops being the loudest thing on screen. */}
-      {typed !== "" && !already && (
-        candidates.length === 0 ? (
+      {typed !== "" &&
+        !already &&
+        (candidates.length === 0 ? (
           <Button full onClick={() => setCreating(true)}>
             Create “{typed}”
           </Button>
@@ -150,8 +152,7 @@ export function TeamPicker({
               Create “{typed}”
             </button>
           </p>
-        )
-      )}
+        ))}
 
       {typed !== "" && already && !exclude.includes(already.id) && (
         <p className="text-xs text-slate-500">
@@ -214,7 +215,11 @@ function NewTeamSheet({
    * that matters is the one already there, and creating a team needs no
    * endpoint of its own to re-derive it.
    */
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; team?: PublicTeam }>();
+  const fetcher = useFetcher<{
+    ok?: boolean;
+    error?: string;
+    team?: PublicTeam;
+  }>();
   const busy = fetcher.state !== "idle";
   const error = fetcher.data?.error ?? null;
 
@@ -238,7 +243,7 @@ function NewTeamSheet({
   };
 
   return (
-    <Sheet open title="New team" onClose={onClose}>
+    <Modal title="New team" onClose={onClose}>
       <div className="space-y-3">
         {error && <Banner tone="error">{error}</Banner>}
 
@@ -279,6 +284,6 @@ function NewTeamSheet({
           {busy ? "Creating…" : "Create team"}
         </Button>
       </div>
-    </Sheet>
+    </Modal>
   );
 }

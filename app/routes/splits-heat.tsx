@@ -12,14 +12,8 @@ import type { SwimTime } from "~/lib/timing";
 import { LaneAssignSheet } from "~/components/LaneAssignSheet";
 import { LaneTile } from "~/components/LaneTile";
 import { StopwatchDisplay } from "~/components/StopwatchDisplay";
-import {
-  Banner,
-  Button,
-  EmptyState,
-  Field,
-  Sheet,
-  TextInput,
-} from "~/components/ui";
+import { Banner, Button, EmptyState, Field, TextInput } from "~/components/ui";
+import { Modal } from "~/components/Modal";
 import { useWakeLock } from "~/hooks/use-stopwatch";
 import {
   currentWatches,
@@ -1001,7 +995,7 @@ function LaneSheet({
   const typed = value.trim() !== "";
 
   return (
-    <Sheet open title={`Lane ${lane} · ${swimmerLabel}`} onClose={onClose}>
+    <Modal title={`Lane ${lane} · ${swimmerLabel}`} onClose={onClose}>
       {
         <div className="space-y-3">
           <Field
@@ -1119,6 +1113,6 @@ function LaneSheet({
           )}
         </div>
       }
-    </Sheet>
+    </Modal>
   );
 }

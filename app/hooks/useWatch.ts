@@ -49,13 +49,6 @@ export function useWatch({
     slot,
   };
 
-  if (typeof window === "undefined") {
-    console.log("SERVER WATCH", JSON.stringify(serverWatch, null, 2));
-    console.log(
-      "SERVER WATCHES: ",
-      JSON.stringify(routeData?.meet?.watches, null, 2),
-    );
-  }
   return useSyncExternalStore(
     meetCache.subscribe,
     () => meetCache.getMeet(meetId)?.watches[watchKey] ?? serverWatch,

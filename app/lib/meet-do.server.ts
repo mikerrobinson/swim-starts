@@ -960,14 +960,18 @@ export class MeetDurableObject extends DurableObject<Env> {
    * yet" rendering already expects.
    */
   private ensureSwim(slot: SwimIdentity): void {
-    this.ctx.storage.sql.exec(
-      `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
        VALUES (?, ?, ?, '', '', '', 0)
        ON CONFLICT(event_id, heat, lane) DO NOTHING`,
-      slot.eventId,
-      slot.heat,
-      slot.lane,
-    );
+        slot.eventId,
+        slot.heat,
+        slot.lane,
+      );
+    } catch (e) {
+      console.error("ensureSwim failure: ", e);
+    }
   }
 
   /**
@@ -1000,89 +1004,59 @@ export class MeetDurableObject extends DurableObject<Env> {
     };
   }
 
-  // /**
-  //  * One slot's watch, replaced whole. What used to split across
-  //  * `recordWatch` (a fresh append-only row) plus the caller's own
-  //  * `ensureLane` call first: a slot's key — event/heat/lane/device/slot —
-  //  * already is its whole identity, so a stopwatch running, then stopped,
-  //  * then submitted is the same slot's row progressing through states, not
-  //  * three different rows racing to be inserted. `ensureSwimRow` creates the
-  //  * lane this is evidence for if nothing has touched it yet.
-  //  */
-  // async upsertWatch(meetId: string, watch: Watch): Promise<Watch> {
-  //   this.ensureSwimRow(meetId, watch);
-
-  //   this.ctx.storage.sql.exec(
-  //     `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
-  //      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  //      ON CONFLICT(event_id, heat, lane, device_id, slot) DO UPDATE SET
-  //        role = excluded.role,
-  //        user_id = excluded.user_id,
-  //        time_ms = excluded.time_ms,
-  //        started_at = excluded.started_at,
-  //        stopped_at = excluded.stopped_at,
-  //        recorded_at = excluded.recorded_at`,
-  //     watch.eventId,
-  //     watch.heat,
-  //     watch.lane,
-  //     watch.deviceId,
-  //     watch.slot,
-  //     watch.role,
-  //     watch.userId ?? undefined,
-  //     watch.timeMs,
-  //     watch.startedAt,
-  //     watch.stoppedAt,
-  //     watch.recordedAt,
-  //   );
-
-  //   this.broadcast({ type: "WATCH", watch, isDelete: false });
-  //   return watch;
-  // }
-
   async deleteEntry(mutation: EntryDeleteMutation): Promise<void> {
-    const cursor = this.ctx.storage.sql.exec(
-      "DELETE FROM entries WHERE event_id = ? AND athlete_id = ? RETURNING athlete_id",
-      mutation.key.eventId,
-      mutation.key.athleteId,
-    );
-    if (cursor.toArray().length > 0) {
-      this.broadcast(mutation);
-      this.reseed(mutation.key.eventId);
+    try {
+      const cursor = this.ctx.storage.sql.exec(
+        "DELETE FROM entries WHERE event_id = ? AND athlete_id = ? RETURNING athlete_id",
+        mutation.key.eventId,
+        mutation.key.athleteId,
+      );
+      if (cursor.toArray().length < 1) return;
+    } catch (e) {
+      console.error("deleteEntry failure: ", e);
     }
+    this.broadcast(mutation);
+    this.reseed(mutation.key.eventId);
   }
 
   async upsertEntry(mutation: EntryUpsertMutation): Promise<void> {
-    this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO entries (event_id, athlete_id, team_id, seed_time_ms, exhibition, entered_at, entered_by)
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO entries (event_id, athlete_id, team_id, seed_time_ms, exhibition, entered_at, entered_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      mutation.key.eventId,
-      mutation.key.athleteId,
-      mutation.patch.teamId,
-      mutation.patch.seedTimeMs ?? null,
-      mutation.patch.exhibition ? 1 : 0,
-      mutation.patch.enteredAt,
-      mutation.patch.enteredBy,
-    );
+        mutation.key.eventId,
+        mutation.key.athleteId,
+        mutation.patch.teamId,
+        mutation.patch.seedTimeMs ?? null,
+        mutation.patch.exhibition ? 1 : 0,
+        mutation.patch.enteredAt,
+        mutation.patch.enteredBy,
+      );
+    } catch (e) {
+      console.error("upsertEntry failure: ", e);
+    }
     this.broadcast(mutation);
     this.reseed(mutation.key.eventId);
   }
 
   async deleteWatch(mutation: WatchDeleteMutation): Promise<void> {
-    const cursor = this.ctx.storage.sql.exec(
-      "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ? AND device_id = ? AND slot = ? RETURNING slot",
-      mutation.key.eventId,
-      mutation.key.heat,
-      mutation.key.lane,
-      mutation.key.deviceId,
-      mutation.key.slot,
-    );
-    if (cursor.toArray().length > 0) {
-      this.broadcast(mutation);
+    try {
+      const cursor = this.ctx.storage.sql.exec(
+        "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ? AND device_id = ? AND slot = ? RETURNING slot",
+        mutation.key.eventId,
+        mutation.key.heat,
+        mutation.key.lane,
+        mutation.key.deviceId,
+        mutation.key.slot,
+      );
+      if (cursor.toArray().length < 1) return;
+    } catch (e) {
+      console.error("deleteWatch failure: ", e);
     }
+    this.broadcast(mutation);
   }
 
   async upsertWatch(mutation: WatchUpsertMutation): Promise<void> {
-    console.log("upserting watch: ", JSON.stringify(mutation, null, 2));
     this.ensureSwim(mutation.key);
     try {
       this.ctx.storage.sql.exec(
@@ -1107,11 +1081,11 @@ export class MeetDurableObject extends DurableObject<Env> {
         mutation.patch.stoppedAt,
         mutation.patch.recordedAt,
       );
-      console.log("done upserting");
-      this.broadcast(mutation);
     } catch (e) {
-      console.error("failed to execute upsert: ", e);
+      console.error("upsertWatch failure: ", e);
     }
+    console.log("done upserting");
+    this.broadcast(mutation);
   }
 
   /**
@@ -1444,8 +1418,8 @@ export class MeetDurableObject extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.send(payload);
-      } catch {
-        // A socket hibernation hasn't reaped yet. It will.
+      } catch (e) {
+        console.error("broadcase failure: ", e);
       }
     }
   }
