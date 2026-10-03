@@ -80,8 +80,8 @@ function timedWatches(
   slot: SwimIdentity,
 ): Watch[] {
   return currentWatches(rows, slot)
-    .filter((w) => w.timeMs !== undefined)
-    .sort((a, b) => a.timeMs! - b.timeMs!);
+    .filter((w) => w.timeMs > 0)
+    .sort((a, b) => a.timeMs - b.timeMs);
 }
 
 /**
@@ -106,8 +106,8 @@ export interface ProposedTime {
  */
 function proposedTime(watches: Watch[]): ProposedTime | null {
   const times = watches
-    .filter((w) => w.timeMs !== undefined)
-    .map((w) => w.timeMs!)
+    .filter((w) => w.timeMs > 0)
+    .map((w) => w.timeMs)
     .sort((a, b) => a - b);
   if (times.length === 0) return null;
 
@@ -150,7 +150,7 @@ export const OK_DISCREPANCY_MS = 300;
 
 function spreadOf(watches: Watch[]): number | null {
   if (watches.length < 2) return null;
-  const times = watches.map((w) => w.timeMs!);
+  const times = watches.map((w) => w.timeMs);
   return Math.max(...times) - Math.min(...times);
 }
 
@@ -174,7 +174,7 @@ function spreadOf(watches: Watch[]): number | null {
  * all of them would do the same less visibly.
  */
 export function laneTime(watches: Watch[]): LaneTime | null {
-  const timed = watches.filter((w) => w.timeMs !== undefined);
+  const timed = watches.filter((w) => w.timeMs > 0);
   const byRole = (role: WatchRole) => timed.filter((w) => w.role === role);
 
   // The most recent, if an administrator has somehow left two — a later
@@ -184,7 +184,7 @@ export function laneTime(watches: Watch[]): LaneTime | null {
   )[0];
   if (official) {
     return {
-      timeMs: official.timeMs!,
+      timeMs: official.timeMs,
       from: "admin",
       // A ruling, not a reading among several — nothing else to disagree.
       discrepancyMs: null,
@@ -199,7 +199,7 @@ export function laneTime(watches: Watch[]): LaneTime | null {
   const coaches = byRole("coach");
   if (coaches.length > 0) {
     return {
-      timeMs: meanOf(coaches.map((w) => w.timeMs!)),
+      timeMs: meanOf(coaches.map((w) => w.timeMs)),
       from: "coach",
       discrepancyMs: spreadOf(coaches),
     };
@@ -227,7 +227,7 @@ export function laneProgress(
 ): LaneProgress {
   const timers = currentWatches(rows, slot).filter((w) => w.role === "timer");
   if (timers.length === 0) return "none";
-  return timers.every((w) => w.timeMs !== undefined) ? "complete" : "waiting";
+  return timers.every((w) => w.timeMs > 0) ? "complete" : "waiting";
 }
 
 /** Stopwatches still running on a swim: started, not stopped, no time sent yet. */
@@ -252,7 +252,7 @@ export function stoppedWatches(
   slot: SwimIdentity,
 ): Watch[] {
   return currentWatches(rows, slot).filter(
-    (w) => w.timeMs === undefined && w.stoppedAt !== undefined,
+    (w) => w.timeMs === 0 && w.stoppedAt !== 0,
   );
 }
 

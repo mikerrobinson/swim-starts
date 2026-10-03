@@ -4,14 +4,14 @@ import type { MeetAthlete, Event } from "~/types/meet";
 import { toSwimKey, type Swim } from "~/types/swim";
 import type { Watch } from "~/types/watch";
 
-type LaneManifest = {
-  swim: Swim;
+export type LaneManifest = {
+  swim?: Swim;
   athlete?: MeetAthlete;
   watches: Watch[];
   isComplete: boolean;
 };
 
-type HeatManifest = {
+export type HeatManifest = {
   event: Event;
   heatNumber: number;
   totalHeats: number;
