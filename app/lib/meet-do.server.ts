@@ -37,26 +37,31 @@ import type {
   LaneCount,
   LaneAssignments,
 } from "~/types/meet";
-import type {
-  Entry,
-  EntryDeleteMutation,
-  EntryUpsertMutation,
+import {
+  type Entry,
+  type EntryKey,
+  type EntryDeleteMutation,
+  type EntryUpsertMutation,
+  canDeleteEntry,
+  canUpsertEntry,
+  toEntryKey,
 } from "~/types/entry";
-import type { EntryKey } from "~/types/entry";
-import type { Swim } from "~/types/swim";
-import type { SwimIdentity } from "~/types/swim";
-import type { SwimKey } from "~/types/swim";
-import type { ResultStatus } from "~/types/swim";
-import type {
-  Watch,
-  WatchDeleteMutation,
-  WatchUpsertMutation,
+import {
+  type ResultStatus,
+  type Swim,
+  type SwimKey,
+  type SwimDeleteMutation,
+  type SwimUpsertMutation,
+  toSwimKey,
+} from "~/types/swim";
+import {
+  canDeleteWatch,
+  canUpsertWatch,
+  toWatchKey,
+  type Watch,
+  type WatchDeleteMutation,
+  type WatchUpsertMutation,
 } from "~/types/watch";
-import type { WatchIdentity } from "~/types/watch";
-import { DEFAULT_MEET_DETAILS } from "~/types/meet";
-import { canDeleteEntry, canUpsertEntry, toEntryKey } from "~/types/entry";
-import { toSwimKey } from "~/types/swim";
-import { canDeleteWatch, canUpsertWatch, toWatchKey } from "~/types/watch";
 import type { EntityMutation } from "~/types/mutations";
 import type { User } from "~/types/user";
 import { swimsForEvent, type TimingRows } from "./timing";
@@ -307,9 +312,12 @@ export class MeetDurableObject extends DurableObject<Env> {
           await this.upsertEntry(mutation);
         }
         break;
-      case "athlete":
-        break;
       case "swim":
+        if (mutation.op === "delete") {
+          await this.deleteSwim(mutation);
+        } else {
+          await this.upsertSwim(mutation);
+        }
         break;
       case "watch":
         if (
@@ -359,7 +367,7 @@ export class MeetDurableObject extends DurableObject<Env> {
    * comes back with an empty programme until that's built.
    */
   async getMeetManifest(meetId: string): Promise<MeetManifest> {
-    const details = this.getDetailsObject();
+    const details = await this.getDetails();
 
     const events = this.ctx.storage.sql
       .exec<EventRow>("SELECT * FROM events")
@@ -424,11 +432,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   /** `details` alone, without the rest of the manifest — what a settings
    *  form's action reads to merge its own changed fields onto before
    *  calling `setDetails`, cheaper than a full `getMeetManifest`. */
-  async getDetails(meetId: string): Promise<MeetDetails> {
-    return this.getDetailsObject();
-  }
-
-  private getDetailsObject(): MeetDetails {
+  async getDetails(): Promise<MeetDetails> {
     const raw = this.getMeta("details");
     if (!raw) return DEFAULT_MEET_DETAILS;
     try {
@@ -519,30 +523,19 @@ export class MeetDurableObject extends DurableObject<Env> {
   }
 
   /**
-   * Drop a team's racing presence from this meet's live state — the moment
-   * it leaves `meet.teamIds` in D1 (`meets.server.ts`'s `updateMeet` is what
-   * actually removes the `meet_teams` row; this is the DO's side of the
-   * same action). There's no roster copy to drop any more — just this
-   * team's `entries` (a real `team_id` column, so those come out clean by
-   * id) and any of its swims that haven't actually happened yet.
-   *
-   * "Happened yet" is a text match on `athlete_team` (the name or code the
-   * client stamped on at seat time — see the file's own doc comment)
-   * because a directly-seated swim, unlike an entry, carries no `team_id`
-   * of its own to match by id instead. Good enough for what this guards
-   * against: a scratch before racing starts is an ordinary setup change, a
-   * decided result is not, and nothing here needs to be precise about
-   * anything in between.
+   * Drop a team's racing presence from this meet, deleting any entries and
+   * swims that haven't happened (deleting a team during a meet is an unlikely
+   * edge case, anyway)
    */
   async removeTeam(
     teamId: string,
     team: { name: string; code: string },
   ): Promise<{ ok: true }> {
     const entryRows = this.ctx.storage.sql
-      .exec<{ event_id: string; athlete_id: string }>(
-        "SELECT event_id, athlete_id FROM entries WHERE team_id = ?",
-        teamId,
-      )
+      .exec<{
+        event_id: string;
+        athlete_id: string;
+      }>("SELECT event_id, athlete_id FROM entries WHERE team_id = ?", teamId)
       .toArray();
     this.ctx.storage.sql.exec("DELETE FROM entries WHERE team_id = ?", teamId);
     for (const row of entryRows) {
@@ -592,7 +585,6 @@ export class MeetDurableObject extends DurableObject<Env> {
    *  `currentHeatNumber`. Advisory only, per the design doc: nothing here
    *  forces a connected timer's own screen to follow it. */
   async setCurrentHeat(
-    meetId: string,
     currentEventId?: string,
     currentHeatNumber?: number,
   ): Promise<void> {
@@ -667,94 +659,11 @@ export class MeetDurableObject extends DurableObject<Env> {
     ]);
   }
 
-  /** Every declared entry, by event — the DO's own, not D1's, now that
-   *  `declareEntry` is the only place an entry is written. */
-  private readEntries(): Record<string, Entry[]> {
-    const rows = this.ctx.storage.sql
-      .exec<EntryRow>("SELECT * FROM entries ORDER BY entered_at")
-      .toArray();
-    const entries: Record<string, Entry[]> = {};
-    for (const row of rows)
-      (entries[row.event_id] ??= []).push(entryFromRow(row));
-    return entries;
-  }
-
   /* --------------------------------------------------------- write methods */
-  //
-  // Every UI action against a swim, a watch or an athlete is one of two
-  // shapes now: upsert the whole thing, or delete it by its key — the same
-  // "send the object" convention `setDetails`/`setEvents` already use,
-  // extended down to a single lane's swim and a single slot's watch. That
-  // collapses what used to be eight methods (`seat`/`unseat`/`ensureLane`/
-  // `setExhibition`/`recordWatch`/`dropWatch`/`decideResult`/
-  // `undecideResult`) into four: seating an athlete, marking exhibition,
-  // deciding a result and un-deciding one were never four different edits —
-  // they're four different callers sending the same `Swim` object with a
-  // different field changed, which a full replace already handles without
-  // needing a method of its own for each slice. A synthetic id never
-  // existed in the schema (`PRIMARY KEY (meet_id, event_id, heat, lane)`) —
-  // it only ever existed in these methods' own stale SQL, left over from
-  // before that redesign, which is what made them four methods instead of
-  // one: each was reaching for an `id` no row has, and disagreeing quietly
-  // with the others about what to do instead.
-  //
-  // Each still ends by broadcasting the very `LiveSocketMessage` it just
-  // applied — the same shape `meetCache.applyPatch` (client-side) already
-  // knows how to fold onto a cached manifest, so a connected screen updates
-  // itself with no extra translation step on either end.
-
-  /**
-   * One lane's swim, replaced whole. Every UI action that touches a swim —
-   * seating it, marking it exhibition, deciding or un-deciding its result —
-   * is the same call: compute the complete next `Swim` and send it.
-   * Whatever field the caller leaves off, the row doesn't have either, so
-   * there's no way for a partial edit to disturb a field it wasn't about.
-   *
-   * `decidedAt`/`decidedBy` travel on the object like everything else, but
-   * only a server action that has already resolved who's asking (or the
-   * desk's own auto-status effect, which writes `"auto"`) may set them —
-   * never a raw client write taken at face value.
-   *
-   * Still enforces the one cross-row rule a single lane's replace can't
-   * express by itself: nobody swims an event twice, so seating an athlete
-   * here vacates whatever other lane of the same event they held, and
-   * broadcasts that lane's own emptying so a connected screen doesn't have
-   * to infer it.
-   */
-  async upsertSwim(meetId: string, swim: Swim): Promise<Swim> {
-    if (swim.athleteId) {
-      const vacated = this.ctx.storage.sql
-        .exec<SwimRow>(
-          `SELECT * FROM swims WHERE event_id = ? AND athlete_id = ? AND NOT (heat = ? AND lane = ?)`,
-          swim.eventId,
-          swim.athleteId,
-          swim.heat,
-          swim.lane,
-        )
-        .toArray();
-      for (const row of vacated) {
-        this.ctx.storage.sql.exec(
-          "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ?",
-          row.event_id,
-          row.heat,
-          row.lane,
-        );
-        this.ctx.storage.sql.exec(
-          "DELETE FROM swims WHERE event_id = ? AND heat = ? AND lane = ?",
-          row.event_id,
-          row.heat,
-          row.lane,
-        );
-        this.broadcast({
-          type: "SWIM",
-          swim: swimFromRow(row),
-          isDelete: true,
-        });
-      }
-    }
-
-    this.ctx.storage.sql.exec(
-      `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition, status, official_time_ms, decided_at, decided_by)
+  async upsertSwim(mutation: SwimUpsertMutation): Promise<void> {
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition, status, official_time_ms, decided_at, decided_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(event_id, heat, lane) DO UPDATE SET
          athlete_id = excluded.athlete_id,
@@ -765,80 +674,48 @@ export class MeetDurableObject extends DurableObject<Env> {
          official_time_ms = excluded.official_time_ms,
          decided_at = excluded.decided_at,
          decided_by = excluded.decided_by`,
-      swim.eventId,
-      swim.heat,
-      swim.lane,
-      swim.athleteId ?? "",
-      swim.athleteName ?? "",
-      swim.athleteTeam ?? "",
-      swim.exhibition ? 1 : 0,
-      swim.status ?? null,
-      swim.officialTimeMs ?? null,
-      swim.decidedAt ?? null,
-      swim.decidedBy ?? null,
-    );
-
-    // Deliberately no entries write here — seating never backports to an
-    // entry, from any caller. See `migration-plan.md`.
-    this.broadcast({ type: "SWIM", swim, isDelete: false });
-    return swim;
-  }
-
-  /** Empties a lane — the swim, and whatever's been recorded against it.
-   *  What used to be `unseat`. */
-  async deleteSwim(meetId: string, slot: SwimIdentity): Promise<void> {
-    const existing = this.ctx.storage.sql
-      .exec<SwimRow>(
-        "SELECT * FROM swims WHERE event_id = ? AND heat = ? AND lane = ?",
-        slot.eventId,
-        slot.heat,
-        slot.lane,
-      )
-      .toArray()[0];
-    if (!existing) return;
-
-    this.ctx.storage.sql.exec(
-      "DELETE FROM watches WHERE event_id = ? AND heat = ? AND lane = ?",
-      slot.eventId,
-      slot.heat,
-      slot.lane,
-    );
-    this.ctx.storage.sql.exec(
-      "DELETE FROM swims WHERE event_id = ? AND heat = ? AND lane = ?",
-      slot.eventId,
-      slot.heat,
-      slot.lane,
-    );
-    this.broadcast({
-      type: "SWIM",
-      swim: swimFromRow(existing),
-      isDelete: true,
-    });
-  }
-
-  /**
-   * A blank swim, if this lane doesn't have one yet — what `ensureLane`
-   * used to do as a `Write` kind of its own. Not one any more: a slot's
-   * watch always implies the lane it's evidence for, so `upsertWatch`
-   * reaches for this itself rather than making every caller (the timer's
-   * cookie path, the WS fast path) call two RPCs for one action. Silent on
-   * purpose — nothing user-visible changed if the lane was already there,
-   * and an empty one appearing is exactly the state `LaneRow`'s "no name
-   * yet" rendering already expects.
-   */
-  private ensureSwim(slot: SwimIdentity): void {
-    try {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
-       VALUES (?, ?, ?, '', '', '', 0)
-       ON CONFLICT(event_id, heat, lane) DO NOTHING`,
-        slot.eventId,
-        slot.heat,
-        slot.lane,
+        mutation.key.eventId,
+        mutation.key.heat,
+        mutation.key.lane,
+        mutation.patch.athleteId ?? "",
+        mutation.patch.athleteName ?? "",
+        mutation.patch.athleteTeam ?? "",
+        mutation.patch.exhibition ? 1 : 0,
+        mutation.patch.status ?? null,
+        mutation.patch.officialTimeMs ?? null,
+        mutation.patch.decidedAt ?? null,
+        mutation.patch.decidedBy ?? null,
       );
     } catch (e) {
-      console.error("ensureSwim failure: ", e);
+      console.error("deleteSwim failure: ", e);
     }
+    this.broadcast(mutation);
+  }
+
+  async deleteSwim(mutation: SwimDeleteMutation): Promise<void> {
+    try {
+      const hasWatches = this.ctx.storage.sql
+        .exec<SwimRow>(
+          "SELECT * FROM watches WHERE event_id = ? AND heat = ? AND lane = ?",
+          mutation.key.eventId,
+          mutation.key.heat,
+          mutation.key.lane,
+        )
+        .toArray()[0];
+      if (hasWatches)
+        throw new Error("Cannot delete a swim with existing watches");
+
+      const cursor = this.ctx.storage.sql.exec(
+        "DELETE FROM swims WHERE event_id = ? AND heat = ? AND lane = ? RETURNING lane",
+        mutation.key.eventId,
+        mutation.key.heat,
+        mutation.key.lane,
+      );
+      if (cursor.toArray().length < 1) return;
+    } catch (e) {
+      console.error("deleteSwim failure: ", e);
+    }
+    this.broadcast(mutation);
   }
 
   async deleteEntry(mutation: EntryDeleteMutation): Promise<void> {
@@ -894,8 +771,17 @@ export class MeetDurableObject extends DurableObject<Env> {
   }
 
   async upsertWatch(mutation: WatchUpsertMutation): Promise<void> {
-    this.ensureSwim(mutation.key);
     try {
+      // ensure a swim exists - handles the case of a walk up
+      this.ctx.storage.sql.exec(
+        `INSERT INTO swims (event_id, heat, lane, athlete_id, athlete_name, athlete_team, exhibition)
+       VALUES (?, ?, ?, '', '', '', 0)
+       ON CONFLICT(event_id, heat, lane) DO NOTHING`,
+        mutation.key.eventId,
+        mutation.key.heat,
+        mutation.key.lane,
+      );
+
       this.ctx.storage.sql.exec(
         `INSERT INTO watches (event_id, heat, lane, device_id, slot, role, user_id, time_ms, started_at, stopped_at, recorded_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1066,7 +952,7 @@ export class MeetDurableObject extends DurableObject<Env> {
       )
       .toArray()
       .map(entryFromRow);
-    const details = this.getDetailsObject();
+    const details = await this.getDetails();
 
     const nextSwims = this.seedEvent(
       { swims },

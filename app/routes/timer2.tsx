@@ -2,14 +2,17 @@ import { useParams, useNavigate, Link } from "react-router";
 import { useState } from "react";
 import { eventName } from "~/types/meet";
 import { useHeat } from "~/hooks/useHeat";
+import { useMeet } from "~/hooks/useMeet";
 import { useMeetMutation } from "~/hooks/useMeetMutation";
 import { useDeviceId, useUser } from "~/state/user";
 import { Button } from "~/components/ui";
 import { Modal } from "~/components/Modal";
+import { AthletePicker } from "~/components/AthletePicker";
 import type { Watch } from "~/types/watch";
 import { useWatch } from "~/hooks/useWatch";
 import { formatSeconds } from "~/lib/time";
 import { StopwatchDisplay } from "~/components/StopwatchDisplay";
+import { altLanesPath, altPath } from "~/lib/timer-path";
 
 export default function Timer() {
   const params = useParams();
@@ -21,9 +24,11 @@ export default function Timer() {
 
   const device = useDeviceId();
   const user = useUser();
+  const meet = useMeet();
   const heat = useHeat(eventId, heatNumber);
   const { send } = useMeetMutation(meetId);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   const watch = useWatch({
     meetId,
@@ -34,8 +39,22 @@ export default function Timer() {
   });
 
   if (!heat) {
-    return <h1>Loading heat...</h1>;
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6 text-center">
+        <div>
+          <p className="text-lg font-bold">Nothing to time yet</p>
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+            The coach hasn&rsquo;t set the heats for this meet. This screen
+            will catch up on its own.
+          </p>
+        </div>
+      </main>
+    );
   }
+
+  const athlete = heat.lanes[lane]?.athlete;
+  const teamLabel = (teamId: string) =>
+    meet.teams[teamId]?.code || meet.teams[teamId]?.name || "";
 
   const isRunning =
     watch.startedAt > 0 && watch.stoppedAt === 0 && watch.timeMs === 0;
@@ -105,9 +124,7 @@ export default function Timer() {
     sendWatch({ timeMs: stoppedMs });
 
     if (heat.next) {
-      navigate(
-        `/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`,
-      );
+      navigate(altPath(meetId, heat.next, lane));
     }
   };
 
@@ -125,39 +142,100 @@ export default function Timer() {
     });
   };
 
+  /** Say who's in this lane. A roster pick travels as the id the server
+   *  already knows, name/team resolved here since the picker only hands
+   *  back the id. Exhibition, if the lane already had one, rides along
+   *  untouched — picking a swimmer is a fact about the swim's seat, not
+   *  about whether it counts. */
+  const seatAthlete = (athleteId: string) => {
+    const picked = meet.athletes[athleteId];
+    send({
+      entity: "swim",
+      op: "upsert",
+      key: { eventId, heat: heatNumber, lane },
+      patch: {
+        athleteId,
+        athleteName: picked
+          ? `${picked.firstName} ${picked.lastName}`.trim()
+          : "",
+        athleteTeam: picked ? teamLabel(picked.teamId) : "",
+        exhibition: heat.lanes[lane]?.swim?.exhibition ?? false,
+      },
+    });
+    setPicking(false);
+  };
+
+  /** A walk-up never mints an athlete anywhere — there's no roster row to
+   *  create any more. The name and team the picker hands back are exactly
+   *  what `Swim.athleteName`/`athleteTeam` already carry, so they're
+   *  stamped straight on with no id at all. */
+  const seatWalkup = (walkup: {
+    firstName: string;
+    lastName: string;
+    athleteTeam: string;
+  }) => {
+    send({
+      entity: "swim",
+      op: "upsert",
+      key: { eventId, heat: heatNumber, lane },
+      patch: {
+        athleteId: undefined,
+        athleteName: `${walkup.firstName} ${walkup.lastName}`.trim(),
+        athleteTeam: walkup.athleteTeam,
+        exhibition: heat.lanes[lane]?.swim?.exhibition ?? false,
+      },
+    });
+    setPicking(false);
+  };
+
   return (
     <div className="flex h-dvh flex-col select-none touch-none overscroll-none p-4">
       <header className="flex justify-between items-center pb-4">
         {heat.prev ? (
-          <Link
-            to={`/meets/${meetId}/timer/alt/${heat.prev.eventId}/${heat.prev.heat}/${lane}`}
-          >
-            &lt;
-          </Link>
+          <Link to={altPath(meetId, heat.prev, lane)}>&lt;</Link>
         ) : (
           <p>at start</p>
         )}
         {eventName(heat.event)}
         {heat.next ? (
-          <Link
-            to={`/meets/${meetId}/timer/alt/${heat.next.eventId}/${heat.next.heat}/${lane}`}
-          >
-            &gt;
-          </Link>
+          <Link to={altPath(meetId, heat.next, lane)}>&gt;</Link>
         ) : (
           <p>at end</p>
         )}
       </header>
 
-      <div>
-        {heat.lanes[lane]?.athlete ? (
-          <span>
-            {heat.lanes[lane].athlete?.firstName}{" "}
-            {heat.lanes[lane].athlete?.lastName}
+      <div className="space-y-3">
+        <Link
+          to={altLanesPath(meetId, { eventId, heat: heatNumber })}
+          aria-disabled={isRunning}
+          className={`flex w-full touch-manipulation items-center justify-between rounded-2xl bg-white px-4 py-3 text-left dark:bg-slate-900 ${
+            isRunning ? "pointer-events-none opacity-60" : ""
+          }`}
+        >
+          <span className="text-2xl font-bold">Lane {lane}</span>
+          <span className="text-sm font-semibold text-blue-600">change</span>
+        </Link>
+
+        <button
+          type="button"
+          onClick={() => setPicking(true)}
+          disabled={isRunning}
+          className="flex w-full touch-manipulation items-center justify-between gap-3 rounded-2xl bg-white px-4 py-3 text-left disabled:opacity-60 dark:bg-slate-900"
+        >
+          <span className="min-w-0">
+            <span className="block truncate text-xl font-bold">
+              {athlete
+                ? `${athlete.firstName} ${athlete.lastName}`.trim()
+                : "Empty lane"}
+            </span>
+            <span className="block truncate text-sm text-slate-500">
+              {athlete ? teamLabel(athlete.teamId) : "Tap to say who's here"}
+            </span>
           </span>
-        ) : (
-          <span>No athlete</span>
-        )}
+          <span className="shrink-0 text-sm font-semibold text-blue-600">
+            change
+          </span>
+        </button>
       </div>
 
       <div className="flex-1 flex flex-col items-center justify-center pb-32">
@@ -249,6 +327,19 @@ export default function Timer() {
             </Button>
           </div>
         </Modal>
+      )}
+
+      {picking && (
+        <AthletePicker
+          meet={meet}
+          eventId={eventId}
+          heat={heatNumber}
+          lane={lane}
+          current={athlete}
+          onPick={seatAthlete}
+          onAddWalkup={seatWalkup}
+          onClose={() => setPicking(false)}
+        />
       )}
     </div>
   );

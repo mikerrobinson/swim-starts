@@ -27,7 +27,7 @@ export type SwimUpsertMutation = {
   entity: "swim";
   op: "upsert";
   key: SwimIdentity;
-  patch: Partial<Omit<Swim, keyof SwimIdentity>>;
+  patch: Omit<Swim, keyof SwimIdentity>;
 };
 
 export type SwimDeleteMutation = {

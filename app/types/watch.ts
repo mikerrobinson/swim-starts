@@ -30,7 +30,7 @@ export type WatchUpsertMutation = {
   entity: "watch";
   op: "upsert";
   key: WatchIdentity;
-  patch: Partial<Omit<Watch, keyof WatchIdentity>>;
+  patch: Omit<Watch, keyof WatchIdentity>;
 };
 
 export type WatchDeleteMutation = {

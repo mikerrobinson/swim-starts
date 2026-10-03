@@ -194,7 +194,7 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 
   if (intent === "details" || intent === "seeding") {
     const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
-    const current = await stub.getDetails(meetId);
+    const current = await stub.getDetails();
     await stub.setDetails(meetId, nextDetails(current, intent, form));
     return { ok: true };
   }

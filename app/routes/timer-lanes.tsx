@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/timer-lanes";
 import { loadRole, runningOrder, saveRole, type TimerRole } from "~/lib/timer";
-import { firstStopPath, stopPath } from "~/lib/timer-path";
+import { altFirstPath, altPath } from "~/lib/timer-path";
 import { useMeet } from "~/hooks/useMeet";
 
 /**
@@ -56,21 +56,23 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
 
   /**
    * Where a lane choice sends this phone: back to the heat it just left —
-   * `?event=&heat=`, set by `timer.tsx`'s "change lane" link (`lanesPath`)
+   * `?event=&heat=`, set by `timer2.tsx`'s "change lane" link (`altLanesPath`)
    * — if there is one, or the meet's first seeded heat for a fresh scan.
    * Without this, swapping lanes mid-meet silently restarted every timer
-   * back at event 1 heat 1 rather than picking up where they were.
+   * back at event 1 heat 1 rather than picking up where they were. Matched
+   * by event id rather than position — `timer2.tsx`'s own addressing, see
+   * `timer-path.ts`'s "alt" section.
    */
   const order = runningOrder(events, swims);
-  const returnEvent = Number(searchParams.get("event"));
+  const returnEventId = searchParams.get("event");
   const returnHeat = Number(searchParams.get("heat"));
   const returnStop = order.find(
-    (s) => s.event.position + 1 === returnEvent && s.heat === returnHeat,
+    (s) => s.event.id === returnEventId && s.heat === returnHeat,
   );
   const laneHref = (lane: number) =>
     returnStop
-      ? stopPath(params.meetId!, returnStop, lane)
-      : firstStopPath({ events, swims }, params.meetId!, lane);
+      ? altPath(params.meetId!, { eventId: returnStop.event.id, heat: returnStop.heat }, lane)
+      : altFirstPath({ events, swims }, params.meetId!, lane);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center p-6">

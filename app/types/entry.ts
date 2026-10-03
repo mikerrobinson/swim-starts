@@ -24,7 +24,7 @@ export type EntryUpsertMutation = {
   entity: "entry";
   op: "upsert";
   key: EntryIdentity;
-  patch: Partial<Omit<Entry, keyof EntryIdentity>>;
+  patch: Omit<Entry, keyof EntryIdentity>;
 };
 
 export type EntryDeleteMutation = {

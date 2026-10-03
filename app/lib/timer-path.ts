@@ -58,3 +58,44 @@ export function firstStopPath(
   if (!first) return `${timerPath(meetId)}/1/1/${lane}`;
   return stopPath(meetId, first, lane);
 }
+
+/* ---------------------------------------------------------- timer2 ("alt") */
+//
+// timer2.tsx addresses a heat the way `useHeat()` already does — a raw
+// `eventId` and a heat number, straight off `MeetManifest.events`, with no
+// position-in-the-running-order to keep in step with `runningOrder`'s own.
+// The three functions above stay as they are for `timer.tsx`'s own route;
+// these are the same three jobs for `timer/alt/:event/:heat/:lane` instead.
+
+/** A heat, addressed by id rather than position — what `useHeat()`'s own
+ *  `prev`/`next` pointers already are, so a caller never has to convert. */
+export interface HeatRef {
+  eventId: string;
+  heat: number;
+}
+
+export function altPath(meetId: string, at: HeatRef, lane: number): string {
+  return `${timerPath(meetId)}/alt/${at.eventId}/${at.heat}/${lane}`;
+}
+
+/** The lane picker, remembering which heat to come back to — `altPath`'s
+ *  counterpart to `lanesPath`. */
+export function altLanesPath(meetId: string, at?: HeatRef): string {
+  if (!at) return timerPath(meetId);
+  const search = new URLSearchParams({ event: at.eventId, heat: String(at.heat) });
+  return `${timerPath(meetId)}?${search}`;
+}
+
+/** `firstStopPath`'s counterpart for timer2 — the first seeded heat, by id. */
+export function altFirstPath(
+  meet: { events: Event[]; swims: Swim[] },
+  meetId: string,
+  lane: number,
+): string {
+  const order = runningOrder(meet.events, meet.swims);
+  const first = order[0];
+  // Nothing seeded yet — there's no real heat id to send them to, so back to
+  // the lane picker is the only link that isn't simply wrong.
+  if (!first) return timerPath(meetId);
+  return altPath(meetId, { eventId: first.event.id, heat: first.heat }, lane);
+}
