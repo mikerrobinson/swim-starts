@@ -29,13 +29,14 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import type {
-  Event,
-  MeetDetails,
-  Stroke,
-  MeetManifest,
-  LaneCount,
-  LaneAssignments,
+import {
+  type Event,
+  type MeetDetails,
+  type Stroke,
+  type MeetManifest,
+  type LaneCount,
+  type LaneAssignments,
+  DEFAULT_MEET_DETAILS,
 } from "~/types/meet";
 import {
   type Entry,
@@ -130,6 +131,13 @@ const SCHEMA = [
      name TEXT,
      total_heats INTEGER
    )`,
+
+  `CREATE TABLE IF NOT EXISTS heats (
+    id TEXT PRIMARY KEY,
+    "order" INTEGER NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'seeded',
+  );`,
 
   // Scalar bookkeeping the tables above don't carry a column for:
   // `currentEventId`, `currentHeatNumber` (see `getMeetManifest`/
