@@ -14,7 +14,7 @@ import { LaneTile } from "~/components/LaneTile";
 import { StopwatchDisplay } from "~/components/StopwatchDisplay";
 import { Banner, Button, EmptyState, Field, TextInput } from "~/components/ui";
 import { Modal } from "~/components/Modal";
-import { useWakeLock } from "~/hooks/use-stopwatch";
+import { useWakeLock } from "~/hooks/useWakeLock";
 import {
   currentWatches,
   fromStopwatch,

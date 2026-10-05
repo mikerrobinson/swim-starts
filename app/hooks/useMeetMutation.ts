@@ -18,6 +18,7 @@ export function useMeetMutation(meetId: string) {
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
       }).catch(() => {
+        meetCache.markStale(meetId);
         console.info(
           "[useMeetMutation] Offline: mutation buffered in cookie outbox",
         );

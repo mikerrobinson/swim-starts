@@ -1,3 +1,5 @@
+import type { Entry } from "./entry";
+
 export type HeatKey = string;
 
 export interface HeatIdentity {
@@ -5,14 +7,11 @@ export interface HeatIdentity {
 }
 
 export interface Heat extends HeatIdentity {
-  primaryEventId: string;
-  heatNumber: number;
-  title?: string;
-  status: "seeded" | "in_progress" | "completed";
-}
-
-export function toAthleteKey(heatIdentity: HeatIdentity): HeatKey {
-  return heatIdentity.id;
+  eventId: string;
+  eventHeatNumber: number;
+  lanes: Record<number, Entry>;
+  displayName?: string;
+  status: "not-started" | "in-progress" | "complete";
 }
 
 export type HeatUpsertMutation = {

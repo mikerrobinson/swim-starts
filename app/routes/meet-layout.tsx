@@ -360,9 +360,9 @@ function LiveMeetSync({
         meetCache.applyPatch(meetId, mutation);
       };
 
-      // socket.onerror = () => {
-      //   meetCache.markStale(meetId);
-      // };
+      socket.onerror = () => {
+        meetCache.markStale(meetId);
+      };
 
       socket.onclose = () => {
         // A reconnect already in flight replaced `ws` with a newer socket

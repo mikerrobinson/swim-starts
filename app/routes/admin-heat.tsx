@@ -79,6 +79,9 @@ function swimMutation(
  */
 export default function AdminHeat() {
   const params = useParams();
+  const meetId = params.meetId!;
+  const eventId = params.event!;
+  const heatNumber = Number(params.heat);
   const meet = useMeet();
   const navigate = useNavigate();
   const {
@@ -87,11 +90,8 @@ export default function AdminHeat() {
   const addHeat = useFetcher<{ ok: boolean; heat: number }>();
   const { send } = useMeetMutation(meet.id);
 
-  const events = useMemo(() => getSortedEvents(meet), [meet]);
-  const eventNo = Number(params.event);
-  const heatNumber = Number(params.heat);
-  const event = events.find((e) => e.position === eventNo - 1);
-  const heat = useHeat(event?.id ?? "", heatNumber);
+  const heat = useHeat(eventId, heatNumber);
+  const event = heat?.event;
 
   const [assigningLane, setAssigningLane] = useState<number | null>(null);
 
@@ -120,11 +120,7 @@ export default function AdminHeat() {
   return (
     <>
       <div className="flex items-center justify-between gap-2">
-        <Button
-          size="sm"
-          onClick={() => goTo(heat.prev)}
-          disabled={!heat.prev}
-        >
+        <Button size="sm" onClick={() => goTo(heat.prev)} disabled={!heat.prev}>
           ‹ Heat
         </Button>
         <p className="text-sm text-slate-500">
@@ -177,7 +173,7 @@ export default function AdminHeat() {
           roster={roster}
           nameOrder={nameOrder}
           onAssign={(athleteId) => {
-            const athlete = roster.find((a) => a.id === athleteId);
+            const athlete = meet.athletes[athleteId];
             const existing = heat.lanes[assigningLane]?.swim;
             send({
               entity: "swim",
@@ -187,7 +183,7 @@ export default function AdminHeat() {
                 athleteId,
                 athleteName: athlete ? athleteName(athlete) : "",
                 athleteTeam: athlete
-                  ? meet.teams[athlete.teamId]?.code ?? ""
+                  ? (meet.teams[athlete.teamId]?.code ?? "")
                   : "",
                 exhibition: existing?.exhibition ?? false,
               },
@@ -220,9 +216,7 @@ function HeatCard({
 
   const lanes = useMemo(
     () =>
-      Object.entries(heat.lanes).map(
-        ([lane, l]) => [Number(lane), l] as const,
-      ),
+      Object.entries(heat.lanes).map(([lane, l]) => [Number(lane), l] as const),
     [heat.lanes],
   );
   const identity = (lane: number): SwimIdentity => ({
@@ -231,9 +225,7 @@ function HeatCard({
     lane,
   });
 
-  const swims = lanes
-    .map(([, l]) => l.swim)
-    .filter((s): s is Swim => !!s);
+  const swims = lanes.map(([, l]) => l.swim).filter((s): s is Swim => !!s);
   const closed = swimsComplete(swims);
 
   // Only while a thumb is actually down somewhere in this heat — a watch
@@ -362,12 +354,32 @@ function HeatCard({
   };
 
   const heatButton = closed
-    ? { label: "Fix Results", onClick: fixResults, variant: "ghost" as const, disabled: false }
+    ? {
+        label: "Fix Results",
+        onClick: fixResults,
+        variant: "ghost" as const,
+        disabled: false,
+      }
     : readyToComplete
-      ? { label: "Mark as Complete", onClick: markComplete, variant: "primary" as const, disabled: false }
+      ? {
+          label: "Mark as Complete",
+          onClick: markComplete,
+          variant: "primary" as const,
+          disabled: false,
+        }
       : anyActivity
-        ? { label: "In progress", onClick: undefined, variant: undefined, disabled: true }
-        : { label: "Not started", onClick: undefined, variant: undefined, disabled: true };
+        ? {
+            label: "In progress",
+            onClick: undefined,
+            variant: undefined,
+            disabled: true,
+          }
+        : {
+            label: "Not started",
+            onClick: undefined,
+            variant: undefined,
+            disabled: true,
+          };
 
   return (
     <Card>
@@ -524,7 +536,13 @@ function LaneRow({
     send({
       entity: "watch",
       op: "upsert",
-      key: { eventId: swim.eventId, heat: swim.heat, lane: swim.lane, deviceId, slot: 1 },
+      key: {
+        eventId: swim.eventId,
+        heat: swim.heat,
+        lane: swim.lane,
+        deviceId,
+        slot: 1,
+      },
       patch: {
         role: "admin",
         userId: user?.id,
@@ -540,7 +558,13 @@ function LaneRow({
     send({
       entity: "watch",
       op: "delete",
-      key: { eventId: w.eventId, heat: w.heat, lane: w.lane, deviceId: w.deviceId, slot: w.slot },
+      key: {
+        eventId: w.eventId,
+        heat: w.heat,
+        lane: w.lane,
+        deviceId: w.deviceId,
+        slot: w.slot,
+      },
     });
   };
 
@@ -554,7 +578,9 @@ function LaneRow({
     setDraft(null);
     if (text === null || !swim || closed) return;
 
-    const mine = watches.find((w) => w.role === "admin" && w.deviceId === deviceId);
+    const mine = watches.find(
+      (w) => w.role === "admin" && w.deviceId === deviceId,
+    );
     if (text.trim() === "") {
       if (mine) removeWatch(mine);
       return;
@@ -642,9 +668,11 @@ function LaneRow({
 
       <td className="py-2 pr-2">
         <span className="flex flex-wrap items-center gap-1">
-          {timed.length === 0 && running.length === 0 && stopped.length === 0 && (
-            <span className="text-xs text-slate-400">—</span>
-          )}
+          {timed.length === 0 &&
+            running.length === 0 &&
+            stopped.length === 0 && (
+              <span className="text-xs text-slate-400">—</span>
+            )}
 
           {running.map((a) => (
             <span
@@ -652,8 +680,12 @@ function LaneRow({
               title={`Timer ${a.deviceId} is still timing this lane`}
               className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-amber-900 dark:bg-amber-950 dark:text-amber-200"
             >
-              <span aria-hidden className="text-[0.6rem]">▶</span>
-              {formatClock(Math.max(0, now - a.startedAt), { hundredths: false })}
+              <span aria-hidden className="text-[0.6rem]">
+                ▶
+              </span>
+              {formatClock(Math.max(0, now - a.startedAt), {
+                hundredths: false,
+              })}
             </span>
           ))}
           {stopped.map((a) => (
@@ -662,8 +694,12 @@ function LaneRow({
               title={`Timer ${a.deviceId} stopped their watch — waiting for it to submit`}
               className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-300"
             >
-              <span aria-hidden className="text-[0.6rem]">■</span>
-              {formatClock(Math.max(0, a.stoppedAt - (a.startedAt || a.stoppedAt)))}
+              <span aria-hidden className="text-[0.6rem]">
+                ■
+              </span>
+              {formatClock(
+                Math.max(0, a.stoppedAt - (a.startedAt || a.stoppedAt)),
+              )}
             </span>
           ))}
           {timed.map((w) => {
@@ -714,13 +750,19 @@ function LaneRow({
           inputMode="numeric"
           placeholder={progress === "none" ? "" : "0000"}
           aria-label={`Time for lane ${lane}`}
-          title={closed ? "This heat is complete — Fix Results to change it." : PROGRESS_HINT[progress]}
+          title={
+            closed
+              ? "This heat is complete — Fix Results to change it."
+              : PROGRESS_HINT[progress]
+          }
           tone={TIME_TONE[progress]}
           readOnly={closed}
           className="!w-28 text-center font-mono tabular-nums disabled:opacity-60"
         />
         {derived && (
-          <span className="ml-1 text-xs text-slate-400">{describeTime(derived)}</span>
+          <span className="ml-1 text-xs text-slate-400">
+            {describeTime(derived)}
+          </span>
         )}
       </td>
 

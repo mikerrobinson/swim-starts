@@ -136,8 +136,8 @@ const SCHEMA = [
     id TEXT PRIMARY KEY,
     "order" INTEGER NOT NULL UNIQUE,
     title TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'seeded',
-  );`,
+    status TEXT NOT NULL DEFAULT 'seeded'
+  )`,
 
   // Scalar bookkeeping the tables above don't carry a column for:
   // `currentEventId`, `currentHeatNumber` (see `getMeetManifest`/
@@ -273,6 +273,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
+      await this.ctx.storage.deleteAll();
       for (const statement of SCHEMA) this.ctx.storage.sql.exec(statement);
     });
   }

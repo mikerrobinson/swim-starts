@@ -38,7 +38,8 @@ export function useHeat(eventId: string, heat: number): HeatManifest | null {
       (a, b) => a.position - b.position,
     );
     const eventIdx = sortedEvents.findIndex((e) => e.id === eventId);
-    const totalHeats = event.totalHeats || 1;
+    // TBD: FIX THIS
+    const totalHeats = 0; //event.totalHeats || 1;
 
     let prev: { eventId: string; heat: number } | null = null;
     let next: { eventId: string; heat: number } | null = null;

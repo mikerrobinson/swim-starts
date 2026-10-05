@@ -1,3 +1,5 @@
+import type { Watch, WatchIdentity, WatchKey } from "./watch";
+
 export type ResultStatus = "OK" | "DQ" | "NS";
 
 export type SwimKey = `e${string}:h${number}:l${number}`;
@@ -13,6 +15,8 @@ export interface Swim extends SwimIdentity {
   athleteName?: string;
   athleteTeam?: string;
   exhibition: boolean;
+
+  watches: Record<WatchKey, Watch>;
   status?: ResultStatus;
   officialTimeMs?: number;
   decidedAt?: number;
