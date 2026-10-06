@@ -1,7 +1,7 @@
 {
   "name": "Swim Starts",
   "short_name": "Swim Starts",
-  "description": "Set up, register, and run an inter-squad dual swim meet.",
+  "description": "Set up, register, and run a swim meet.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

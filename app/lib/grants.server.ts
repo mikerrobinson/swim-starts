@@ -67,7 +67,7 @@ export function grantCookie(
 
   return [
     `${GRANT_COOKIE}=${token ? encodeURIComponent(token) : ""}`,
-    `Path=/meets/${options.meetId}/timer`,
+    `Path=/meets/${options.meetId}`,
     "HttpOnly",
     "SameSite=Lax",
     ...(https ? ["Secure"] : []),

@@ -66,13 +66,16 @@ export default function TimerLanes({ params }: Route.ComponentProps) {
   const order = runningOrder(events, swims);
   const returnEventId = searchParams.get("event");
   const returnHeat = Number(searchParams.get("heat"));
+  const meetId = params.meetId!;
+
   const returnStop = order.find(
     (s) => s.event.id === returnEventId && s.heat === returnHeat,
   );
-  const laneHref = (lane: number) =>
-    returnStop
-      ? altPath(params.meetId!, { eventId: returnStop.event.id, heat: returnStop.heat }, lane)
-      : altFirstPath({ events, swims }, params.meetId!, lane);
+  const laneHref = (lane: number) => {
+    return returnEventId && returnHeat
+      ? `/meets/${meetId}/timer/alt/${returnEventId}/${returnHeat}/${lane}`
+      : `/meets/${meetId}/timer/alt/1/1/${lane}`;
+  };
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center p-6">

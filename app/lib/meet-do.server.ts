@@ -273,7 +273,7 @@ export class MeetDurableObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      await this.ctx.storage.deleteAll();
+      //await this.ctx.storage.deleteAll();
       for (const statement of SCHEMA) this.ctx.storage.sql.exec(statement);
     });
   }
@@ -303,20 +303,20 @@ export class MeetDurableObject extends DurableObject<Env> {
 
   async processMutation(
     meetId: string,
-    user: User,
+    //user: User,
     mutation: EntityMutation,
   ): Promise<void> {
-    const meet = await this.getMeetManifest(meetId);
+    //const meet = await this.getMeetManifest(meetId);
     switch (mutation.entity) {
       case "entry":
         if (
-          mutation.op === "delete" &&
-          canDeleteEntry(mutation.key, user, meet)
+          mutation.op === "delete" /* &&
+          canDeleteEntry(mutation.key, user, meet) */
         ) {
           await this.deleteEntry(mutation);
         } else if (
-          mutation.op === "upsert" &&
-          canUpsertEntry(mutation.key, user, meet)
+          mutation.op === "upsert" /* &&
+          canUpsertEntry(mutation.key, user, meet)*/
         ) {
           await this.upsertEntry(mutation);
         }
@@ -330,13 +330,13 @@ export class MeetDurableObject extends DurableObject<Env> {
         break;
       case "watch":
         if (
-          mutation.op === "delete" &&
-          canDeleteWatch(mutation.key, user, meet)
+          mutation.op === "delete" /* &&
+          canDeleteWatch(mutation.key, user, meet) */
         ) {
           await this.deleteWatch(mutation);
         } else if (
-          mutation.op === "upsert" &&
-          canUpsertWatch(mutation.key, user, meet)
+          mutation.op === "upsert" /* &&
+          canUpsertWatch(mutation.key, user, meet) */
         ) {
           await this.upsertWatch(mutation);
         }
@@ -347,13 +347,13 @@ export class MeetDurableObject extends DurableObject<Env> {
   // TBD: maybe parallelize here?
   async processMutations(
     meetId: string,
-    user: User,
+    //user: User,
     mutations: EntityMutation[],
   ): Promise<void> {
     if (mutations === null || mutations.length < 1) return;
 
     for (const mutation of mutations) {
-      this.processMutation(meetId, user, mutation);
+      this.processMutation(meetId, mutation);
     }
   }
 

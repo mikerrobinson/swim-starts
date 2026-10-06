@@ -25,18 +25,17 @@ import type { MeetAthlete } from "~/types/meet";
 import { AccountMenu } from "~/components/AccountMenu";
 import { HeaderToggles } from "~/components/HeaderToggles";
 import type { MeetRouteHandle } from "~/lib/route-handle";
-import { meetSubtitle } from "~/types/meet";
+import { courseLabel, meetSubtitle } from "~/types/meet";
 import { drainOutboxCookies } from "~/lib/cookieDrain.server";
 import { currentUser } from "~/lib/api.server";
 import type { EntityMutation } from "~/types/mutations";
+import { resolveTimerAccess } from "~/lib/timer-request.server";
 
 export async function action({ params, request, context }: Route.ActionArgs) {
   const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
-  const [user, meet] = await Promise.all([
-    currentUser(request, db),
-    getMeet(db, meetId),
-  ]);
+  const meet = await getMeet(db, meetId);
+
   if (!meet) throw new Response("No such meet", { status: 404 });
 
   const stub = context.cloudflare.env.MEET_DO.getByName(meetId);
@@ -49,8 +48,23 @@ export async function action({ params, request, context }: Route.ActionArgs) {
     );
   }
   if (mutations.length > 0) {
+    const user = await currentUser(request, db);
+
+    const timer = await resolveTimerAccess(
+      request,
+      context.cloudflare.env.DB,
+      meetId,
+    );
+
     if (user !== null) {
-      await stub.processMutations(meetId, user, mutations);
+      await stub.processMutations(meetId, mutations);
+    } else if (timer.ok) {
+      const timerMutations = mutations.filter(
+        (m) =>
+          (m.entity === "watch" && m.op === "upsert") ||
+          (m.entity === "swim" && m.op === "upsert"),
+      );
+      await stub.processMutations(meetId, timerMutations);
     } else {
       redirect("/login");
     }
@@ -61,7 +75,6 @@ export async function action({ params, request, context }: Route.ActionArgs) {
 export async function loader({ params, context, request }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
   const meetId = params.meetId!;
-  const user = await currentUser(request, db);
 
   const [meetFacts] = await Promise.all([getMeet(db, meetId)]);
   if (!meetFacts) throw new Response("Meet Not Found", { status: 404 });
@@ -79,8 +92,23 @@ export async function loader({ params, context, request }: Route.LoaderArgs) {
     );
   }
   if (mutations.length > 0) {
+    const user = await currentUser(request, db);
+
+    const timer = await resolveTimerAccess(
+      request,
+      context.cloudflare.env.DB,
+      meetId,
+    );
+
     if (user !== null) {
-      await stub.processMutations(meetId, user, mutations);
+      await stub.processMutations(meetId, mutations);
+    } else if (timer.ok) {
+      const timerMutations = mutations.filter(
+        (m) =>
+          (m.entity === "watch" && m.op === "upsert") ||
+          (m.entity === "swim" && m.op === "upsert"),
+      );
+      await stub.processMutations(meetId, timerMutations);
     } else {
       redirect("/login");
     }
